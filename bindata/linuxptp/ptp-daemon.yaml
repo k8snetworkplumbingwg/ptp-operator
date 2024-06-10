@@ -93,6 +93,12 @@ spec:
         - name: linuxptp-certs
           secret:
             secretName: linuxptp-daemon-secret
+        {{ if (eq .EnableEventPublisher true) }}
+        - name: pubsubstore
+          emptyDir: {}
+        - name: event-bus-socket
+          emptyDir: {}
+        {{ end }}
         - name: socket-dir
           hostPath:
             path: /var/run/ptp
@@ -195,4 +201,8 @@ spec:
           for: 2m
           labels:
             severity: warning
+<<<<<<< HEAD
 
+=======
+        {{ end }}
+>>>>>>> a3d37932 (remove amq and pvc)
