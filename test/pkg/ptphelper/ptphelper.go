@@ -71,6 +71,10 @@ func GetClockIDMaster(ptpConfigName string, label *string, nodeName *string, isG
 	if err != nil {
 		return id, err
 	}
+	// 4.16+ has log levels in message_tag: [ptp4l.0.config:{level}]
+	if strings.Contains(logID, "level") {
+		logID = strings.Replace(logID, "{level}", "\\d+", 1)
+	}
 	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 	if err != nil {
 		return id, err
@@ -102,6 +106,10 @@ func GetClockIDForeign(ptpConfigName string, label *string, nodeName *string) (i
 	logID, err := GetProfileLogID(ptpConfigName, label, nodeName)
 	if err != nil {
 		return id, err
+	}
+	// 4.16+ has log levels in message_tag: [ptp4l.0.config:{level}]
+	if strings.Contains(logID, "level") {
+		logID = strings.Replace(logID, "{level}", "\\d+", 1)
 	}
 	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 	if err != nil {
