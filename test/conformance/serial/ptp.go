@@ -304,6 +304,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// - waits for the foreign master to appear
 			// - use metrics to verify that the offset is below threshold
 			It("Slave can sync to master", func() {
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
 				isExternalMaster := ptphelper.IsExternalGM()
 				var grandmasterID *string
 				if fullConfig.L2Config != nil && !isExternalMaster {
@@ -326,7 +329,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// - use metrics to verify that the offset with boundary clock is below threshold
 			It("Downstream slave can sync to BC master", func() {
 				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
-					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock {
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test only valid for Boundary clock in multi-node clusters")
 				}
 				if !fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesString] &&
@@ -362,7 +366,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				var policyName string
 				var modifiedPtpConfig *ptpv1.PtpConfig
 				By("Creating a config with higher priority", func() {
-
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+						Skip("WPC GM (T-GM) mode is not supported for this test")
+					}
 					switch fullConfig.PtpModeDiscovered {
 					case testconfig.Discovery, testconfig.None:
 						Skip("Skipping because Discovery or None is not supported yet for this test")
