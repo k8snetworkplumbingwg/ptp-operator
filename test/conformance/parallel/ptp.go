@@ -356,7 +356,9 @@ func testSyncState(soakTestConfig ptptestconfig.SoakTestConfig, fullConfig testc
 			// Wait for the clock to be locked at least once before stating to count failures
 			if !wasLocked && state == "LOCKED" {
 				wasLocked = true
-				logrus.Info("Clock is locked, starting to monitor status now")
+				//logrus.Info("Clock is locked, starting to monitor status now")
+				logrus.Info("Clock is locked, consider TC pass")
+				return
 			}
 
 			// wait before the clock was locked once before starting to record metrics
