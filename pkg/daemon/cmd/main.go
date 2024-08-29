@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -77,6 +78,12 @@ func main() {
 	}
 
 	// The name of NodePtpDevice CR for this node is equal to the node name
+	var stdoutToSocket = false
+	if val, ok := os.LookupEnv("LOGS_TO_SOCKET"); ok && val != "" {
+		if ret, err := strconv.ParseBool(val); err == nil {
+			stdoutToSocket = ret
+		}
+	}
 
 	plugins := make([]string, 0)
 
@@ -114,6 +121,7 @@ func main() {
 	go daemon.New(
 		nodeName,
 		daemon.PtpNamespace,
+		stdoutToSocket,
 		kubeClient,
 		ptpConfUpdate,
 		stopCh,
@@ -130,7 +138,10 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	daemon.StartMetricsServer("0.0.0.0:9091")
+	// by default metrics is hosted here,if LOGS_TO_SOCKET variable is set then metrics are disabled
+	if !stdoutToSocket { // if not sending metrics (log) out to a socket then host metrics here
+		daemon.StartMetricsServer("0.0.0.0:9091")
+	}
 
 	for {
 		select {

@@ -31,6 +31,39 @@ spec:
       serviceAccountName: linuxptp-daemon
       priorityClassName: "system-node-critical"
       containers:
+       {{ if (eq .EnableEventPublisher true) }}
+        - name: cloud-event-proxy
+          image: {{ .SideCar }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--metrics-addr=127.0.0.1:9091"
+            - "--store-path=/store"
+            - "--transport-host={{ .EventTransportHost }}"
+            - "--api-port=9085"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/linuxptp
+            - name: pubsubstore
+              mountPath: /store
+            - name: event-bus-socket
+              mountPath: /cloud-native
+            - name: socket-dir
+              mountPath: /var/run
+          ports:
+            - name: metrics-port
+              containerPort: 9091
+            - name: api-port
+              containerPort: 9085
+          env:
+            - name: PTP_PLUGIN
+              value: "true"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NAME_SPACE
+              value: openshift-ptp
+        {{ end }}
         - name: kube-rbac-proxy
           image: {{.KubeRbacProxy}}
           imagePullPolicy: Always
@@ -74,6 +107,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: LOGS_TO_SOCKET
+              value: "{{ .EnableEventPublisher }}"
             - name: PLUGINS
               value: "{{ .EnabledPlugins }}"
           volumeMounts:
@@ -83,6 +118,10 @@ spec:
               mountPath: /etc/leap
             - name: socket-dir
               mountPath: /var/run
+            {{ if (eq .EnableEventPublisher true) }}
+            - name: event-bus-socket
+              mountPath: /cloud-native
+            {{ end }}
       volumes:
         - name: config-volume
           configMap:
@@ -192,6 +231,18 @@ spec:
   groups:
     - name: ptp.rules
       rules:
+        {{ if (eq .EnableEventPublisher true) }}
+        - alert: NodeOutOfPtpSync
+          annotations:
+            message: |
+              {{ "{{" }} $labels.iface }} is not in sync
+          expr: |
+            openshift_ptp_clock_state != 1
+          for: 2m
+          labels:
+            severity: warning
+        {{ end }}
+        {{ if (eq .EnableEventPublisher false) }}
         - alert: HighPtpSyncOffset
           annotations:
             message: |
@@ -201,8 +252,4 @@ spec:
           for: 2m
           labels:
             severity: warning
-<<<<<<< HEAD
-
-=======
         {{ end }}
->>>>>>> a3d37932 (remove amq and pvc)
