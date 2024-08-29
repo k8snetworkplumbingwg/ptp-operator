@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"cmp"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -15,8 +14,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/daemon/pmc"
 
 	"github.com/golang/glog"
 	"k8s.io/client-go/kubernetes"
@@ -329,7 +326,7 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 			p.eventCh = dn.processManager.eventChannel
 			// start ptp4l process early , it doesn't have
 			if p.depProcess == nil {
-				go p.cmdRun()
+				go p.cmdRun(dn.stdoutToSocket)
 			} else {
 				for _, d := range p.depProcess {
 					if d != nil {
@@ -351,7 +348,7 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 						glog.Infof("enabling dep process %s with Max %d Min %d Holdover %d", d.Name(), p.ptpClockThreshold.MaxOffsetThreshold, p.ptpClockThreshold.MinOffsetThreshold, p.ptpClockThreshold.HoldOverTimeout)
 					}
 				}
-				go cmdRun(p, dn.stdoutToSocket)
+				go p.cmdRun(dn.stdoutToSocket)
 			}
 			dn.pluginManager.AfterRunPTPCommand(&p.nodeProfile, p.name)
 		}
@@ -750,7 +747,7 @@ func (p *ptpProcess) updateClockClass(c *net.Conn) {
 }
 
 // cmdRun runs given ptpProcess and restarts on errors
-func cmdRun(p *ptpProcess, stdoutToSocket bool) {
+func (p *ptpProcess) cmdRun(stdoutToSocket bool) {
 	var c net.Conn
 	done := make(chan struct{}) // Done setting up logging.  Go ahead and wait for process
 	defer func() {
@@ -782,7 +779,7 @@ func cmdRun(p *ptpProcess, stdoutToSocket bool) {
 		}
 		if !stdoutToSocket {
 		scanner := bufio.NewScanner(cmdReader)
-		processStatus(p.name, p.messageTag, PtpProcessUp)
+		processStatus(nil, p.name, p.messageTag, PtpProcessUp)
 		go func() {
 			for scanner.Scan() {
 				output := scanner.Text()
@@ -805,68 +802,67 @@ func cmdRun(p *ptpProcess, stdoutToSocket bool) {
 			}
 			done <- struct{}{}
 		}()
-	}
-	else {
-			go func() {
-			connect:
-				select {
-				case <-p.exitCh:
-					done <- struct{}{}
-				default:
-					c, err = net.Dial("unix", eventSocket)
-					if err != nil {
-						glog.Errorf("error trying to connect to event socket")
-						time.Sleep(connectionRetryInterval)
-						goto connect
-					}
+	} else {
+		go func() {
+		connect:
+			select {
+			case <-p.exitCh:
+				done <- struct{}{}
+			default:
+				c, err = net.Dial("unix", eventSocket)
+				if err != nil {
+					glog.Errorf("error trying to connect to event socket")
+					time.Sleep(connectionRetryInterval)
+					goto connect
 				}
-				scanner := bufio.NewScanner(cmdReader)
-				processStatus(&c, p.name, p.messageTag, PtpProcessUp)
-				for scanner.Scan() {
-					output := scanner.Text()
-					if regexErr != nil || !logFilterRegex.MatchString(output) {
-						fmt.Printf("%s\n", output)
-					}
-					out := fmt.Sprintf("%s\n", output)
-					if p.name == ptp4lProcessName {
-						if strings.Contains(output, ClockClassChangeIndicator) {
-							go func(c *net.Conn, cfgName string) {
-								if _, matches, e := pmc.RunPMCExp(cfgName, pmc.CmdParentDataSet, pmc.ClockClassChangeRegEx); e == nil {
-									//regex: 'gm.ClockClass[[:space:]]+(\d+)'
-									//match  1: 'gm.ClockClass                         135'
-									//match  2: '135'
-									if len(matches) > 1 {
-										var parseError error
-										var clockClass float64
-										if clockClass, parseError = strconv.ParseFloat(matches[1], 64); parseError == nil {
-											glog.Infof("clock change event identified")
-											//ptp4l[5196819.100]: [ptp4l.0.config] CLOCK_CLASS_CHANGE:248
-											clockClassOut := fmt.Sprintf("%s[%d]:[%s] CLOCK_CLASS_CHANGE %f\n", p.name, time.Now().Unix(), p.configName, clockClass)
-											fmt.Printf("%s", clockClassOut)
-											_, err := (*c).Write([]byte(clockClassOut))
-											if err != nil {
-												glog.Errorf("failed to write class change event %s", err.Error())
-											}
-										} else {
-											glog.Errorf("parse error in clock class value %s", parseError)
+			}
+			scanner := bufio.NewScanner(cmdReader)
+			processStatus(&c, p.name, p.messageTag, PtpProcessUp)
+			for scanner.Scan() {
+				output := scanner.Text()
+				if regexErr != nil || !logFilterRegex.MatchString(output) {
+					fmt.Printf("%s\n", output)
+				}
+				out := fmt.Sprintf("%s\n", output)
+				if p.name == ptp4lProcessName {
+					if strings.Contains(output, ClockClassChangeIndicator) {
+						go func(c *net.Conn, cfgName string) {
+							if _, matches, e := pmc.RunPMCExp(cfgName, pmc.CmdGetParentDataSet, pmc.ClockClassChangeRegEx); e == nil {
+								//regex: 'gm.ClockClass[[:space:]]+(\d+)'
+								//match  1: 'gm.ClockClass                         135'
+								//match  2: '135'
+								if len(matches) > 1 {
+									var parseError error
+									var clockClass float64
+									if clockClass, parseError = strconv.ParseFloat(matches[1], 64); parseError == nil {
+										glog.Infof("clock change event identified")
+										//ptp4l[5196819.100]: [ptp4l.0.config] CLOCK_CLASS_CHANGE:248
+										clockClassOut := fmt.Sprintf("%s[%d]:[%s] CLOCK_CLASS_CHANGE %f\n", p.name, time.Now().Unix(), p.configName, clockClass)
+										fmt.Printf("%s", clockClassOut)
+										_, err := (*c).Write([]byte(clockClassOut))
+										if err != nil {
+											glog.Errorf("failed to write class change event %s", err.Error())
 										}
 									} else {
-										glog.Infof("clock class change value not found via PMC")
+										glog.Errorf("parse error in clock class value %s", parseError)
 									}
 								} else {
-									glog.Error("error parsing PMC util for clock class change event")
+									glog.Infof("clock class change value not found via PMC")
 								}
-							}(&c, p.configName)
-						}
-					}
-					_, err := c.Write([]byte(out))
-					if err != nil {
-						glog.Errorf("Write error %s:", err)
-						goto connect
+							} else {
+								glog.Error("error parsing PMC util for clock class change event")
+							}
+						}(&c, p.configName)
 					}
 				}
-				done <- struct{}{}
-			}()
+				_, err := c.Write([]byte(out))
+				if err != nil {
+					glog.Errorf("Write error %s:", err)
+					goto connect
+				}
+			}
+			done <- struct{}{}
+		}()
 	}
 		// Don't restart after termination
 		if !p.Stopped() {

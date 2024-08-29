@@ -67,7 +67,7 @@ func (gp *gpspipe) CmdStop() {
 		return
 	}
 	gp.setStopped(true)
-	processStatus(gp.name, gp.messageTag, PtpProcessDown)
+	processStatus(nil, gp.name, gp.messageTag, PtpProcessDown)
 	if gp.cmd.Process != nil {
 		glog.Infof("Sending TERM to (%s) PID: %d", gp.name, gp.cmd.Process.Pid)
 		err := gp.cmd.Process.Signal(syscall.SIGTERM)
@@ -97,7 +97,7 @@ func (gp *gpspipe) CmdRun(stdoutToSocket bool) {
 	defer func() {
 		gp.exitCh <- struct{}{}
 	}()
-	processStatus(gp.name, gp.messageTag, PtpProcessUp)
+	processStatus(nil, gp.name, gp.messageTag, PtpProcessUp)
 	for {
 		glog.Infof("Starting %s...", gp.Name())
 		glog.Infof("%s cmd: %+v", gp.Name(), gp.cmd)
@@ -125,7 +125,7 @@ func (gp *gpspipe) CmdRun(stdoutToSocket bool) {
 			newCmd := exec.Command(gp.cmd.Args[0], gp.cmd.Args[1:]...)
 			gp.cmd = newCmd
 		} else {
-			processStatus(gp.name, gp.messageTag, PtpProcessDown)
+			processStatus(nil, gp.name, gp.messageTag, PtpProcessDown)
 			gp.exitCh <- struct{}{}
 			break
 		}
