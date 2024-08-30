@@ -2,13 +2,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: linuxptp-daemon
-  namespace: ptp
+  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: ptp-operator
-  namespace: ptp
+  namespace: openshift-ptp
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
@@ -78,7 +78,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: ptp-operator
-  namespace: ptp
+  namespace: openshift-ptp
 roleRef:
   kind: ClusterRole
   name: ptp-operator
@@ -86,13 +86,13 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: ptp-operator
-  namespace: ptp
+  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: linuxptp-daemon
-  namespace: ptp
+  namespace: openshift-ptp
 roleRef:
   kind: ClusterRole
   name: linuxptp-daemon
@@ -100,13 +100,13 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: linuxptp-daemon
-  namespace: ptp
+  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: linuxptp-daemon
-  namespace: ptp
+  namespace: openshift-ptp
 rules:
   - apiGroups:
       - security.openshift.io
@@ -121,7 +121,7 @@ kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: linuxptp-daemon
-  namespace: ptp
+  namespace: openshift-ptp
 subjects:
 - kind: ServiceAccount
   name: linuxptp-daemon

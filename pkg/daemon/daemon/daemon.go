@@ -33,7 +33,7 @@ const (
 	PTP4L_CONF_FILE_PATH            = "/etc/ptp4l.conf"
 	PTP4L_CONF_DIR                  = "/ptp4l-conf"
 	connectionRetryInterval         = 1 * time.Second
-	eventSocket               = "/cloud-native/events.sock"
+	eventSocket                     = "/cloud-native/events.sock"
 	ClockClassChangeIndicator       = "selected best master clock"
 	GPSDDefaultGNSSSerialPort       = "/dev/gnss0"
 	NMEASourceDisabledIndicator     = "nmea source timed out"

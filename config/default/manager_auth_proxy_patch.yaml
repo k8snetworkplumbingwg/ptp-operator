@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ptp-operator
-  namespace: ptp
+  namespace: openshift-ptp
 spec:
   template:
     spec:
