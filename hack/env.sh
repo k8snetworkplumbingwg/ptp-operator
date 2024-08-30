@@ -1,5 +1,5 @@
 REPO_DIR="$(dirname $0)/.."
-NAMESPACE=ptp
+NAMESPACE=openshift-ptp
 OPERATOR_EXEC=oc
 
 export RELEASE_VERSION=v4.14.0
