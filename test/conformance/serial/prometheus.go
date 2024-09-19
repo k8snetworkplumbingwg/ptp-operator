@@ -15,7 +15,7 @@ import (
 	k8sv1 "k8s.io/api/core/v1"
 )
 
-const openshiftPtpNamespace = "ptp"
+const openshiftPtpNamespace = "openshift-ptp"
 const openshiftPtpMetricPrefix = "openshift_ptp_"
 
 // Needed to deserialize prometheus query output.

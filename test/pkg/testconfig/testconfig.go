@@ -43,7 +43,7 @@ const (
 	DiscoverySuccessStatusString = "discoverySuccess"
 	// DiscoveryFailureStatusString Stringer value for the Discovery failure status
 	DiscoveryFailureStatusString = "discoveryFailure"
-	PtpLinuxDaemonNamespace      = "ptp"
+	PtpLinuxDaemonNamespace      = "openshift-ptp"
 	int65                        = 65
 	int5                         = 5
 	// OrdinaryClockString matches the OC clock mode in Environement
