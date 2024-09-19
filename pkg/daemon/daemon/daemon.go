@@ -196,7 +196,7 @@ func New(
 	return &Daemon{
 		nodeName:             nodeName,
 		namespace:            namespace,
-		stdoutToSocket: stdoutToSocket,
+		stdoutToSocket:       stdoutToSocket,
 		kubeClient:           kubeClient,
 		ptpUpdate:            ptpUpdate,
 		processManager:       &ProcessManager{},
@@ -206,7 +206,6 @@ func New(
 		hwconfigs:            hwconfigs,
 		refreshNodePtpDevice: refreshNodePtpDevice,
 		pmcPollInterval:      pmcPollInterval,
-
 	}
 }
 
@@ -778,92 +777,92 @@ func (p *ptpProcess) cmdRun(stdoutToSocket bool) {
 			break
 		}
 		if !stdoutToSocket {
-		scanner := bufio.NewScanner(cmdReader)
-		processStatus(nil, p.name, p.messageTag, PtpProcessUp)
-		go func() {
-			for scanner.Scan() {
-				output := scanner.Text()
-				if p.pmcCheck {
-					p.pmcCheck = false
-					go p.updateClockClass(nil)
-				}
-
-				if regexErr != nil || !logFilterRegex.MatchString(output) {
-					fmt.Printf("%s\n", output)
-				}
-				p.processPTPMetrics(output)
-				if p.name == ptp4lProcessName {
-					if strings.Contains(output, ClockClassChangeIndicator) {
+			scanner := bufio.NewScanner(cmdReader)
+			processStatus(nil, p.name, p.messageTag, PtpProcessUp)
+			go func() {
+				for scanner.Scan() {
+					output := scanner.Text()
+					if p.pmcCheck {
+						p.pmcCheck = false
 						go p.updateClockClass(nil)
 					}
-				} else if p.name == phc2sysProcessName && len(p.haProfile) > 0 {
-					p.announceHAFailOver(nil, output) // do not use go routine since order of execution is important here
-				}
-			}
-			done <- struct{}{}
-		}()
-	} else {
-		go func() {
-		connect:
-			select {
-			case <-p.exitCh:
-				done <- struct{}{}
-			default:
-				c, err = net.Dial("unix", eventSocket)
-				if err != nil {
-					glog.Errorf("error trying to connect to event socket")
-					time.Sleep(connectionRetryInterval)
-					goto connect
-				}
-			}
-			scanner := bufio.NewScanner(cmdReader)
-			processStatus(&c, p.name, p.messageTag, PtpProcessUp)
-			for scanner.Scan() {
-				output := scanner.Text()
-				if regexErr != nil || !logFilterRegex.MatchString(output) {
-					fmt.Printf("%s\n", output)
-				}
-				out := fmt.Sprintf("%s\n", output)
-				if p.name == ptp4lProcessName {
-					if strings.Contains(output, ClockClassChangeIndicator) {
-						go func(c *net.Conn, cfgName string) {
-							if _, matches, e := pmc.RunPMCExp(cfgName, pmc.CmdGetParentDataSet, pmc.ClockClassChangeRegEx); e == nil {
-								//regex: 'gm.ClockClass[[:space:]]+(\d+)'
-								//match  1: 'gm.ClockClass                         135'
-								//match  2: '135'
-								if len(matches) > 1 {
-									var parseError error
-									var clockClass float64
-									if clockClass, parseError = strconv.ParseFloat(matches[1], 64); parseError == nil {
-										glog.Infof("clock change event identified")
-										//ptp4l[5196819.100]: [ptp4l.0.config] CLOCK_CLASS_CHANGE:248
-										clockClassOut := fmt.Sprintf("%s[%d]:[%s] CLOCK_CLASS_CHANGE %f\n", p.name, time.Now().Unix(), p.configName, clockClass)
-										fmt.Printf("%s", clockClassOut)
-										_, err := (*c).Write([]byte(clockClassOut))
-										if err != nil {
-											glog.Errorf("failed to write class change event %s", err.Error())
-										}
-									} else {
-										glog.Errorf("parse error in clock class value %s", parseError)
-									}
-								} else {
-									glog.Infof("clock class change value not found via PMC")
-								}
-							} else {
-								glog.Error("error parsing PMC util for clock class change event")
-							}
-						}(&c, p.configName)
+
+					if regexErr != nil || !logFilterRegex.MatchString(output) {
+						fmt.Printf("%s\n", output)
+					}
+					p.processPTPMetrics(output)
+					if p.name == ptp4lProcessName {
+						if strings.Contains(output, ClockClassChangeIndicator) {
+							go p.updateClockClass(nil)
+						}
+					} else if p.name == phc2sysProcessName && len(p.haProfile) > 0 {
+						p.announceHAFailOver(nil, output) // do not use go routine since order of execution is important here
 					}
 				}
-				_, err := c.Write([]byte(out))
-				if err != nil {
-					glog.Errorf("Write error %s:", err)
-					goto connect
+				done <- struct{}{}
+			}()
+		} else {
+			go func() {
+			connect:
+				select {
+				case <-p.exitCh:
+					done <- struct{}{}
+				default:
+					c, err = net.Dial("unix", eventSocket)
+					if err != nil {
+						glog.Errorf("error trying to connect to event socket")
+						time.Sleep(connectionRetryInterval)
+						goto connect
+					}
 				}
-			}
-			done <- struct{}{}
-		}()
-	}
+				scanner := bufio.NewScanner(cmdReader)
+				processStatus(&c, p.name, p.messageTag, PtpProcessUp)
+				for scanner.Scan() {
+					output := scanner.Text()
+					if regexErr != nil || !logFilterRegex.MatchString(output) {
+						fmt.Printf("%s\n", output)
+					}
+					out := fmt.Sprintf("%s\n", output)
+					if p.name == ptp4lProcessName {
+						if strings.Contains(output, ClockClassChangeIndicator) {
+							go func(c *net.Conn, cfgName string) {
+								if _, matches, e := pmc.RunPMCExp(cfgName, pmc.CmdGetParentDataSet, pmc.ClockClassChangeRegEx); e == nil {
+									//regex: 'gm.ClockClass[[:space:]]+(\d+)'
+									//match  1: 'gm.ClockClass                         135'
+									//match  2: '135'
+									if len(matches) > 1 {
+										var parseError error
+										var clockClass float64
+										if clockClass, parseError = strconv.ParseFloat(matches[1], 64); parseError == nil {
+											glog.Infof("clock change event identified")
+											//ptp4l[5196819.100]: [ptp4l.0.config] CLOCK_CLASS_CHANGE:248
+											clockClassOut := fmt.Sprintf("%s[%d]:[%s] CLOCK_CLASS_CHANGE %f\n", p.name, time.Now().Unix(), p.configName, clockClass)
+											fmt.Printf("%s", clockClassOut)
+											_, err := (*c).Write([]byte(clockClassOut))
+											if err != nil {
+												glog.Errorf("failed to write class change event %s", err.Error())
+											}
+										} else {
+											glog.Errorf("parse error in clock class value %s", parseError)
+										}
+									} else {
+										glog.Infof("clock class change value not found via PMC")
+									}
+								} else {
+									glog.Error("error parsing PMC util for clock class change event")
+								}
+							}(&c, p.configName)
+						}
+					}
+					_, err := c.Write([]byte(out))
+					if err != nil {
+						glog.Errorf("Write error %s:", err)
+						goto connect
+					}
+				}
+				done <- struct{}{}
+			}()
+		}
 		// Don't restart after termination
 		if !p.Stopped() {
 			err = p.cmd.Start() // this is asynchronous call,
