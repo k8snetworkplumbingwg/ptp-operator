@@ -136,53 +136,53 @@ If internal delay overrides are required, they can be configured together with t
 
 ```yaml
 e810:
-	internalDelays:
-	- awesome-NIC:
-		externalInputs: # The direction of input is from connector to pin
-		- connector: SMA1
-			pin: SMA1
-			delayPs: 7658
-		- connector: SMA2
-			pin: SMA2/U.FL2
-			delayPs: 7385
-		- connector: u.FL2
-			pin: SMA2/U.FL2
-			delayPs: 9795
-		externalOutputs:  # The direction of output is from pin to connector
-		- pin: REF-SMA1
-			connector: u.FL1
-			delayPs: 1274
-		- pin: REF-SMA1
-			connector: SMA1
-			delayPs: 1376
-		- pin: REF-SMA2/U.FL2
-			connector: SMA2
-			delayPs: 2908
-		gnssInput:
-			connector: GNSS
-			pin: GNSS-1PPS
-			delayPs: 6999
-	interconnections:
-	- id: ens5f0
-		part: awesome-NIC
-		inputPhaseDelay:
-			connector: SMA1
-		delayPs: 920
-		phaseOutputConnectors:
-		- SMA2
-	- id: ens4f0
-		part: E810-XXVDA4T
-		gnssInput: false
-		phaseOutputConnectors:
-		- SMA1
-		- SMA2
-	- id: ens8f0
-		part: E810-XXVDA4T
-		inputPhaseDelay:
-			connector: SMA1
-		delayPs: 920
-		phaseOutputConnectors:
-		- SMA2
+  internalDelays:
+  - awesome-NIC:
+    externalInputs: # The direction of input is from connector to pin
+    - connector: SMA1
+      pin: SMA1
+      delayPs: 7658
+    - connector: SMA2
+      pin: SMA2/U.FL2
+      delayPs: 7385
+    - connector: u.FL2
+      pin: SMA2/U.FL2
+      delayPs: 9795
+    externalOutputs:  # The direction of output is from pin to connector
+    - pin: REF-SMA1
+      connector: u.FL1
+      delayPs: 1274
+    - pin: REF-SMA1
+      connector: SMA1
+      delayPs: 1376
+    - pin: REF-SMA2/U.FL2
+      connector: SMA2
+      delayPs: 2908
+    gnssInput:
+      connector: GNSS
+      pin: GNSS-1PPS
+      delayPs: 6999
+    interconnections:
+    - id: ens5f0
+      part: awesome-NIC
+      inputPhaseDelay:
+        connector: SMA1
+          delayPs: 920
+      phaseOutputConnectors:
+      - SMA2
+    - id: ens4f0
+      part: E810-XXVDA4T
+      gnssInput: false
+      phaseOutputConnectors:
+      - SMA1
+      - SMA2
+    - id: ens8f0
+      part: E810-XXVDA4T
+      inputPhaseDelay:
+        connector: SMA1
+        delayPs: 920
+      phaseOutputConnectors:
+      - SMA2
 ```
 In the above case the ens4f0 delays will be overridden, while ens4f0 / ens8f0 delays will remain default
 #### Error handling
