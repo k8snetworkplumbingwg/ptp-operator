@@ -49,50 +49,50 @@ Examples of pin API settings for 3-NIC T-BC:
 
 ```yaml
 e810:
-	pins:
-		# Slot 4 outputs 1PPS from SMA1 and SMA2 to slots 5 and 8
-		ens4f0:
-			SMA1: 2 1
-			SMA2: 2 2
-			U.FL1: 0 1
-			U.FL2: 0 2
-		ens5f0:
-			SMA1: 1 1
-			SMA2: 2 2
-			U.FL1: 0 1
-			U.FL2: 0 2
-		ens8f0:
-			SMA1: 1 1
-			SMA2: 2 2
-			U.FL1: 0 1
-			U.FL2: 0 2
+  pins:
+  # Slot 4 outputs 1PPS from SMA1 and SMA2 to slots 5 and 8
+    ens4f0:
+      SMA1: 2 1
+      SMA2: 2 2
+      U.FL1: 0 1
+      U.FL2: 0 2
+    ens5f0:
+      SMA1: 1 1
+      SMA2: 2 2
+      U.FL1: 0 1
+      U.FL2: 0 2
+    ens8f0:
+      SMA1: 1 1
+      SMA2: 2 2
+      U.FL1: 0 1
+      U.FL2: 0 2
 ```
 
 1. Interconnections API
 
 ```yaml
 e810:
-	interconnections:
-	- id: ens5f0
-		part: E810-XXVDA4T
-		inputPhaseDelay:
-			connector: SMA1
-		delayPs: 920
-		phaseOutputConnectors:
-		- SMA2
-	- id: ens4f0
-		part: E810-XXVDA4T
-		gnssInput: false
-		phaseOutputConnectors:
-		- SMA1
-		- SMA2
-	- id: ens8f0
-		part: E810-XXVDA4T
-		inputPhaseDelay:
-			connector: SMA1
-		delayPs: 920
-		phaseOutputConnectors:
-		- SMA2
+  interconnections:
+  - id: ens5f0
+    part: E810-XXVDA4T
+    inputPhaseDelay:
+      connector: SMA1
+      delayPs: 920
+      phaseOutputConnectors:
+      - SMA2
+  - id: ens4f0
+    part: E810-XXVDA4T
+    gnssInput: false
+    phaseOutputConnectors:
+    - SMA1
+    - SMA2
+  - id: ens8f0
+    part: E810-XXVDA4T
+    inputPhaseDelay:
+      connector: SMA1
+      delayPs: 920
+      phaseOutputConnectors:
+      - SMA2
 
 ```   
 
