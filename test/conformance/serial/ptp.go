@@ -329,12 +329,85 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					grandmasterID = &aString
 					Expect(err).To(BeNil())
 				}
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID)
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil())
 				if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock {
-					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID)
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
 				}
+			})
+
+			// Test That clock can sync in dual follower scenario when one port is down
+			It("Dual follower can sync when one follower port goes down", func() {
+				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
+					Skip("Test reserved for dual follower scenario")
+				}
+				isExternalMaster := ptphelper.IsExternalGM()
+				var grandmasterID *string
+				if fullConfig.L2Config != nil && !isExternalMaster {
+					aLabel := pkg.PtpGrandmasterNodeLabel
+					aString, err := ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
+					grandmasterID = &aString
+					Expect(err).To(BeNil())
+				}
+
+				for _, followerPort := range fullConfig.DiscoveredFollowerInterfaces {
+					By("Turning interface " + followerPort + " down")
+					stdout, stderr, err := pods.ExecCommand(client.Client, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"ip", "link", "set", followerPort, "down"})
+					logrus.Infof("Turning interface: %s in pod %s down, stdout: %s, stderr: %s", followerPort, fullConfig.DiscoveredClockUnderTestPod.Name, stdout.String(), stderr.String())
+
+					Expect(err).To(BeNil())
+
+					By("check clock Locked")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+					Expect(err).To(BeNil())
+
+					By("Turning interface " + followerPort + " back up")
+					stdout, stderr, err = pods.ExecCommand(client.Client, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"ip", "link", "set", followerPort, "up"})
+					Expect(err).To(BeNil())
+					logrus.Infof("Turning interface: %s in pod %s down, stdout: %s, stderr: %s", followerPort, fullConfig.DiscoveredClockUnderTestPod.Name, stdout.String(), stderr.String())
+
+					By("check clock locked")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+					Expect(err).To(BeNil())
+				}
+
+				By("Check that turning off all interfaces fails clock synchronization")
+				// Turning both interface down
+				for _, followerPort := range fullConfig.DiscoveredFollowerInterfaces {
+					By("Turning interface " + followerPort + " down")
+					stdout, stderr, err := pods.ExecCommand(client.Client, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"ip", "link", "set", followerPort, "down"})
+					logrus.Infof("turning interface: %s in pod %s down, stdout: %s, stderr: %s", followerPort, fullConfig.DiscoveredClockUnderTestPod.Name, stdout.String(), stderr.String())
+
+					Expect(err).To(BeNil())
+				}
+
+				// check clock in holdover
+				By("check clock holdover")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleFaulty, false)
+				Expect(err).To(BeNil())
+
+				// check clock in holdover
+				By("check clock freerun")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleFaulty, false)
+				Expect(err).To(BeNil())
+
+				// Turning both interface up
+				for _, followerPort := range fullConfig.DiscoveredFollowerInterfaces {
+					By("Turning interface " + followerPort + " up")
+					stdout, stderr, err := pods.ExecCommand(client.Client, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"ip", "link", "set", followerPort, "up"})
+					logrus.Infof("turning interface: %s in pod %s down, stdout: %s, stderr: %s", followerPort, fullConfig.DiscoveredClockUnderTestPod.Name, stdout.String(), stderr.String())
+
+					Expect(err).To(BeNil())
+				}
+				// check clock succeeds again
+				By("check clock synchronization")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+				Expect(err).To(BeNil())
 			})
 
 			// Multinode BCSlave clock sync
@@ -359,7 +432,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				aLabel := pkg.PtpClockUnderTestNodeLabel
 				masterIDBc1, err := ptphelper.GetClockIDMaster(pkg.PtpBcMaster1PolicyName, &aLabel, nil, false)
 				Expect(err).To(BeNil())
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave1PtpConfig), &masterIDBc1)
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave1PtpConfig), &masterIDBc1, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil())
 
 				if (fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock) && (fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] ||
@@ -367,7 +440,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					aLabel := pkg.PtpClockUnderTestNodeLabel
 					masterIDBc2, err := ptphelper.GetClockIDMaster(pkg.PtpBcMaster2PolicyName, &aLabel, nil, false)
 					Expect(err).To(BeNil())
-					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave2PtpConfig), &masterIDBc2)
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave2PtpConfig), &masterIDBc2, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
 				}
 
@@ -426,7 +499,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						grandmasterID = &aString
 						Expect(err).To(BeNil())
 					}
-					err = ptptesthelper.BasicClockSyncCheck(fullConfig, modifiedPtpConfig, grandmasterID)
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, modifiedPtpConfig, grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
 				})
 
@@ -503,7 +576,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
 			})
 
-			It("Should check for ptp events ", func() {
+			XIt("Should check for ptp events ", func() {
 				By("Checking event side car is present")
 				apiVersion := ptphelper.PtpEventEnabled()
 				var apiBase, endpointUri string

@@ -109,10 +109,12 @@ type TestConfig struct {
 	DiscoveredSlave2PtpConfig,
 	DiscoveredClockUnderTestPtpConfig,
 	DiscoveredClockUnderTestSecondaryPtpConfig *ptpDiscoveryRes
-	DiscoveredClockUnderTestPod *v1core.Pod
-	L2Config                    l2lib.L2Info
-	FoundSolutions              map[string]bool
-	PtpEventsIsConsumerReady    bool
+	DiscoveredClockUnderTestPod  *v1core.Pod
+	DiscoveredMasterInterfaces   []string
+	DiscoveredFollowerInterfaces []string
+	L2Config                     l2lib.L2Info
+	FoundSolutions               map[string]bool
+	PtpEventsIsConsumerReady     bool
 }
 type solverData struct {
 	// Mapping between clock role and port depending on the algo
@@ -201,7 +203,7 @@ func (obj *TestConfig) String() (out string) {
 	if obj == nil {
 		return "nil"
 	}
-	out += fmt.Sprintf("PtpModeDesired= %s, PtpModeDiscovered= %s, Status= %s, DiscoveredClockUnderTestPtpConfig= %s, DiscoveredClockUnderTestSecondaryPtpConfig= %s, DiscoveredGrandMasterPtpConfig= %s, DiscoveredSlave1PtpConfig= %s, DiscoveredSlave2PtpConfig= %s, PtpEventsIsConsumerReady= %t, ",
+	out += fmt.Sprintf("PtpModeDesired= %s, PtpModeDiscovered= %s, Status= %s, DiscoveredClockUnderTestPtpConfig= %s, DiscoveredClockUnderTestSecondaryPtpConfig= %s, DiscoveredGrandMasterPtpConfig= %s, DiscoveredSlave1PtpConfig= %s, DiscoveredSlave2PtpConfig= %s, PtpEventsIsConsumerReady= %t, DiscoveredFollowerInterfaces=%v, DiscoveredMasterInterfaces=%v",
 		obj.PtpModeDesired,
 		obj.PtpModeDiscovered,
 		obj.Status,
@@ -210,7 +212,9 @@ func (obj *TestConfig) String() (out string) {
 		obj.DiscoveredGrandMasterPtpConfig,
 		obj.DiscoveredSlave1PtpConfig,
 		obj.DiscoveredSlave2PtpConfig,
-		obj.PtpEventsIsConsumerReady)
+		obj.PtpEventsIsConsumerReady,
+		obj.DiscoveredFollowerInterfaces,
+		obj.DiscoveredMasterInterfaces)
 	if obj.DiscoveredClockUnderTestPod != nil {
 		out += fmt.Sprintf("DiscoveredClockUnderTestPodName=%s, DiscoveredClockUnderTestNodeName=%s",
 			obj.DiscoveredClockUnderTestPod.Name,
@@ -621,7 +625,7 @@ func CreatePtpConfigGrandMaster(nodeName, ifName string) error {
 	}
 
 	// Grandmaster
-	gmConfig := BasePtp4lConfig + "\nmasterOnly 1"
+	gmConfig := BasePtp4lConfig + "\nmasterOnly 1\npriority1 0\npriority2 0\n"
 	ptp4lsysOpts := ptp4lEthernet
 	phc2sysOpts := phc2sysGM
 	return createConfig(pkg.PtpGrandMasterPolicyName,
@@ -1403,26 +1407,31 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 	numSecondaryBC := 0
 
 	GlobalConfig.Status = DiscoveryFailureStatus
-
+	var allMasterIfs []string
+	var allFollowerIfs []string
 	for _, ptpConfig := range ptpConfigClockUnderTest {
-		masterIf := len(ptpv1.GetInterfaces(*ptpConfig, ptpv1.Master))
-		slaveIf := len(ptpv1.GetInterfaces(*ptpConfig, ptpv1.Slave))
+		masterIfStrings := ptpv1.GetInterfaces(*ptpConfig, ptpv1.Master)
+		masterIfCount := len(masterIfStrings)
+		followerIfStrings := ptpv1.GetInterfaces(*ptpConfig, ptpv1.Slave)
+		slaveIfCount := len(followerIfStrings)
+		allMasterIfs = append(allMasterIfs, masterIfStrings...)
+		allFollowerIfs = append(allFollowerIfs, followerIfStrings...)
 		// OC
-		if masterIf == 0 && slaveIf == 1 && len(ptpConfigClockUnderTest) == 1 {
+		if masterIfCount == 0 && slaveIfCount == 1 && len(ptpConfigClockUnderTest) == 1 {
 			GlobalConfig.PtpModeDiscovered = OrdinaryClock
 			GlobalConfig.Status = DiscoverySuccessStatus
 			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			break
 		}
 		// Dual Follower
-		if masterIf == 0 && slaveIf == 2 && len(ptpConfigClockUnderTest) == 1 {
+		if masterIfCount == 0 && slaveIfCount == 2 && len(ptpConfigClockUnderTest) == 1 {
 			GlobalConfig.PtpModeDiscovered = DualFollowerClock
 			GlobalConfig.Status = DiscoverySuccessStatus
 			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			break
 		}
 		// BC and Dual NIC BC
-		if masterIf >= 1 && slaveIf >= 1 {
+		if masterIfCount >= 1 && slaveIfCount >= 1 {
 			if numBc == 0 {
 				GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			}
@@ -1435,7 +1444,7 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			}
 		}
 		//WPC GM state
-		if masterIf >= 2 && slaveIf == 0 && !strings.EqualFold(*ptpConfig.Spec.Profile[0].Ts2PhcConf, "") {
+		if masterIfCount >= 2 && slaveIfCount == 0 && !strings.EqualFold(*ptpConfig.Spec.Profile[0].Ts2PhcConf, "") {
 
 			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			GlobalConfig.PtpModeDiscovered = TelcoGrandMasterClock
@@ -1456,4 +1465,6 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 		logrus.Error("Could not determine ptp daemon pod selected by ptpconfig")
 	}
 	GlobalConfig.DiscoveredClockUnderTestPod = pod
+	GlobalConfig.DiscoveredFollowerInterfaces = allFollowerIfs
+	GlobalConfig.DiscoveredMasterInterfaces = allMasterIfs
 }
