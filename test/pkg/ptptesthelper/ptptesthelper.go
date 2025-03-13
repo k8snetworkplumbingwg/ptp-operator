@@ -27,7 +27,8 @@ import (
 )
 
 // waits for the foreign master to appear in the logs and checks the clock accuracy
-func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpConfig, gmID *string) error {
+func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpConfig, gmID *string,
+	expectedClockState metrics.MetricClockState, expectedClockRole metrics.MetricRole, isCheckOffset bool) error {
 	if gmID != nil {
 		logrus.Infof("expected master=%s", *gmID)
 	}
@@ -76,12 +77,13 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 	}
 
 	Eventually(func() error {
-		err = metrics.CheckClockRoleAndOffset(ptpConfig, label, nodeName)
+		err = metrics.CheckClockRoleAndOffset(ptpConfig, label, nodeName, expectedClockState, expectedClockRole, isCheckOffset)
 		if err != nil {
 			logrus.Infof(fmt.Sprintf("CheckClockRoleAndOffset Failed because of err: %s", err))
 		}
 		return err
 	}, pkg.TimeoutIn10Minutes, pkg.Timeout10Seconds).Should(BeNil(), fmt.Sprintf("Timeout to detect metrics for ptpconfig %s", ptpConfig.Name))
+	logrus.Info("Clock In Sync")
 	return nil
 }
 
@@ -181,10 +183,10 @@ func CheckSlaveSyncWithMaster(fullConfig testconfig.TestConfig) {
 			logrus.Warnf("could not determine the Grandmaster ID (probably because the log no longer exists), err=%s", err)
 		}
 	}
-	err := BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID)
+	err := BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 	Expect(err).NotTo(HaveOccurred())
 	if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock {
-		err = BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID)
+		err = BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 		Expect(err).NotTo(HaveOccurred())
 	}
 }
