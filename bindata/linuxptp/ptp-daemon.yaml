@@ -56,6 +56,16 @@ spec:
               containerPort: 9091
             - name: api-port
               containerPort: 9043
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - /usr/local/bin/healthcheck.sh
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           env:
             - name: PTP_PLUGIN
               value: "true"
@@ -130,7 +140,7 @@ spec:
             name: ptp-configmap
         - name: leap-volume
           configMap:
-            name: leap-configmap            
+            name: leap-configmap
         - name: linuxptp-certs
           secret:
             secretName: linuxptp-daemon-secret
