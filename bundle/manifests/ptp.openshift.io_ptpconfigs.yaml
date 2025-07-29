@@ -50,6 +50,10 @@ spec:
                       type: string
                     phc2sysOpts:
                       type: string
+                    chronydConf:
+                      type: string
+                    chronydOpts:
+                      type: string
                     plugins:
                       additionalProperties:
                         x-kubernetes-preserve-unknown-fields: true
