@@ -16,17 +16,22 @@ import (
 func InitLogLevel() {
 	logLevelString, isSet := os.LookupEnv("PTP_LOG_LEVEL")
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	var logLevel, err = logrus.ParseLevel(logLevelString)
-	if err != nil {
-		logrus.Error("PTP_LOG_LEVEL environment set with an invalid value, defaulting to INFO \n Valid values are:  trace, debug, info, warn, error, fatal, panic")
-		logLevel = logrus.InfoLevel
-	}
+
+	var logLevel logrus.Level
+	var err error
+
 	if !isSet {
-		logrus.Infof("PTP_LOG_LEVEL environment not set, defaulting to INFO \n Valid values are:  trace, debug, info, warn, error, fatal, panic")
+		logrus.Infof("PTP_LOG_LEVEL environment not set, defaulting to INFO\nValid values are: trace, debug, info, warn, error, fatal, panic")
 		logLevel = logrus.InfoLevel
+	} else {
+		logLevel, err = logrus.ParseLevel(logLevelString)
+		if err != nil {
+			logrus.Errorf("PTP_LOG_LEVEL set to invalid value '%s', defaulting to INFO\nValid values are: trace, debug, info, warn, error, fatal, panic", logLevelString)
+			logLevel = logrus.InfoLevel
+		}
 	}
 
-	logrus.Info("Log level set to: ", logLevel)
+	logrus.Infof("Log level set to: %s", logLevel)
 	logrus.SetLevel(logLevel)
 	SetLogFormat()
 }

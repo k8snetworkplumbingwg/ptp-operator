@@ -2,15 +2,21 @@ package test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -24,7 +30,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptptesthelper"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/apps/v1"
-	v1core "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,6 +43,7 @@ import (
 
 	fbprotocol "github.com/facebook/time/ptp/protocol"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
+
 	k8sv1 "k8s.io/api/core/v1"
 )
 
@@ -137,7 +144,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 	})
 
 	Describe("PTP e2e tests", func() {
-		var ptpPods *v1core.PodList
+		var ptpPods *corev1.PodList
 		var fifoPriorities map[string]int64
 		var fullConfig testconfig.TestConfig
 		portEngine := ptptesthelper.PortEngine{}
@@ -292,7 +299,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 			AfterEach(func() {
-				portEngine.TurnAllPortsUp()
+				_ = portEngine.TurnAllPortsUp()
 			})
 			// 25733
 			It("PTP daemon apply match rule based on nodeLabel", func() {
@@ -481,7 +488,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			// 25743
 			It("Can provide a profile with higher priority", func() {
-				var testPtpPod v1core.Pod
+				var testPtpPod corev1.Pod
 				isExternalMaster := ptphelper.IsExternalGM()
 				if fullConfig.PtpModeDesired == testconfig.Discovery {
 					Skip("Skipping because adding a different profile and no modifications are allowed in discovery mode")
@@ -503,6 +510,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						policyName = pkg.PtpBcMaster1PolicyName
 					case testconfig.DualNICBoundaryClock:
 						policyName = pkg.PtpBcMaster1PolicyName
+					default:
+						panic("unhandled ptp config case")
 					}
 					ptpConfigToModify, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), policyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
@@ -582,9 +591,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			// 27324
 			It("verifies on slave", func() {
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-					Skip("Skipping: test not valid for WPC GM (Telco Grandmaster Clock) config")
-				}
 				Eventually(func() string {
 					buf, _, _ := pods.ExecCommand(client.Client, false, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 					return buf.String()
@@ -683,7 +689,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 		})
 
-		Context("Running with event enabled, v1 regression", func() {
+		Context("Running with event enabled, v1/v2 regression", func() {
 			BeforeEach(func() {
 				if !event.IsV1EventRegressionNeeded() {
 					Skip("Skipping, test PTP events v1 regression is for 4.16 and 4.17 only")
@@ -826,7 +832,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							for name, opts := range profile.Plugins {
 								if name == "reference" {
 									optsByteArray, _ := json.Marshal(opts)
-									json.Unmarshal(optsByteArray, &pluginOpts)
+									_ = json.Unmarshal(optsByteArray, &pluginOpts)
 									pluginConfigExists = true
 								}
 							}
@@ -942,7 +948,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 			AfterEach(func() {
-				err := namespaces.Clean(openshiftPtpNamespace, "testpod-", client.Client)
+				err := namespaces.Clean(pkg.PtpLinuxDaemonNamespace, "testpod-", client.Client)
 				Expect(err).ToNot(HaveOccurred())
 			})
 			var _ = Context("Negative - run pmc in a new unprivileged pod on the slave node", func() {
@@ -952,19 +958,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						return buf.String()
 					}, 1*time.Minute, 2*time.Second).ShouldNot(ContainSubstring("failed to open configuration file"), "ptp config file was not created")
 					podDefinition := pods.DefinePodOnNode(pkg.PtpLinuxDaemonNamespace, fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
-					hostPathDirectoryOrCreate := v1core.HostPathDirectoryOrCreate
-					podDefinition.Spec.Volumes = []v1core.Volume{
+					hostPathDirectoryOrCreate := corev1.HostPathDirectoryOrCreate
+					podDefinition.Spec.Volumes = []corev1.Volume{
 						{
 							Name: "socket-dir",
-							VolumeSource: v1core.VolumeSource{
-								HostPath: &v1core.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/run/ptp",
 									Type: &hostPathDirectoryOrCreate,
 								},
 							},
 						},
 					}
-					podDefinition.Spec.Containers[0].VolumeMounts = []v1core.VolumeMount{
+					podDefinition.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
 						{
 							Name:      "socket-dir",
 							MountPath: "/var/run",
@@ -976,7 +982,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
-					err = pods.WaitForCondition(client.Client, pod, v1core.ContainersReady, v1core.ConditionTrue, 3*time.Minute)
+					err = pods.WaitForCondition(client.Client, pod, corev1.ContainersReady, corev1.ConditionTrue, 3*time.Minute)
 					Expect(err).ToNot(HaveOccurred())
 					Eventually(func() string {
 						buf, _, _ := pods.ExecCommand(client.Client, true, pod, pod.Spec.Containers[0].Name, []string{"pmc", "-b", "0", "-u", "-f", "/var/run/ptp4l.0.config", "GET CURRENT_DATA_SET"})
@@ -995,19 +1001,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					}, 1*time.Minute, 2*time.Second).ShouldNot(ContainSubstring("failed to open configuration file"), "ptp config file was not created")
 					podDefinition, _ := pods.RedefineAsPrivileged(
 						pods.DefinePodOnNode(pkg.PtpLinuxDaemonNamespace, fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName), "")
-					hostPathDirectoryOrCreate := v1core.HostPathDirectoryOrCreate
-					podDefinition.Spec.Volumes = []v1core.Volume{
+					hostPathDirectoryOrCreate := corev1.HostPathDirectoryOrCreate
+					podDefinition.Spec.Volumes = []corev1.Volume{
 						{
 							Name: "socket-dir",
-							VolumeSource: v1core.VolumeSource{
-								HostPath: &v1core.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/run/ptp",
 									Type: &hostPathDirectoryOrCreate,
 								},
 							},
 						},
 					}
-					podDefinition.Spec.Containers[0].VolumeMounts = []v1core.VolumeMount{
+					podDefinition.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
 						{
 							Name:      "socket-dir",
 							MountPath: "/var/run",
@@ -1019,7 +1025,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
-					err = pods.WaitForCondition(client.Client, pod, v1core.ContainersReady, v1core.ConditionTrue, 3*time.Minute)
+					err = pods.WaitForCondition(client.Client, pod, corev1.ContainersReady, corev1.ConditionTrue, 3*time.Minute)
 					Expect(err).ToNot(HaveOccurred())
 					Eventually(func() string {
 						buf, _, _ := pods.ExecCommand(client.Client, true, pod, pod.Spec.Containers[0].Name, []string{"pmc", "-b", "0", "-u", "-f", "/var/run/ptp4l.0.config", "GET CURRENT_DATA_SET"})
@@ -1053,6 +1059,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 			Context("Metrics reported by PTP pods", func() {
 				It("Should all be reported by prometheus", func() {
+					// Check if test configuration discovery was successful
+					if fullConfig.DiscoveredClockUnderTestPod == nil {
+						Skip("Skipping prometheus metrics test - clock under test pod not discovered")
+					}
+
 					var err error
 					ptpPods, err = client.Client.Pods(openshiftPtpNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: "app=linuxptp-daemon",
@@ -1114,6 +1125,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		Context("WPC GM Verification Tests", func() {
 			BeforeEach(func() {
+
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
@@ -1174,7 +1186,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 
 				By("checking GM clock state locked", func() {
-
 					/*
 						I0917 19:22:15.000310 2843504 event.go:430] dpll State s2, gnss State s2, tsphc state s2, gm state s2
 						phc2sys[2355322.441]: [ptp4l.0.config:6] CLOCK_REALTIME phc offset       137 s2 freq   -7709 delay    514
@@ -1306,6 +1317,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
 					stopChan := make(chan struct{})
+					var once sync.Once
+					safeClose := func() {
+						once.Do(func() {
+							close(stopChan)
+						})
+					}
+					defer safeClose()
 
 					// Start coldboot in background
 					go coldBootInBackground(stopChan, fullConfig)
@@ -1320,7 +1338,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					checkClockStateForProcess(fullConfig, "dpll", "2")
 
 					// Once holdover detected, stop coldboot loop
-					close(stopChan)
+					safeClose()
 
 					// Give GNSS time to fully recover
 					time.Sleep(pkg.Timeout10Seconds)
@@ -1351,17 +1369,137 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		})
 
-		Context("WPC GM Events verification (V2)", func() {
-			BeforeEach(func() {
+		Context("WPC GM Events verification (V2)", Ordered, func() {
+			BeforeAll(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
 				}
-			})
-			PIt("Verify Events during GNSS Loss flow (V2)", func() {
+				// Check if test configuration discovery was successful
+				if fullConfig.DiscoveredClockUnderTestPod == nil {
+					Skip("Skipping event tests - clock under test pod not discovered")
+				}
 
-			})
-			PIt("Verify Events during GNSS holdover state  (V2)", func() {
+				/*
+					# TYPE openshift_ptp_clock_class gauge
+					# openshift_ptp_clock_class{node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="ptp4l"} 6
+				*/
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
+				// Setup event consumer pod and service
+				err := setupEventConsumerPodAndService()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up port forwarding to access the PTP event publisher service
+				err = setupPTPEventPortForward(fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up port forwarding to access the event consumer service
+				err = setupEventConsumerPortForward()
+				Expect(err).NotTo(HaveOccurred())
+			})
+			AfterAll(func() {
+				// Clean up port forwarding
+				killCmd := exec.Command("pkill", "-f", "oc.*port-forward.*9043")
+				killCmd.Run() // Ignore errors
+
+				// Clean up event consumer port forwarding
+				killCmd = exec.Command("pkill", "-f", "oc.*port-forward.*27018")
+				killCmd.Run() // Ignore errors
+
+				// Cleanup event consumer pod and service
+				err := cleanupEventConsumerPodAndService()
+				if err != nil {
+					logrus.Warnf("Failed to cleanup event consumer pod and service: %v", err)
+				}
+			})
+
+			var _ = Describe("T-GM Event Tests", func() {
+				It("should verify clock class change when GNSS is lost ", func() {
+
+					// Get the full node name for the subscription
+					fullNodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+					// Use reusable event subscription and verification
+					publisherURL := "http://localhost:9043"
+					consumerURL := "http://localhost:27018"
+					// Use the correct endpoint URI that matches our event consumer service
+					endpointURI := "http://ptp-event-consumer-service:27017/event"
+
+					logrus.Infof("Full node name: %s", fullNodeName)
+					logrus.Infof("EndpointUri: %s", endpointURI)
+					logrus.Infof("Publisher URL: %s", publisherURL)
+					logrus.Infof("Consumer URL: %s", consumerURL)
+
+					// Check if the event consumer is ready
+					logrus.Info("Checking if event consumer is ready...")
+					if err := checkServiceHealth(consumerURL+"/health", 5*time.Second); err != nil {
+						logrus.Warnf("Failed to check consumer health: %v", err)
+					}
+
+					// STEP 1: Subscribe to clock class events
+					logrus.Info("=== STEP 1: Subscribing to clock class events ===")
+					clockClassResourceAddress := event.FormatResourceAddress(event.ClockClassResourceAddress, fullNodeName)
+					logrus.Infof("Clock class resource address: %s", clockClassResourceAddress)
+					subscriptionErr := event.SubscribeToEvent(publisherURL, clockClassResourceAddress, endpointURI)
+					if subscriptionErr != nil {
+						logrus.Errorf("Clock class subscription failed: %v", subscriptionErr)
+						Fail(fmt.Sprintf("Failed to subscribe to clock class events: %v", subscriptionErr))
+					}
+					logrus.Info("SUCCESS: Clock class subscription created successfully")
+
+					// STEP 1.1: Subscribe to GNSS events
+					logrus.Info("=== STEP 1.1: Subscribing to GNSS events ===")
+					gnssResourceAddress := event.FormatResourceAddress(event.GNSSSyncStatusResourceAddress, fullNodeName)
+					logrus.Infof("GNSS resource address: %s", gnssResourceAddress)
+					gnssSubscriptionErr := event.SubscribeToEvent(publisherURL, gnssResourceAddress, endpointURI)
+					if gnssSubscriptionErr != nil {
+						logrus.Errorf("GNSS subscription failed: %v", gnssSubscriptionErr)
+						Fail(fmt.Sprintf("Failed to subscribe to GNSS events: %v", gnssSubscriptionErr))
+					}
+					logrus.Info("SUCCESS: GNSS subscription created successfully")
+
+					// STEP 1.2: Subscribe to PTP state events
+					logrus.Info("=== STEP 1.2: Subscribing to PTP state events ===")
+					ptpStateResourceAddress := event.FormatResourceAddress(event.LockStateResourceAddress, fullNodeName)
+					logrus.Infof("PTP state resource address: %s", ptpStateResourceAddress)
+					ptpStateSubscriptionErr := event.SubscribeToEvent(publisherURL, ptpStateResourceAddress, endpointURI)
+					if ptpStateSubscriptionErr != nil {
+						logrus.Errorf("PTP state subscription failed: %v", ptpStateSubscriptionErr)
+						Fail(fmt.Sprintf("Failed to subscribe to PTP state events: %v", ptpStateSubscriptionErr))
+					}
+					logrus.Info("SUCCESS: PTP state subscription created successfully")
+
+					stopChan := make(chan struct{})
+					var once sync.Once
+					safeClose := func() {
+						once.Do(func() {
+							close(stopChan)
+						})
+					}
+					defer safeClose()
+
+					// Start coldboot in background
+					go coldBootInBackground(stopChan, fullConfig)
+
+					// STEP 2: Verify events during GNSS loss (holdover state after cold boot)
+					// Keep cold boot running while verifying events
+					verifyClockClassEvent(fullConfig, consumerURL, fbprotocol.ClockClass7)
+					verifyGnssEvent(fullConfig, consumerURL, ptpEvent.ANTENNA_DISCONNECTED)
+					verifyPtpStateEvent(fullConfig, consumerURL, ptpEvent.HOLDOVER)
+
+					// Now stop cold boot to allow GNSS to recover
+					logrus.Info("Stopping cold boot to allow GNSS recovery...")
+					safeClose()
+
+					// Give GNSS time to fully recover
+					time.Sleep(pkg.Timeout10Seconds)
+
+					// STEP 3: Verify events during GNSS recovery (locked state)
+					// Now wait for a system to go back to LOCKED (ClockClass 6)
+					verifyClockClassEvent(fullConfig, consumerURL, fbprotocol.ClockClass6)
+					verifyGnssEvent(fullConfig, consumerURL, ptpEvent.SYNCHRONIZED)
+					verifyPtpStateEvent(fullConfig, consumerURL, ptpEvent.LOCKED)
+				})
 			})
 
 		})
@@ -1684,7 +1822,7 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 		// Get the latest metrics output
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 		if err != nil {
-			fmt.Fprintf(GinkgoWriter, "Error executing curl: %v\n", err)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Error executing curl: %v\n", err)
 			return false
 		}
 
@@ -1700,10 +1838,10 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 				process := matches[2]
 				class := matches[3]
 				if strings.TrimSpace(process) == "ptp4l" && strings.TrimSpace(class) == expectedState {
-					fmt.Fprintf(GinkgoWriter, "Found clock class %s for process %s\n", class, process)
+					_, _ = fmt.Fprintf(GinkgoWriter, "Found clock class %s for process %s\n", class, process)
 					return true
 				} else {
-					fmt.Fprintf(GinkgoWriter, "Match found but process=%s class=%s, not matching yet...\n", process, class)
+					_, _ = fmt.Fprintf(GinkgoWriter, "Match found but process=%s class=%s, not matching yet...\n", process, class)
 				}
 			}
 		}
@@ -1914,7 +2052,7 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 			fmt.Fprintf(GinkgoWriter, "✅ Clock class reached %s\n", expectedState)
 			break
 		} else {
-			fmt.Fprintf(GinkgoWriter, "Clock class not yet %s, retrying...\n", expectedState)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Clock class not yet %s, retrying...\n", expectedState)
 		}
 
 		time.Sleep(pkg.TimeoutInterval2Seconds)
@@ -1944,4 +2082,416 @@ func checkClockClassStateReturnBool(fullConfig testconfig.TestConfig, expectedSt
 		}
 	}
 	return false
+}
+
+func setupPTPEventPortForward(fullConfig testconfig.TestConfig) error {
+	// Get the node name for the PTP event publisher service
+	// The service name uses only the first part of the node name (before the first dot)
+	fullNodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+	nodeName := strings.Split(fullNodeName, ".")[0]
+
+	// Verify the service is accessible directly
+	serviceName := fmt.Sprintf("ptp-event-publisher-service-%s", nodeName)
+	logrus.Infof("Setting up port-forward to PTP event publisher service: %s", serviceName)
+
+	// Kill any existing port-forward on port 9043
+	killCmd := exec.Command("pkill", "-f", "oc.*port-forward.*9043")
+	killCmd.Run() // Ignore errors, just try to kill existing processes
+	time.Sleep(1 * time.Second)
+
+	// Set up port-forward from the PTP event publisher service to localhost
+	portForwardCmd := exec.Command("oc", "port-forward", "-n", "openshift-ptp", "svc/"+serviceName, "9043:9043")
+
+	// Preserve KUBECONFIG
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		portForwardCmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	}
+
+	portForwardCmd.Stdout = os.Stdout
+	portForwardCmd.Stderr = os.Stderr
+
+	err := portForwardCmd.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start port-forward: %v", err)
+	}
+
+	// Wait for port-forward to establish and verify it's working
+	logrus.Info("Waiting for port-forward to establish...")
+	Eventually(func() error {
+		resp, err := http.Get("http://localhost:9043/api/ocloudNotifications/v2/subscriptions")
+		if err != nil {
+			return fmt.Errorf("port-forward not ready: %v", err)
+		}
+		defer resp.Body.Close()
+		// Accept both 200 (OK) and 405 (Method Not Allowed) as valid responses
+		// 200 means GET is supported and returns existing subscriptions
+		// 405 means GET is not supported but service is accessible
+		if resp.StatusCode != 200 && resp.StatusCode != 405 {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+		return nil
+	}, 30*time.Second, 2*time.Second).Should(Succeed(), "Port-forward not established")
+
+	logrus.Info("Port-forward established successfully")
+	return nil
+}
+
+func setupEventConsumerPodAndService() error {
+	logrus.Info("Setting up event consumer pod and service")
+
+	// Clean up any existing pod and service first
+	cleanupCmd := exec.Command("kubectl", "delete", "pod", "ptp-event-consumer", "-n", "openshift-ptp", "--ignore-not-found=true")
+	cleanupCmd.Run() // Ignore errors, just try to clean up
+	cleanupSvcCmd := exec.Command("kubectl", "delete", "service", "ptp-event-consumer-service", "-n", "openshift-ptp", "--ignore-not-found=true")
+	cleanupSvcCmd.Run()         // Ignore errors, just try to clean up
+	time.Sleep(2 * time.Second) // Wait for cleanup
+
+	// Create the event consumer pod using YAML file
+	logrus.Info("Creating event consumer pod...")
+	// Use a relative path since we're already in the test/conformance/serial directory
+	podYamlPath := "event-consumer-pod.yaml"
+	logrus.Infof("Using pod YAML path: %s", podYamlPath)
+
+	podCmd := exec.Command("kubectl", "apply", "-f", podYamlPath)
+	podOutput, err := podCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create event consumer pod: %v, output: %s", err, string(podOutput))
+	}
+	logrus.Infof("Pod creation output: %s", string(podOutput))
+
+	// Wait for the pod to be ready
+	logrus.Info("Waiting for event consumer pod to be ready...")
+	waitCmd := exec.Command("kubectl", "wait", "--for=condition=ready", "pod/ptp-event-consumer", "-n", "openshift-ptp", "--timeout=60s")
+	if err := waitCmd.Run(); err != nil {
+		return fmt.Errorf("failed to wait for event consumer pod to be ready: %v", err)
+	}
+
+	// Wait a bit more for pod to be fully ready
+	time.Sleep(5 * time.Second)
+
+	// Check pod status
+	logrus.Info("Checking pod status...")
+	statusCmd := exec.Command("kubectl", "get", "pod", "ptp-event-consumer", "-n", "openshift-ptp", "-o", "jsonpath={.status.phase}")
+	statusOutput, err := statusCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get pod status: %v", err)
+	}
+	logrus.Infof("Pod status: %s", string(statusOutput))
+
+	// Create the service for the event consumer using YAML file
+	logrus.Info("Creating event consumer service...")
+	// Use a relative path since we're already in the test/conformance/serial directory
+	serviceYamlPath := "event-consumer-service.yaml"
+	logrus.Infof("Using service YAML path: %s", serviceYamlPath)
+
+	serviceCmd := exec.Command("kubectl", "apply", "-f", serviceYamlPath)
+	serviceOutput, err := serviceCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create event consumer service: %v, output: %s", err, string(serviceOutput))
+	}
+	logrus.Infof("Service creation output: %s", string(serviceOutput))
+
+	// Wait a bit for the service to be ready
+	time.Sleep(5 * time.Second)
+
+	// The pod will automatically compile and run the event consumer
+	// Wait a bit for the server to start
+	logrus.Info("Waiting for event consumer to start...")
+	time.Sleep(10 * time.Second)
+
+	// Test the event consumer health endpoint
+	logrus.Info("Testing event consumer health endpoint...")
+	testCmd := exec.Command("kubectl", "exec", "-n", "openshift-ptp", "ptp-event-consumer", "--", "wget", "-qO-", "http://localhost:27017/health")
+	if err := testCmd.Run(); err != nil {
+		logrus.Warnf("Failed to test event consumer health via kubectl exec: %v", err)
+		// Try alternative health check method
+		logrus.Info("Trying alternative health check method...")
+		if err := checkServiceHealthWithRetry("http://localhost:27018/health", 10*time.Second, 1*time.Second); err != nil {
+			return fmt.Errorf("failed to test event consumer health: %v", err)
+		}
+	}
+
+	logrus.Info("Event consumer pod and service setup completed successfully")
+	return nil
+}
+
+func cleanupEventConsumerPodAndService() error {
+	logrus.Info("Cleaning up event consumer pod and service")
+
+	// Delete the service using YAML file
+	serviceYamlPath := "event-consumer-service.yaml"
+	svcCmd := exec.Command("kubectl", "delete", "-f", serviceYamlPath, "--ignore-not-found=true")
+	if err := svcCmd.Run(); err != nil {
+		logrus.Warnf("Failed to delete event consumer service: %v", err)
+	}
+
+	// Delete the pod using YAML file
+	podYamlPath := "event-consumer-pod.yaml"
+	podCmd := exec.Command("kubectl", "delete", "-f", podYamlPath, "--ignore-not-found=true")
+	if err := podCmd.Run(); err != nil {
+		logrus.Warnf("Failed to delete event consumer pod: %v", err)
+	}
+
+	logrus.Info("Event consumer pod and service cleanup completed")
+	return nil
+}
+
+func setupEventConsumerPortForward() error {
+	logrus.Info("Setting up port-forward to event consumer service")
+
+	// Kill any existing port-forward on port 27018
+	killCmd := exec.Command("pkill", "-f", "oc.*port-forward.*27018")
+	killCmd.Run() // Ignore errors, just try to kill existing processes
+	time.Sleep(1 * time.Second)
+
+	// Set up port-forward from the event consumer service to localhost
+	portForwardCmd := exec.Command("oc", "port-forward", "-n", "openshift-ptp", "svc/ptp-event-consumer-service", "27018:27017")
+
+	// Preserve KUBECONFIG
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		portForwardCmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	}
+
+	portForwardCmd.Stdout = os.Stdout
+	portForwardCmd.Stderr = os.Stderr
+
+	err := portForwardCmd.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start event consumer port-forward: %v", err)
+	}
+
+	// Wait for port-forward to establish and verify it's working
+	logrus.Info("Waiting for event consumer port-forward to establish...")
+	if err := checkServiceHealthWithRetry("http://localhost:27018/health", 30*time.Second, 2*time.Second); err != nil {
+		return fmt.Errorf("event consumer port-forward not established: %v", err)
+	}
+
+	logrus.Info("Event consumer port-forward established successfully")
+	return nil
+}
+
+// verifyClockClassEvent verifies that a clock class event is received
+func verifyClockClassEvent(fullConfig testconfig.TestConfig, consumerURL string, expectedClockClass fbprotocol.ClockClass) {
+
+	logrus.Infof("=== Verifying clock class %d event (holdover state) ===", expectedClockClass)
+
+	// Check for existing events before starting
+	logrus.Info("Checking for existing events before clock class change...")
+	existingEvents, err := event.ReadEventsFromHTTP(consumerURL)
+	if err != nil {
+		logrus.Warnf("Failed to read existing events: %v", err)
+	} else {
+		logrus.Infof("Found %d existing events before clock class change", len(existingEvents))
+		for i, eventStr := range existingEvents {
+			logrus.Infof("Existing event %d: %s", i+1, eventStr[:min(len(eventStr), 200)])
+		}
+	}
+
+	// First, wait for the clock class to actually change to the expected value
+	logrus.Infof("Waiting for clock class to change to %d...", expectedClockClass)
+	waitForClockClass(fullConfig, strconv.Itoa(int(expectedClockClass)))
+
+	// Now that clock class has changed, wait for the corresponding event
+	logrus.Infof("Clock class changed to %d, now waiting for clock class %d event...", expectedClockClass, expectedClockClass)
+	result := event.VerifyEventWithPredicate(
+		consumerURL,
+		event.IsClockClassEventPredicate(expectedClockClass),
+		10*time.Second,
+	)
+
+	if !result.Success {
+		// If we get here, the test failed
+		if result.Error != nil {
+			logrus.Errorf("Event verification failed with error: %v", result.Error)
+			Fail(fmt.Sprintf("Failed to verify clock class %d event: %v", expectedClockClass, result.Error))
+		} else {
+			logrus.Errorf("Clock class %d event not found. Retrieved %d events, waited %v", expectedClockClass, result.EventCount, result.WaitTime)
+			Fail(fmt.Sprintf("Clock class %d event not found. Retrieved %d events, waited %v", expectedClockClass, result.EventCount, result.WaitTime))
+		}
+	}
+
+	logrus.Infof("SUCCESS: Successfully verified clock class %d event (holdover state)! Retrieved %d events, waited %v", expectedClockClass, result.EventCount, result.WaitTime)
+}
+
+// verifyGnssEvent verifies that a GNSS state change event is received
+func verifyGnssEvent(fullConfig testconfig.TestConfig, consumerURL string, expectedState ptpEvent.SyncState) {
+	logrus.Infof("=== Verifying GNSS state %s event ===", string(expectedState))
+
+	// Check for existing events before starting
+	logrus.Info("Checking for existing events before GNSS state change...")
+	existingEvents, err := event.ReadEventsFromHTTP(consumerURL)
+	if err != nil {
+		logrus.Warnf("Failed to read existing events: %v", err)
+	} else {
+		logrus.Infof("Found %d existing events before GNSS state change", len(existingEvents))
+		for i, eventStr := range existingEvents {
+			logrus.Infof("Existing event %d: %s", i+1, eventStr[:min(len(eventStr), 200)])
+		}
+	}
+
+	// Wait for the GNSS state change event
+	logrus.Infof("Waiting for GNSS state %s event...", string(expectedState))
+	result := event.VerifyEventWithPredicate(
+		consumerURL,
+		event.IsGnssEventPredicate(expectedState),
+		10*time.Second,
+	)
+
+	if !result.Success {
+		// If we get here, the test failed
+		if result.Error != nil {
+			logrus.Errorf("Event verification failed with error: %v", result.Error)
+			Fail(fmt.Sprintf("Failed to verify GNSS state %s event: %v", string(expectedState), result.Error))
+		} else {
+			logrus.Errorf("GNSS state %s event not found. Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime)
+			Fail(fmt.Sprintf("GNSS state %s event not found. Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime))
+		}
+	}
+
+	logrus.Infof("SUCCESS: Successfully verified GNSS state %s event! Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime)
+}
+
+// verifyPtpStateEvent verifies that a PTP state change event is received
+func verifyPtpStateEvent(fullConfig testconfig.TestConfig, consumerURL string, expectedState ptpEvent.SyncState) {
+	logrus.Infof("=== Verifying PTP state %s event ===", string(expectedState))
+
+	// Check for existing events before starting
+	logrus.Info("Checking for existing events before PTP state change...")
+	existingEvents, err := event.ReadEventsFromHTTP(consumerURL)
+	if err != nil {
+		logrus.Warnf("Failed to read existing events: %v", err)
+	} else {
+		logrus.Infof("Found %d existing events before PTP state change", len(existingEvents))
+		for i, eventStr := range existingEvents {
+			logrus.Infof("Existing event %d: %s", i+1, eventStr[:min(len(eventStr), 200)])
+		}
+	}
+
+	// Wait for the PTP state change event
+	logrus.Infof("Waiting for PTP state %s event...", string(expectedState))
+	result := event.VerifyEventWithPredicate(
+		consumerURL,
+		event.IsPtpStateEventPredicate(expectedState),
+		10*time.Second,
+	)
+
+	if !result.Success {
+		// If we get here, the test failed
+		if result.Error != nil {
+			logrus.Errorf("Event verification failed with error: %v", result.Error)
+			Fail(fmt.Sprintf("Failed to verify PTP state %s event: %v", string(expectedState), result.Error))
+		} else {
+			logrus.Errorf("PTP state %s event not found. Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime)
+			Fail(fmt.Sprintf("PTP state %s event not found. Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime))
+		}
+	}
+
+	logrus.Infof("SUCCESS: Successfully verified PTP state %s event! Retrieved %d events, waited %v", string(expectedState), result.EventCount, result.WaitTime)
+}
+
+// checkServiceHealth performs a health check on a service endpoint
+func checkServiceHealth(serviceURL string, timeout time.Duration) error {
+	logrus.Infof("Checking health of service: %s", serviceURL)
+
+	resp, err := http.Get(serviceURL)
+	if err != nil {
+		return fmt.Errorf("health check failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	logrus.Infof("Health check response - Status: %d, Body: %s", resp.StatusCode, string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check failed with status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// checkServiceHealthWithRetry performs a health check with retry logic
+func checkServiceHealthWithRetry(serviceURL string, timeout time.Duration, interval time.Duration) error {
+	logrus.Infof("Checking health of service with retry: %s", serviceURL)
+
+	Eventually(func() error {
+		return checkServiceHealth(serviceURL, timeout)
+	}, timeout, interval).Should(Succeed())
+	return nil
+}
+
+func checkAvailableEventTypes(fullConfig testconfig.TestConfig) {
+	logrus.Info("Checking available publishers...")
+
+	// Get the node name for the PTP event publisher service
+	fullNodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+	nodeName := strings.Split(fullNodeName, ".")[0]
+	serviceURL := fmt.Sprintf("http://ptp-event-publisher-service-%s.openshift-ptp.svc.cluster.local:9043", nodeName)
+
+	// Get available publishers
+	resp, err := http.Get(serviceURL + "/api/ocloudNotifications/v2/publishers")
+	if err != nil {
+		logrus.Warnf("Failed to get publishers: %v", err)
+	} else {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		logrus.Infof("Publishers response - Status: %d, Body: %s", resp.StatusCode, string(body))
+	}
+}
+
+func checkServiceDetails(fullConfig testconfig.TestConfig) {
+	// Get the node name for the PTP event publisher service
+	fullNodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+	nodeName := strings.Split(fullNodeName, ".")[0]
+	serviceName := fmt.Sprintf("ptp-event-publisher-service-%s", nodeName)
+
+	logrus.Infof("Checking service: %s", serviceName)
+
+	// Check if service exists
+	cmd := exec.Command("oc", "get", "svc", serviceName, "-n", "openshift-ptp", "-o", "yaml")
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	}
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	if err != nil {
+		logrus.Errorf("Failed to get service details: %v", err)
+		logrus.Errorf("Command output: %s", out.String())
+		return
+	}
+
+	logrus.Infof("Service details:\n%s", out.String())
+
+	// Check service endpoints
+	cmd = exec.Command("oc", "get", "endpoints", serviceName, "-n", "openshift-ptp", "-o", "yaml")
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	}
+
+	out.Reset()
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err = cmd.Run()
+	if err != nil {
+		logrus.Errorf("Failed to get endpoints details: %v", err)
+		logrus.Errorf("Command output: %s", out.String())
+		return
+	}
+
+	logrus.Infof("Endpoints details:\n%s", out.String())
+
+	// Check if the service is accessible directly
+	logrus.Info("Testing service accessibility directly...")
+	serviceURL := fmt.Sprintf("http://ptp-event-publisher-service-%s.openshift-ptp.svc.cluster.local:9043", nodeName)
+	resp, err := http.Get(serviceURL + "/api/ocloudNotifications/v2/subscriptions")
+	if err != nil {
+		logrus.Errorf("Direct service access test failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	logrus.Infof("Direct service access test response - Status: %d, Body: %s", resp.StatusCode, string(body))
 }
