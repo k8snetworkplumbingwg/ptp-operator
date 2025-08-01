@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ptp-event-consumer
+  namespace: openshift-ptp
+  labels:
+    app: ptp-event-consumer
+spec:
+  containers:
+  - name: event-consumer
+    image: golang:1.24-alpine
+    command: ["/bin/sh"]
+    args:
+      - -c
+      - |
+        echo "Starting PTP event consumer..."
+        
+        # Create a simple Go event consumer
+        cat > /tmp/event-consumer.go << 'EOF'
+        package main
+
+        import (
+          "encoding/json"
+          "fmt"
+          "io"
+          "log"
+          "net/http"
+          "os"
+          "sync"
+          "time"
+        )
+
+
+        var (
+          recentEvents = make(map[string]string) // event type -> latest event
+          eventsMutex  sync.RWMutex
+        )
+
+        func main() {
+          const (
+            port       = ":27017"
+            eventsFile = "/shared/events.log"
+          )
+
+          fmt.Printf("Starting PTP event consumer on port %s\n", port)
+          fmt.Printf("Events will be written to %s\n", eventsFile)
+
+          http.HandleFunc("/event", func(w http.ResponseWriter, r *http.Request) {
+            defer r.Body.Close()
+
+            if r.Method != "POST" {
+              http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+              return
+            }
+
+            clientIP := r.RemoteAddr
+            fmt.Printf("Received POST request from %s: %s\n", clientIP, r.URL.Path)
+
+            bodyBytes, err := io.ReadAll(r.Body)
+            if err != nil {
+              log.Printf("error reading event %v", err)
+              http.Error(w, "Bad Request", http.StatusBadRequest)
+              return
+            }
+
+            e := string(bodyBytes)
+            if e != "" {
+              log.Printf("received event %s", string(bodyBytes))
+
+              eventLog := fmt.Sprintf("%s: %s\n", time.Now().Format(time.RFC3339), e)
+              if err := appendToFile(eventsFile, eventLog); err != nil {
+                log.Printf("Error writing to file: %v", err)
+              } else {
+                fmt.Printf("Event written to %s\n", eventsFile)
+              }
+
+              eventsMutex.Lock()
+              recentEvents[e] = e // Store latest event by type (using full event as key for now)
+              eventsMutex.Unlock()
+            }
+
+            w.WriteHeader(http.StatusNoContent)
+          })
+
+          http.HandleFunc("/events/recent", func(w http.ResponseWriter, r *http.Request) {
+            if r.Method != "GET" {
+              http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+              return
+            }
+
+            eventsMutex.RLock()
+            events := make([]string, 0, len(recentEvents))
+            for _, event := range recentEvents {
+              events = append(events, event)
+            }
+            eventsMutex.RUnlock()
+
+            w.Header().Set("Content-Type", "application/json")
+            w.WriteHeader(http.StatusOK)
+            response := map[string]interface{}{
+              "events":    events,
+              "count":     len(events),
+              "timestamp": time.Now().Format(time.RFC3339),
+            }
+            json.NewEncoder(w).Encode(response)
+          })
+
+          http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+            w.Header().Set("Content-Type", "application/json")
+            w.WriteHeader(http.StatusOK)
+            response := map[string]interface{}{
+              "status":    "healthy",
+              "message":   "Event consumer is running",
+              "timestamp": time.Now().Format(time.RFC3339),
+            }
+            json.NewEncoder(w).Encode(response)
+          })
+
+          fmt.Printf("Server listening on port %s\n", port)
+          if err := http.ListenAndServe(port, nil); err != nil {
+            log.Fatalf("Server failed to start: %v", err)
+          }
+        }
+
+        func appendToFile(filename, content string) error {
+          file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+          if err != nil {
+            return err
+          }
+          defer file.Close()
+          _, err = file.WriteString(content)
+          return err
+        }
+        EOF
+
+        cd /tmp
+        go build -o event-consumer event-consumer.go
+        ./event-consumer
+    ports:
+    - containerPort: 27017
+    volumeMounts:
+    - name: shared-volume
+      mountPath: /shared
+  volumes:
+  - name: shared-volume
+    emptyDir: {}
+  restartPolicy: Never

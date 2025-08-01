@@ -1398,7 +1398,7 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 	return nil
 }
 
-// helper function to add an interface to the ptp4l config
+// AddInterface helper function to add an interface to the ptp4l config
 func AddInterface(ptpConfig, iface string, masterOnly int) (updatedPtpConfig string) {
 	return fmt.Sprintf("%s\n[%s]\nmasterOnly %d", ptpConfig, iface, masterOnly)
 }
