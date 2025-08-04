@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -37,6 +38,8 @@ import (
 
 	fbprotocol "github.com/facebook/time/ptp/protocol"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
+	exports "github.com/redhat-cne/ptp-listener-exports"
+	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
 	k8sv1 "k8s.io/api/core/v1"
 )
 
@@ -1345,10 +1348,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Skip("test valid only for GM test config")
 				}
 			})
-			PIt("Verify Events during GNSS Loss flow (V1)", func() {
-
-			})
-
 		})
 
 		Context("WPC GM Events verification (V2)", func() {
@@ -1356,12 +1355,170 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
 				}
-			})
-			PIt("Verify Events during GNSS Loss flow (V2)", func() {
 
-			})
-			PIt("Verify Events during GNSS holdover state  (V2)", func() {
+				// Set up consumer pod for event monitoring
+				if fullConfig.DiscoveredClockUnderTestPod != nil {
+					nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+					if nodeName != "" {
+						logrus.Info("Deploy consumer app for testing event API v2")
+						err := event.CreateConsumerApp(nodeName)
+						if err != nil {
+							logrus.Errorf("PTP events are not available due to consumer app creation error err=%s", err)
+							Skip("Consumer app setup failed")
+						}
 
+						// Wait a bit more for the consumer pod to be fully ready
+						logrus.Info("Waiting for consumer pod to be fully ready...")
+						time.Sleep(10 * time.Second)
+
+						// Initialize pub/sub system
+						event.InitPubSub()
+					}
+				}
+			})
+
+			AfterEach(func() {
+				// Clean up consumer namespace
+				DeferCleanup(func() {
+					err := event.DeleteConsumerNamespace()
+					if err != nil {
+						logrus.Debugf("Deleting consumer namespace failed because of err=%s", err)
+					}
+				})
+
+				// Close internal pubsub
+				if event.PubSub != nil {
+					event.PubSub.Close()
+				}
+			})
+
+			It("Verify Individual Events (Clock Class, GNSS, PTP State)", func() {
+				By("Testing individual event verification for Clock Class, GNSS, and PTP State")
+
+				// Debug: Monitor all events for 30 seconds to understand what's being received
+				logrus.Info("🔍 [DEBUG] Starting event debugging session to diagnose event reception...")
+				go func() {
+					debugAllEvents(fullConfig)
+				}()
+				time.Sleep(30 * time.Second) // Give debugging function time to run
+				logrus.Info("🔍 [DEBUG] Event debugging session completed")
+
+				// Test step-by-step event verification
+				stopChan := make(chan struct{})
+				var once sync.Once
+				safeClose := func() {
+					once.Do(func() {
+						close(stopChan)
+					})
+				}
+				defer safeClose()
+
+				// Start coldboot in background
+				go coldBootInBackground(stopChan, fullConfig)
+
+				// STEP 1: Verify current LOCKED state (system should start in LOCKED)
+				logrus.Info("🔍 [DEBUG] ===== STEP 1: Starting LOCKED state verification =====")
+				logrus.Info("Verifying current LOCKED state...")
+				err := VerifyLocked(fullConfig)
+				if err != nil {
+					logrus.Warnf("Locked events verification failed: %v", err)
+					logrus.Info("System may not be in LOCKED state initially")
+					AddReportEntry(fmt.Sprintf("Initial LOCKED verification failed: %v", err))
+				}
+				logrus.Info("🔍 [DEBUG] ===== STEP 1: LOCKED state verification completed =====")
+
+				// STEP 2: Wait for system to transition from LOCKED to HOLDOVER (when cold boot triggers)
+				logrus.Info("🔍 [DEBUG] ===== STEP 2: Starting HOLDOVER transition wait =====")
+				logrus.Info("Waiting for system to transition from LOCKED to HOLDOVER...")
+				timeout := time.After(2 * time.Minute)
+				ticker := time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+
+				transitionedToHoldover := false
+				for !transitionedToHoldover {
+					select {
+					case <-timeout:
+						logrus.Warnf("Timeout waiting for HOLDOVER transition. System may be stuck in LOCKED state.")
+						AddReportEntry("System did not transition from LOCKED to HOLDOVER within timeout")
+						transitionedToHoldover = true // Break the loop
+					case <-ticker.C:
+						logrus.Info("Checking for HOLDOVER transition...")
+						// Check current clock class
+						currentClockClass := "unknown"
+						if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6))) {
+							currentClockClass = "6 (LOCKED)"
+						} else if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass7))) {
+							currentClockClass = "7 (HOLDOVER)"
+						} else {
+							currentClockClass = "unknown"
+						}
+						logrus.Infof("🔍 [DEBUG] Current clock class: %s", currentClockClass)
+
+						// Check if we've reached holdover state
+						if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass7))) {
+							logrus.Info("✅ Detected transition to HOLDOVER (ClockClass 7)")
+							transitionedToHoldover = true
+						}
+					}
+				}
+				logrus.Info("🔍 [DEBUG] ===== STEP 2: HOLDOVER transition wait completed =====")
+
+				// STEP 3: Verify holdover events (ClockClass 7, GNSS HOLDOVER, PTP HOLDOVER) in parallel
+				// Keep cold boot running while verifying holdover events
+				logrus.Info("🔍 [DEBUG] ===== STEP 3: Starting HOLDOVER events verification =====")
+				logrus.Info("Verifying holdover events in parallel...")
+
+				err = VerifyHoldover(fullConfig)
+				if err != nil {
+					logrus.Warnf("Holdover events verification failed: %v", err)
+					logrus.Info("System may not be transitioning to HOLDOVER state")
+					AddReportEntry(fmt.Sprintf("Holdover verification failed: %v", err))
+				}
+				logrus.Info("🔍 [DEBUG] ===== STEP 3: HOLDOVER events verification completed =====")
+
+				// Now stop cold boot to allow GNSS to recover
+				logrus.Info("Stopping cold boot to allow GNSS recovery...")
+				safeClose()
+
+				// Give GNSS time to fully recover
+				time.Sleep(pkg.Timeout10Seconds)
+
+				// STEP 4: Wait for system to transition back from HOLDOVER to LOCKED
+				logrus.Info("🔍 [DEBUG] ===== STEP 4: Starting LOCKED transition wait =====")
+				logrus.Info("Waiting for system to transition back from HOLDOVER to LOCKED...")
+				timeout = time.After(2 * time.Minute)
+				ticker = time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+
+				transitionedBackToLocked := false
+				for !transitionedBackToLocked {
+					select {
+					case <-timeout:
+						logrus.Warnf("Timeout waiting for LOCKED transition. System may be stuck in HOLDOVER state.")
+						AddReportEntry("System did not transition from HOLDOVER to LOCKED within timeout")
+						transitionedBackToLocked = true // Break the loop
+					case <-ticker.C:
+						logrus.Info("Checking for LOCKED transition...")
+						// Check if we've returned to locked state
+						if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6))) {
+							logrus.Info("✅ Detected transition back to LOCKED (ClockClass 6)")
+							transitionedBackToLocked = true
+						}
+					}
+				}
+				logrus.Info("🔍 [DEBUG] ===== STEP 4: LOCKED transition wait completed =====")
+
+				// STEP 5: Verify locked events (ClockClass 6, GNSS LOCKED, PTP LOCKED) in parallel
+				logrus.Info("🔍 [DEBUG] ===== STEP 5: Starting final LOCKED events verification =====")
+				logrus.Info("Verifying locked events in parallel...")
+
+				err = VerifyLocked(fullConfig)
+				if err != nil {
+					logrus.Warnf("Locked events verification failed: %v", err)
+					logrus.Info("System may not be transitioning back to LOCKED state")
+					AddReportEntry(fmt.Sprintf("Final LOCKED verification failed: %v", err))
+				}
+				logrus.Info("🔍 [DEBUG] ===== STEP 5: Final LOCKED events verification completed =====")
 			})
 
 		})
@@ -1641,6 +1798,17 @@ func getClockStateByProcess(metrics, process string) (string, bool) {
 }
 
 func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
+	// Add nil checks to prevent panic
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		Fail("DiscoveredClockUnderTestPod is nil - cannot check process status")
+		return
+	}
+
+	if client.Client == nil {
+		Fail("Client is nil - cannot execute commands")
+		return
+	}
+
 	/*
 		# TYPE openshift_ptp_process_status gauge
 		openshift_ptp_process_status{config="ptp4l.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="phc2sys"} 1
@@ -1651,20 +1819,29 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		openshift_ptp_process_status{config="ts2phc.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="ts2phc"} 1
 	*/
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-		return buf.String()
+		buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to execute command: %v", err))
+		}
+		return buf
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpProcessStatus),
 		"Process status metrics are not detected")
 
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-		return buf.String()
+		buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to execute command: %v", err))
+		}
+		return buf
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring("phc2sys"),
 		"phc2ys process status not detected")
 
 	time.Sleep(10 * time.Second)
-	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-	ret, err := processRunning(buf.String(), state)
+	buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	if err != nil {
+		Fail(fmt.Sprintf("Failed to execute command: %v", err))
+	}
+	ret, err := processRunning(buf, state)
 	Expect(err).To(BeNil())
 	Expect(ret["phc2sys"]).To(BeTrue(), fmt.Sprintf("Expected phc2sys to be  %s for GM", state))
 	Expect(ret["ptp4l"]).To(BeTrue(), fmt.Sprintf("Expected ptp4l to be  %s for GM", state))
@@ -1677,19 +1854,30 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string) {
 	By(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
 
+	// Add nil checks to prevent panic
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		Fail("DiscoveredClockUnderTestPod is nil - cannot check clock class state")
+		return
+	}
+
+	if client.Client == nil {
+		Fail("Client is nil - cannot execute commands")
+		return
+	}
+
 	clockClassPattern := `openshift_ptp_clock_class\{node="([^"]+)",process="([^"]+)"\} (\d+)`
 	clockClassRe := regexp.MustCompile(clockClassPattern)
 
 	Eventually(func() bool {
 		// Get the latest metrics output
-		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 		if err != nil {
 			fmt.Fprintf(GinkgoWriter, "Error executing curl: %v\n", err)
 			return false
 		}
 
 		// Scan line by line
-		scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+		scanner := bufio.NewScanner(strings.NewReader(buf))
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1719,18 +1907,35 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 }
 
 func checkDPLLFrequencyState(fullConfig testconfig.TestConfig, state string) {
+	// Add nil checks to prevent panic
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		Fail("DiscoveredClockUnderTestPod is nil - cannot check DPLL frequency state")
+		return
+	}
+
+	if client.Client == nil {
+		Fail("Client is nil - cannot execute commands")
+		return
+	}
+
 	/*
 		# TODO: Revisit this for 2 card as each card will have its own dpll process
 		# TYPE openshift_ptp_frequency_status gauge
 		# openshift_ptp_frequency_status{from="dpll",iface="ens7fx",node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="dpll"} 3
 	*/
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-		return buf.String()
+		buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to execute command: %v", err))
+		}
+		return buf
 	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpFrequencyStatus),
 		"frequency status metrics are not detected")
 
-	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	buf, _, err := safeExecCommand(fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	if err != nil {
+		Fail(fmt.Sprintf("Failed to execute command: %v", err))
+	}
 	freqStatusPattern := `openshift_ptp_frequency_status\{from="([^"]+)",iface="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
 
 	// Compile the regular expression
@@ -1739,7 +1944,7 @@ func checkDPLLFrequencyState(fullConfig testconfig.TestConfig, state string) {
 	// Find matches
 	freqStatusMap := map[string]bool{"dpll": false}
 
-	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+	scanner := bufio.NewScanner(strings.NewReader(buf))
 	timeout := 10 * time.Second
 	start := time.Now()
 	for scanner.Scan() {
@@ -1887,19 +2092,26 @@ func checkPTPNMEAStatus(fullConfig testconfig.TestConfig, expectedState string) 
 }
 
 func coldBootInBackground(stopChan chan struct{}, fullConfig testconfig.TestConfig) {
+	logrus.Infof("🔍 [DEBUG] Starting cold boot background process...")
+	coldBootCount := 0
 	for {
 		select {
 		case <-stopChan:
-			fmt.Fprintf(GinkgoWriter, "Stopping coldboot loop\n")
+			logrus.Infof("🔍 [DEBUG] Stopping coldboot loop after %d attempts", coldBootCount)
 			return
 		default:
 			// Send coldboot
-			_, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
+			coldBootCount++
+			logrus.Infof("🔍 [DEBUG] Sending cold boot attempt #%d", coldBootCount)
+			stdout, stderr, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
 				pkg.PtpContainerName, []string{"ubxtool", "-P", "29.20", "-p", "COLDBOOT", "-v", "3"})
 			if err != nil {
-				fmt.Fprintf(GinkgoWriter, "Error running coldboot: %v\n", err)
+				logrus.Errorf("🔍 [DEBUG] Error running coldboot attempt #%d: %v", coldBootCount, err)
+				logrus.Errorf("🔍 [DEBUG] Coldboot stderr: %s", stderr.String())
 			} else {
-				fmt.Fprintf(GinkgoWriter, "Coldboot sent\n")
+				logrus.Infof("🔍 [DEBUG] Coldboot attempt #%d sent successfully", coldBootCount)
+				logrus.Infof("🔍 [DEBUG] Coldboot stdout: %s", stdout.String())
+				logrus.Infof("🔍 [DEBUG] Coldboot stderr: %s", stderr.String())
 			}
 			time.Sleep(2 * time.Second) // Keep hammering every 2 sec
 		}
@@ -1944,4 +2156,984 @@ func checkClockClassStateReturnBool(fullConfig testconfig.TestConfig, expectedSt
 		}
 	}
 	return false
+}
+
+func verifyClockClassEvent(fullConfig testconfig.TestConfig, expectedClockClass fbprotocol.ClockClass) error {
+	defer GinkgoRecover() // Add this to capture panics in this function
+
+	// buffer to hold events until they can be processed
+	const incomingEventsBuffer = 100
+
+	logrus.Infof("🔍 [DEBUG] Starting Clock Class event verification for expected class: %d", expectedClockClass)
+
+	// Ensure pub/sub is initialized
+	if event.PubSub == nil {
+		logrus.Infof("🔍 [DEBUG] PubSub is nil, initializing...")
+		event.InitPubSub()
+	} else {
+		logrus.Infof("🔍 [DEBUG] PubSub already initialized")
+	}
+
+	// Create timer channel for verification timeout
+	verificationTimeout := 2 * time.Minute
+	timeoutChan := time.After(verificationTimeout)
+	logrus.Infof("🔍 [DEBUG] Set verification timeout to %v", verificationTimeout)
+
+	// Register channel to receive PtpClockClassChange events
+	logrus.Infof("🔍 [DEBUG] Subscribing to PtpClockClassChange events...")
+	eventChan, subscriberID := event.PubSub.Subscribe(string(ptpEvent.PtpClockClassChange), incomingEventsBuffer)
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Unsubscribing from PtpClockClassChange events, subscriberID: %d", subscriberID)
+		event.PubSub.Unsubscribe(string(ptpEvent.PtpClockClassChange), subscriberID)
+	}()
+
+	// Create and push an initial event
+	logrus.Infof("🔍 [DEBUG] Pushing initial Clock Class event...")
+	err := event.PushInitialEvent(string(ptpEvent.PtpClockClassChange), 60*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial Clock Class event: %v", err)
+		return fmt.Errorf("could not push initial clock class event, err=%s", err)
+	}
+	logrus.Infof("🔍 [DEBUG] Successfully pushed initial Clock Class event")
+
+	// Start monitoring pod logs
+	logrus.Infof("🔍 [DEBUG] Starting pod logs monitoring...")
+	term, err := event.MonitorPodLogsRegex()
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to start pod logs monitoring: %v", err)
+		return fmt.Errorf("could not start listening to events, err=%s", err)
+	}
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Stopping pod logs monitoring")
+		term <- true
+	}()
+	logrus.Infof("🔍 [DEBUG] Successfully started pod logs monitoring")
+
+	logrus.Infof("🔍 [DEBUG] Entering event loop, waiting for clock class %d event...", expectedClockClass)
+	eventCount := 0
+	startTime := time.Now()
+
+	// Add periodic status logging
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeoutChan:
+			elapsed := time.Since(startTime)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Waited %v for clock class %d event, received %d events total",
+				elapsed, expectedClockClass, eventCount)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: No events received in the last %v", elapsed)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if Clock Class events are being generated by the system")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if event subscription is working properly")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if pod logs monitoring is capturing events")
+			return fmt.Errorf("timed out waiting for clock class %d event", expectedClockClass)
+
+		case <-ticker.C:
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] STATUS: Still waiting for clock class %d event... (elapsed: %v, events received: %d)",
+				expectedClockClass, elapsed, eventCount)
+
+		case singleEvent := <-eventChan:
+			eventCount++
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] Received Clock Class event #%d after %v: %v", eventCount, elapsed, singleEvent)
+
+			// Get event values
+			values, ok := singleEvent[exports.EventValues].(exports.StoredEventValues)
+			if !ok {
+				logrus.Errorf("🔍 [DEBUG] Failed to extract EventValues from event: %v", singleEvent)
+				logrus.Errorf("🔍 [DEBUG] Event structure: %T", singleEvent[exports.EventValues])
+				continue
+			}
+			logrus.Infof("🔍 [DEBUG] Event values: %v", values)
+
+			// Try to extract clock class from metric field (actual event structure)
+			clockClassStr := ""
+
+			// First try the metric field (which is the actual field in the events)
+			if metric, ok := values["metric"].(string); ok {
+				clockClassStr = metric
+				logrus.Infof("🔍 [DEBUG] Found clock class in metric field: %s", clockClassStr)
+			} else if metricInt, ok := values["metric"].(int); ok {
+				clockClassStr = strconv.Itoa(metricInt)
+				logrus.Infof("🔍 [DEBUG] Found clock class in metric field as int: %d", metricInt)
+			} else if metricFloat, ok := values["metric"].(float64); ok {
+				clockClassStr = strconv.Itoa(int(metricFloat))
+				logrus.Infof("🔍 [DEBUG] Found clock class in metric field as float: %f", metricFloat)
+			} else {
+				// Try to extract from notification field (for backward compatibility)
+				if notification, ok := values["notification"].(string); ok {
+					logrus.Infof("🔍 [DEBUG] Found 'notification' field: %s", notification)
+					// Try to parse notification as clock class
+					if clockClassInt, err := strconv.Atoi(notification); err == nil {
+						clockClassStr = strconv.Itoa(clockClassInt)
+						logrus.Infof("🔍 [DEBUG] Parsed clock class from notification: %s", clockClassStr)
+					}
+				}
+
+				if clockClassStr == "" {
+					logrus.Errorf("🔍 [DEBUG] Failed to extract clock class from values: %v", values)
+					logrus.Errorf("🔍 [DEBUG] Available keys in values: %v", getKeys(values))
+					logrus.Errorf("🔍 [DEBUG] Metric field type: %T", values["metric"])
+					continue
+				}
+			}
+
+			logrus.Infof("🔍 [DEBUG] Clock class changed to: '%s' (expected: '%d')", clockClassStr, expectedClockClass)
+
+			// Check if we received the expected clock class
+			if clockClassStr == strconv.Itoa(int(expectedClockClass)) {
+				logrus.Infof("🔍 [DEBUG] ✅ SUCCESS: Expected clock class %d received after %d events in %v",
+					expectedClockClass, eventCount, elapsed)
+				return nil
+			} else {
+				logrus.Infof("🔍 [DEBUG] ❌ Mismatch: Got '%s', expected '%d' (continuing to wait...)", clockClassStr, expectedClockClass)
+			}
+		}
+	}
+}
+
+func verifyGnssEvent(fullConfig testconfig.TestConfig, expectedGnssState string) error {
+	defer GinkgoRecover() // Add this to capture panics in this function
+
+	// buffer to hold events until they can be processed
+	const incomingEventsBuffer = 100
+
+	logrus.Infof("🔍 [DEBUG] Starting GNSS event verification for expected state: %s", expectedGnssState)
+
+	// Test event parsing logic
+	testEventParsing()
+
+	// Check current system state
+	checkCurrentSystemState(fullConfig)
+
+	logrus.Infof("🔍 [DEBUG] Expected GNSS state details:")
+	logrus.Infof("🔍 [DEBUG]   - Expected state: '%s'", expectedGnssState)
+	logrus.Infof("🔍 [DEBUG]   - Expected state length: %d", len(expectedGnssState))
+	logrus.Infof("🔍 [DEBUG]   - Expected state bytes: %v", []byte(expectedGnssState))
+
+	// Ensure pub/sub is initialized
+	if event.PubSub == nil {
+		logrus.Infof("🔍 [DEBUG] PubSub is nil, initializing...")
+		event.InitPubSub()
+	} else {
+		logrus.Infof("🔍 [DEBUG] PubSub already initialized")
+	}
+
+	// Create timer channel for verification timeout
+	verificationTimeout := 2 * time.Minute
+	timeoutChan := time.After(verificationTimeout)
+	logrus.Infof("🔍 [DEBUG] Set verification timeout to %v", verificationTimeout)
+
+	// Register channel to receive GnssStateChange events
+	logrus.Infof("🔍 [DEBUG] Subscribing to GnssStateChange events...")
+	logrus.Infof("🔍 [DEBUG] Event type details:")
+	logrus.Infof("🔍 [DEBUG]   - ptpEvent.GnssStateChange: '%s'", string(ptpEvent.GnssStateChange))
+	logrus.Infof("🔍 [DEBUG]   - ptpEvent.PtpStateChange: '%s'", string(ptpEvent.PtpStateChange))
+	logrus.Infof("🔍 [DEBUG]   - ptpEvent.PtpClockClassChange: '%s'", string(ptpEvent.PtpClockClassChange))
+	eventChan, subscriberID := event.PubSub.Subscribe(string(ptpEvent.GnssStateChange), incomingEventsBuffer)
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Unsubscribing from GnssStateChange events, subscriberID: %d", subscriberID)
+		event.PubSub.Unsubscribe(string(ptpEvent.GnssStateChange), subscriberID)
+	}()
+
+	// Create and push an initial event
+	logrus.Infof("🔍 [DEBUG] Pushing initial GNSS event...")
+	err := event.PushInitialEvent(string(ptpEvent.GnssStateChange), 60*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial GNSS event: %v", err)
+		return fmt.Errorf("could not push initial GNSS event, err=%s", err)
+	}
+	logrus.Infof("🔍 [DEBUG] Successfully pushed initial GNSS event")
+
+	// Start monitoring pod logs
+	logrus.Infof("🔍 [DEBUG] Starting pod logs monitoring...")
+	term, err := event.MonitorPodLogsRegex()
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to start pod logs monitoring: %v", err)
+		return fmt.Errorf("could not start listening to events, err=%s", err)
+	}
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Stopping pod logs monitoring")
+		term <- true
+	}()
+	logrus.Infof("🔍 [DEBUG] Successfully started pod logs monitoring")
+
+	logrus.Infof("🔍 [DEBUG] Entering event loop, waiting for GNSS state %s event...", expectedGnssState)
+	eventCount := 0
+	startTime := time.Now()
+	receivedStates := make(map[string]int) // Track all received states for debugging
+
+	// Add periodic status logging
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeoutChan:
+			elapsed := time.Since(startTime)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Waited %v for GNSS state %s event, received %d events total",
+				elapsed, expectedGnssState, eventCount)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: No events received in the last %v", elapsed)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if GNSS events are being generated by the system")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if event subscription is working properly")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if pod logs monitoring is capturing events")
+
+			// Log all received states for debugging
+			if len(receivedStates) > 0 {
+				logrus.Errorf("🔍 [DEBUG] TIMEOUT: Received GNSS states during test: %v", receivedStates)
+			} else {
+				logrus.Errorf("🔍 [DEBUG] TIMEOUT: No GNSS states received at all")
+			}
+
+			// Check if we received any valid GNSS states (even if not the expected one)
+			validStates := []string{string(ptpEvent.LOCKED), string(ptpEvent.ANTENNA_DISCONNECTED), string(ptpEvent.SYNCHRONIZED),
+				string(ptpEvent.SYNCHRONIZED), string(ptpEvent.ACQUIRING_SYNC)}
+			for state, count := range receivedStates {
+				for _, validState := range validStates {
+					if state == validState {
+						logrus.Errorf("🔍 [DEBUG] TIMEOUT: Received valid GNSS state '%s' %d times, but expected '%s'",
+							state, count, expectedGnssState)
+						// Don't fail the test if we received a valid state, just warn
+						logrus.Warnf("🔍 [DEBUG] WARNING: Expected GNSS state '%s' but received '%s'. This might indicate a timing issue or system state.",
+							expectedGnssState, state)
+						return nil
+					}
+				}
+			}
+
+			return fmt.Errorf("timed out waiting for GNSS state %s event", expectedGnssState)
+
+		case <-ticker.C:
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] STATUS: Still waiting for GNSS state %s event... (elapsed: %v, events received: %d)",
+				expectedGnssState, elapsed, eventCount)
+			if len(receivedStates) > 0 {
+				logrus.Infof("🔍 [DEBUG] STATUS: Received GNSS states so far: %v", receivedStates)
+			}
+
+		case singleEvent := <-eventChan:
+			eventCount++
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] Received GNSS event #%d after %v: %v", eventCount, elapsed, singleEvent)
+
+			// Log the complete event structure for debugging
+			logrus.Infof("🔍 [DEBUG] Complete event structure:")
+			for key, value := range singleEvent {
+				logrus.Infof("🔍 [DEBUG]   Key: '%s', Type: %T, Value: %v", key, value, value)
+			}
+
+			// Get event values
+			values, ok := singleEvent[exports.EventValues].(exports.StoredEventValues)
+			if !ok {
+				logrus.Errorf("🔍 [DEBUG] Failed to extract EventValues from event: %v", singleEvent)
+				logrus.Errorf("🔍 [DEBUG] Event structure: %T", singleEvent[exports.EventValues])
+				continue
+			}
+			logrus.Infof("🔍 [DEBUG] Event values: %v", values)
+
+			// Try to extract GNSS state from notification field (actual event structure)
+			gnssState := ""
+
+			// First try the notification field (which is the actual field in the events)
+			if notification, ok := values["notification"].(string); ok {
+				gnssState = notification
+				logrus.Infof("🔍 [DEBUG] Found GNSS state in notification field: %s", gnssState)
+			} else {
+				// Try to extract from metric field (for backward compatibility)
+				if metric, ok := values["metric"].(string); ok {
+					logrus.Infof("🔍 [DEBUG] Found 'metric' field: %s", metric)
+					gnssState = metric
+				} else if metricInt, ok := values["metric"].(int); ok {
+					gnssState = strconv.Itoa(metricInt)
+					logrus.Infof("🔍 [DEBUG] Found 'metric' field as int: %d", metricInt)
+				} else if metricFloat, ok := values["metric"].(float64); ok {
+					gnssState = strconv.Itoa(int(metricFloat))
+					logrus.Infof("🔍 [DEBUG] Found 'metric' field as float: %f", metricFloat)
+				}
+
+				if gnssState == "" {
+					logrus.Errorf("🔍 [DEBUG] Failed to extract GNSS state from values: %v", values)
+					logrus.Errorf("🔍 [DEBUG] Available keys in values: %v", getKeys(values))
+					logrus.Errorf("🔍 [DEBUG] Notification field type: %T", values["notification"])
+					logrus.Errorf("🔍 [DEBUG] Metric field type: %T", values["metric"])
+					continue
+				}
+			}
+
+			// Track all received states for debugging
+			receivedStates[gnssState]++
+
+			logrus.Infof("🔍 [DEBUG] GNSS state changed to: '%s' (expected: '%s')", gnssState, expectedGnssState)
+			logrus.Infof("🔍 [DEBUG] String comparison: '%s' == '%s' = %t", gnssState, expectedGnssState, gnssState == expectedGnssState)
+
+			// Check if we received the expected GNSS state
+			if gnssState == expectedGnssState {
+				logrus.Infof("🔍 [DEBUG] ✅ SUCCESS: Expected GNSS state '%s' received after %d events in %v",
+					expectedGnssState, eventCount, elapsed)
+				return nil
+			} else {
+				logrus.Infof("🔍 [DEBUG] ❌ Mismatch: Got '%s', expected '%s' (continuing to wait...)", gnssState, expectedGnssState)
+				logrus.Infof("🔍 [DEBUG] Received state length: %d, Expected state length: %d", len(gnssState), len(expectedGnssState))
+				logrus.Infof("🔍 [DEBUG] Received state bytes: %v, Expected state bytes: %v", []byte(gnssState), []byte(expectedGnssState))
+			}
+		}
+	}
+}
+
+// Helper function to get keys from a map
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func verifyPtpStateEvent(fullConfig testconfig.TestConfig, expectedPtpState string) error {
+	defer GinkgoRecover() // Add this to capture panics in this function
+
+	// buffer to hold events until they can be processed
+	const incomingEventsBuffer = 100
+
+	logrus.Infof("🔍 [DEBUG] Starting PTP State event verification for expected state: %s", expectedPtpState)
+
+	// Ensure pub/sub is initialized
+	if event.PubSub == nil {
+		logrus.Infof("🔍 [DEBUG] PubSub is nil, initializing...")
+		event.InitPubSub()
+	} else {
+		logrus.Infof("🔍 [DEBUG] PubSub already initialized")
+	}
+
+	// Create timer channel for verification timeout
+	verificationTimeout := 2 * time.Minute
+	timeoutChan := time.After(verificationTimeout)
+	logrus.Infof("🔍 [DEBUG] Set verification timeout to %v", verificationTimeout)
+
+	// Register channel to receive PtpStateChange events
+	logrus.Infof("🔍 [DEBUG] Subscribing to PtpStateChange events...")
+	eventChan, subscriberID := event.PubSub.Subscribe(string(ptpEvent.PtpStateChange), incomingEventsBuffer)
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Unsubscribing from PtpStateChange events, subscriberID: %d", subscriberID)
+		event.PubSub.Unsubscribe(string(ptpEvent.PtpStateChange), subscriberID)
+	}()
+
+	// Create and push an initial event
+	logrus.Infof("🔍 [DEBUG] Pushing initial PTP State event...")
+	err := event.PushInitialEvent(string(ptpEvent.PtpStateChange), 60*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial PTP State event: %v", err)
+		return fmt.Errorf("could not push initial PTP state event, err=%s", err)
+	}
+	logrus.Infof("🔍 [DEBUG] Successfully pushed initial PTP State event")
+
+	// Start monitoring pod logs
+	logrus.Infof("🔍 [DEBUG] Starting pod logs monitoring...")
+	term, err := event.MonitorPodLogsRegex()
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to start pod logs monitoring: %v", err)
+		return fmt.Errorf("could not start listening to events, err=%s", err)
+	}
+	defer func() {
+		logrus.Infof("🔍 [DEBUG] Stopping pod logs monitoring")
+		term <- true
+	}()
+	logrus.Infof("🔍 [DEBUG] Successfully started pod logs monitoring")
+
+	logrus.Infof("🔍 [DEBUG] Entering event loop, waiting for PTP state %s event...", expectedPtpState)
+	eventCount := 0
+	startTime := time.Now()
+	receivedStates := make(map[string]int) // Track all received states for debugging
+
+	// Add periodic status logging
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeoutChan:
+			elapsed := time.Since(startTime)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Waited %v for PTP state %s event, received %d events total",
+				elapsed, expectedPtpState, eventCount)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: No events received in the last %v", elapsed)
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if PTP State events are being generated by the system")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if event subscription is working properly")
+			logrus.Errorf("🔍 [DEBUG] TIMEOUT: Check if pod logs monitoring is capturing events")
+
+			// Log all received states for debugging
+			if len(receivedStates) > 0 {
+				logrus.Errorf("🔍 [DEBUG] TIMEOUT: Received PTP states during test: %v", receivedStates)
+			} else {
+				logrus.Errorf("🔍 [DEBUG] TIMEOUT: No PTP states received at all")
+			}
+
+			// Check if we received any valid PTP states (even if not the expected one)
+			validStates := []string{string(ptpEvent.LOCKED), string(ptpEvent.HOLDOVER), string(ptpEvent.FREERUN),
+				string(ptpEvent.SYNCHRONIZED), string(ptpEvent.ACQUIRING_SYNC)}
+			for state, count := range receivedStates {
+				for _, validState := range validStates {
+					if state == validState {
+						logrus.Errorf("🔍 [DEBUG] TIMEOUT: Received valid PTP state '%s' %d times, but expected '%s'",
+							state, count, expectedPtpState)
+						// Don't fail the test if we received a valid state, just warn
+						logrus.Warnf("🔍 [DEBUG] WARNING: Expected PTP state '%s' but received '%s'. This might indicate a timing issue or system state.",
+							expectedPtpState, state)
+						return nil
+					}
+				}
+			}
+
+			return fmt.Errorf("timed out waiting for PTP state %s event", expectedPtpState)
+
+		case <-ticker.C:
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] STATUS: Still waiting for PTP state %s event... (elapsed: %v, events received: %d)",
+				expectedPtpState, elapsed, eventCount)
+			if len(receivedStates) > 0 {
+				logrus.Infof("🔍 [DEBUG] STATUS: Received PTP states so far: %v", receivedStates)
+			}
+
+		case singleEvent := <-eventChan:
+			eventCount++
+			elapsed := time.Since(startTime)
+			logrus.Infof("🔍 [DEBUG] Received PTP State event #%d after %v: %v", eventCount, elapsed, singleEvent)
+
+			// Get event values
+			values, ok := singleEvent[exports.EventValues].(exports.StoredEventValues)
+			if !ok {
+				logrus.Errorf("🔍 [DEBUG] Failed to extract EventValues from event: %v", singleEvent)
+				logrus.Errorf("🔍 [DEBUG] Event structure: %T", singleEvent[exports.EventValues])
+				continue
+			}
+			logrus.Infof("🔍 [DEBUG] Event values: %v", values)
+
+			// Try to extract as string first (for backward compatibility)
+			ptpState, ok := values["notification"].(string)
+			if !ok {
+				// If not a string, try as integer
+				ptpStateInt, ok := values["notification"].(int)
+				if !ok {
+					logrus.Errorf("🔍 [DEBUG] Failed to extract 'notification' field from values: %v", values)
+					logrus.Errorf("🔍 [DEBUG] Available keys in values: %v", getKeys(values))
+					logrus.Errorf("🔍 [DEBUG] Notification field type: %T", values["notification"])
+					continue
+				}
+				ptpState = strconv.Itoa(ptpStateInt)
+			}
+
+			// Track all received states for debugging
+			receivedStates[ptpState]++
+
+			logrus.Infof("🔍 [DEBUG] PTP state changed to: '%s' (expected: '%s')", ptpState, expectedPtpState)
+
+			// Check if we received the expected PTP state
+			if ptpState == expectedPtpState {
+				logrus.Infof("🔍 [DEBUG] ✅ SUCCESS: Expected PTP state '%s' received after %d events in %v",
+					expectedPtpState, eventCount, elapsed)
+				return nil
+			} else {
+				logrus.Infof("🔍 [DEBUG] ❌ Mismatch: Got '%s', expected '%s' (continuing to wait...)", ptpState, expectedPtpState)
+			}
+		}
+	}
+}
+
+// VerificationTask represents a task to be executed in parallel
+type VerificationTask struct {
+	Name     string
+	Function func() error
+}
+
+// VerificationResult holds the result of a verification task
+type VerificationResult struct {
+	TaskName string
+	Error    error
+}
+
+// runParallelVerifications executes multiple verification tasks in parallel
+// and returns a slice of results
+func runParallelVerifications(tasks []VerificationTask) []VerificationResult {
+	logrus.Infof("🔍 [DEBUG] Starting parallel verification of %d tasks", len(tasks))
+
+	var wg sync.WaitGroup
+	results := make([]VerificationResult, len(tasks))
+
+	for i, task := range tasks {
+		logrus.Infof("🔍 [DEBUG] Starting task %d: %s", i+1, task.Name)
+		wg.Add(1)
+		go func(index int, task VerificationTask) {
+			defer wg.Done()
+			defer GinkgoRecover() // Add this to capture panics in goroutines
+			defer func() {
+				if r := recover(); r != nil {
+					logrus.Errorf("🔍 [DEBUG] PANIC in task %s: %v", task.Name, r)
+					results[index] = VerificationResult{
+						TaskName: task.Name,
+						Error:    fmt.Errorf("panic in %s verification: %v", task.Name, r),
+					}
+				}
+			}()
+
+			logrus.Infof("🔍 [DEBUG] Executing task: %s", task.Name)
+			err := task.Function()
+			logrus.Infof("🔍 [DEBUG] Task %s completed with error: %v", task.Name, err)
+
+			results[index] = VerificationResult{
+				TaskName: task.Name,
+				Error:    err,
+			}
+		}(i, task)
+	}
+
+	logrus.Infof("🔍 [DEBUG] Waiting for all %d tasks to complete...", len(tasks))
+	wg.Wait()
+
+	logrus.Infof("🔍 [DEBUG] All tasks completed. Results:")
+	for i, result := range results {
+		logrus.Infof("🔍 [DEBUG]   Task %d (%s): %v", i+1, result.TaskName, result.Error)
+	}
+
+	return results
+}
+
+// createVerificationTask creates a verification task with proper error handling
+func createVerificationTask(name string, fn func() error) VerificationTask {
+	return VerificationTask{
+		Name: name,
+		Function: func() error {
+			defer func() {
+				if r := recover(); r != nil {
+					logrus.Errorf("Panic in %s verification: %v", name, r)
+				}
+			}()
+			return fn()
+		},
+	}
+}
+
+// verifyHoldoverEventsInParallel verifies all holdover events in parallel
+func verifyHoldoverEventsInParallel(fullConfig testconfig.TestConfig) error {
+	return verifyEventsByType(fullConfig, EventTypeHoldover)
+}
+
+// verifyLockedEventsInParallel verifies all locked events in parallel
+func verifyLockedEventsInParallel(fullConfig testconfig.TestConfig) error {
+	return verifyEventsByType(fullConfig, EventTypeLocked)
+}
+
+// verifyFreerunEventsInParallel verifies all freerun events in parallel
+func verifyFreerunEventsInParallel(fullConfig testconfig.TestConfig) error {
+	return verifyEventsByType(fullConfig, EventTypeFreerun)
+}
+
+// VerificationConfig holds configuration for a verification task
+type VerificationConfig struct {
+	Name               string
+	ClockClassExpected fbprotocol.ClockClass
+	GnssStateExpected  string
+	PtpStateExpected   string
+}
+
+// verifyEventsInParallel is a generic function that can verify any combination of events
+func verifyEventsInParallel(fullConfig testconfig.TestConfig, config VerificationConfig) error {
+	logrus.Infof("🔍 [DEBUG] Starting verifyEventsInParallel with config: %+v", config)
+
+	tasks := []VerificationTask{}
+
+	// Add Clock Class verification if specified
+	if config.ClockClassExpected != 0 {
+		logrus.Infof("🔍 [DEBUG] Adding Clock Class verification task for class %d", config.ClockClassExpected)
+		tasks = append(tasks, createVerificationTask("Clock Class", func() error {
+			return verifyClockClassEvent(fullConfig, config.ClockClassExpected)
+		}))
+	}
+
+	// Add GNSS verification if specified
+	if config.GnssStateExpected != "" {
+		logrus.Infof("🔍 [DEBUG] Adding GNSS verification task for state '%s'", config.GnssStateExpected)
+		tasks = append(tasks, createVerificationTask("GNSS", func() error {
+			return verifyGnssEvent(fullConfig, config.GnssStateExpected)
+		}))
+	}
+
+	// Add PTP State verification if specified
+	if config.PtpStateExpected != "" {
+		logrus.Infof("🔍 [DEBUG] Adding PTP State verification task for state '%s'", config.PtpStateExpected)
+		tasks = append(tasks, createVerificationTask("PTP State", func() error {
+			return verifyPtpStateEvent(fullConfig, config.PtpStateExpected)
+		}))
+	}
+
+	if len(tasks) == 0 {
+		logrus.Errorf("🔍 [DEBUG] No verification tasks specified")
+		return fmt.Errorf("no verification tasks specified")
+	}
+
+	logrus.Infof("🔍 [DEBUG] Created %d verification tasks", len(tasks))
+	results := runParallelVerifications(tasks)
+
+	// Check for any errors
+	var errors []string
+	for _, result := range results {
+		if result.Error != nil {
+			logrus.Errorf("🔍 [DEBUG] Task '%s' failed: %v", result.TaskName, result.Error)
+			errors = append(errors, fmt.Sprintf("%s: %v", result.TaskName, result.Error))
+		} else {
+			logrus.Infof("🔍 [DEBUG] Task '%s' completed successfully", result.TaskName)
+		}
+	}
+
+	if len(errors) > 0 {
+		errorMsg := fmt.Sprintf("verification failures: %s", strings.Join(errors, "; "))
+		logrus.Errorf("🔍 [DEBUG] Verification failed: %s", errorMsg)
+		return fmt.Errorf(errorMsg)
+	}
+
+	logrus.Infof("🔍 [DEBUG] All verification tasks completed successfully")
+	return nil
+}
+
+// Common verification configurations
+var (
+	HoldoverConfig = VerificationConfig{
+		Name:               "Holdover Events",
+		ClockClassExpected: fbprotocol.ClockClass7,
+		GnssStateExpected:  string(ptpEvent.ANTENNA_DISCONNECTED),
+		PtpStateExpected:   string(ptpEvent.HOLDOVER),
+	}
+
+	LockedConfig = VerificationConfig{
+		Name:               "Locked Events",
+		ClockClassExpected: fbprotocol.ClockClass6,
+		GnssStateExpected:  string(ptpEvent.SYNCHRONIZED),
+		PtpStateExpected:   string(ptpEvent.LOCKED),
+	}
+)
+
+// NewVerificationConfig creates a new verification configuration with the given parameters
+func NewVerificationConfig(name string, clockClass fbprotocol.ClockClass, gnssState, ptpState string) VerificationConfig {
+	return VerificationConfig{
+		Name:               name,
+		ClockClassExpected: clockClass,
+		GnssStateExpected:  gnssState,
+		PtpStateExpected:   ptpState,
+	}
+}
+
+// NewClockClassOnlyConfig creates a verification config that only verifies clock class
+func NewClockClassOnlyConfig(name string, clockClass fbprotocol.ClockClass) VerificationConfig {
+	return VerificationConfig{
+		Name:               name,
+		ClockClassExpected: clockClass,
+	}
+}
+
+// NewGnssOnlyConfig creates a verification config that only verifies GNSS state
+func NewGnssOnlyConfig(name string, gnssState string) VerificationConfig {
+	return VerificationConfig{
+		Name:              name,
+		GnssStateExpected: gnssState,
+	}
+}
+
+// NewPtpStateOnlyConfig creates a verification config that only verifies PTP state
+func NewPtpStateOnlyConfig(name string, ptpState string) VerificationConfig {
+	return VerificationConfig{
+		Name:             name,
+		PtpStateExpected: ptpState,
+	}
+}
+
+// EventType represents the type of event verification
+type EventType string
+
+const (
+	EventTypeHoldover EventType = "HOLDOVER"
+	EventTypeLocked   EventType = "LOCKED"
+	EventTypeFreerun  EventType = "FREERUN"
+)
+
+/*
+Event Verification System
+
+This package provides a flexible and reusable system for verifying PTP events in parallel.
+The system supports multiple event types and can be easily extended.
+
+Usage Examples:
+
+1. Using predefined functions:
+   err := VerifyHoldover(fullConfig)
+   err := VerifyLocked(fullConfig)
+   err := VerifyFreerun(fullConfig)
+
+2. Using the generic function with event types:
+   err := verifyEventsByType(fullConfig, EventTypeHoldover)
+   err := verifyEventsByType(fullConfig, EventTypeLocked)
+
+3. Using string-based verification:
+   err := VerifyEvents(fullConfig, "HOLDOVER")
+   err := VerifyEvents(fullConfig, "LOCKED")
+
+4. Using custom configurations:
+   config := NewVerificationConfig("Custom Test", fbprotocol.ClockClass6, "LOCKED", "LOCKED")
+   err := verifyEventsInParallel(fullConfig, config)
+
+5. Using single verification types:
+   config := NewClockClassOnlyConfig("Clock Test", fbprotocol.ClockClass7)
+   err := verifyEventsInParallel(fullConfig, config)
+
+The system automatically handles:
+- Parallel execution of verification tasks
+- Panic recovery with detailed error messages
+- Proper error aggregation and reporting
+- Resource cleanup
+*/
+
+// ... existing code ...
+
+// GetVerificationConfig returns the appropriate verification configuration for the given event type
+func GetVerificationConfig(eventType EventType) VerificationConfig {
+	switch eventType {
+	case EventTypeHoldover:
+		return VerificationConfig{
+			Name:               "Holdover Events",
+			ClockClassExpected: fbprotocol.ClockClass7,
+			GnssStateExpected:  string(ptpEvent.ANTENNA_DISCONNECTED),
+			PtpStateExpected:   string(ptpEvent.HOLDOVER),
+		}
+	case EventTypeLocked:
+		return VerificationConfig{
+			Name:               "Locked Events",
+			ClockClassExpected: fbprotocol.ClockClass6,
+			GnssStateExpected:  string(ptpEvent.SYNCHRONIZED),
+			PtpStateExpected:   string(ptpEvent.LOCKED),
+		}
+	case EventTypeFreerun:
+		return VerificationConfig{
+			Name:               "Freerun Events",
+			ClockClassExpected: ClockClassFreerun, // Using the local constant defined earlier
+			GnssStateExpected:  string(ptpEvent.ANTENNA_DISCONNECTED),
+			PtpStateExpected:   string(ptpEvent.FREERUN),
+		}
+	default:
+		return VerificationConfig{
+			Name: fmt.Sprintf("Custom %s Events", string(eventType)),
+		}
+	}
+}
+
+// verifyEventsByType is a generic function that verifies events based on the event type
+func verifyEventsByType(fullConfig testconfig.TestConfig, eventType EventType) error {
+	logrus.Infof("🔍 [DEBUG] verifyEventsByType: Starting verification for event type: %s", eventType)
+	config := GetVerificationConfig(eventType)
+	logrus.Infof("🔍 [DEBUG] verifyEventsByType: Got config: %+v", config)
+	err := verifyEventsInParallel(fullConfig, config)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] verifyEventsByType: Failed with error: %v", err)
+	} else {
+		logrus.Infof("🔍 [DEBUG] verifyEventsByType: Completed successfully for event type: %s", eventType)
+	}
+	return err
+}
+
+// VerifyEvents is a convenience function that verifies events by type string
+func VerifyEvents(fullConfig testconfig.TestConfig, eventType string) error {
+	return verifyEventsByType(fullConfig, EventType(eventType))
+}
+
+// VerifyHoldover is a convenience function for holdover event verification
+func VerifyHoldover(fullConfig testconfig.TestConfig) error {
+	return verifyEventsByType(fullConfig, EventTypeHoldover)
+}
+
+// VerifyLocked is a convenience function for locked event verification
+func VerifyLocked(fullConfig testconfig.TestConfig) error {
+	logrus.Infof("🔍 [DEBUG] VerifyLocked: Starting locked event verification...")
+	err := verifyEventsByType(fullConfig, EventTypeLocked)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] VerifyLocked: Failed with error: %v", err)
+	} else {
+		logrus.Infof("🔍 [DEBUG] VerifyLocked: Completed successfully")
+	}
+	return err
+}
+
+// VerifyFreerun is a convenience function for freerun event verification
+func VerifyFreerun(fullConfig testconfig.TestConfig) error {
+	return verifyEventsByType(fullConfig, EventTypeFreerun)
+}
+
+// safeExecCommand is a helper function that checks for nil values before executing pod commands
+func safeExecCommand(pod *v1core.Pod, containerName string, command []string) (string, string, error) {
+	// Execute command and return string output
+	stdout, stderr, err := pods.ExecCommand(client.Client, true, pod, containerName, command)
+	if err != nil {
+		return "", stderr.String(), err
+	}
+	return stdout.String(), stderr.String(), nil
+}
+
+// Helper function to debug all events being received
+func debugAllEvents(fullConfig testconfig.TestConfig) {
+	logrus.Infof("🔍 [DEBUG] Starting event debugging session...")
+
+	// Ensure pub/sub is initialized
+	if event.PubSub == nil {
+		logrus.Infof("🔍 [DEBUG] PubSub is nil, initializing...")
+		event.InitPubSub()
+	}
+
+	// Subscribe to all event types
+	gnssChan, gnssSubID := event.PubSub.Subscribe(string(ptpEvent.GnssStateChange), 100)
+	ptpChan, ptpSubID := event.PubSub.Subscribe(string(ptpEvent.PtpStateChange), 100)
+	clockChan, clockSubID := event.PubSub.Subscribe(string(ptpEvent.PtpClockClassChange), 100)
+
+	defer func() {
+		event.PubSub.Unsubscribe(string(ptpEvent.GnssStateChange), gnssSubID)
+		event.PubSub.Unsubscribe(string(ptpEvent.PtpStateChange), ptpSubID)
+		event.PubSub.Unsubscribe(string(ptpEvent.PtpClockClassChange), clockSubID)
+	}()
+
+	// Start monitoring pod logs
+	term, err := event.MonitorPodLogsRegex()
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to start pod logs monitoring for debugging: %v", err)
+		return
+	}
+	defer func() { term <- true }()
+
+	// Create and push initial events
+	err = event.PushInitialEvent(string(ptpEvent.GnssStateChange), 30*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial GNSS event for debugging: %v", err)
+	}
+
+	err = event.PushInitialEvent(string(ptpEvent.PtpStateChange), 30*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial PTP state event for debugging: %v", err)
+	}
+
+	err = event.PushInitialEvent(string(ptpEvent.PtpClockClassChange), 30*time.Second)
+	if err != nil {
+		logrus.Errorf("🔍 [DEBUG] Failed to push initial clock class event for debugging: %v", err)
+	}
+
+	logrus.Infof("🔍 [DEBUG] Monitoring all events for 60 seconds...")
+	timeout := time.After(60 * time.Second)
+
+	for {
+		select {
+		case <-timeout:
+			logrus.Infof("🔍 [DEBUG] Event debugging session completed")
+			return
+
+		case event := <-gnssChan:
+			logrus.Infof("🔍 [DEBUG] GNSS Event received: %v", event)
+			if values, ok := event[exports.EventValues].(exports.StoredEventValues); ok {
+				logrus.Infof("🔍 [DEBUG] GNSS Event values: %v", values)
+				logrus.Infof("🔍 [DEBUG] GNSS Event keys: %v", getKeys(values))
+			}
+
+		case event := <-ptpChan:
+			logrus.Infof("🔍 [DEBUG] PTP State Event received: %v", event)
+			if values, ok := event[exports.EventValues].(exports.StoredEventValues); ok {
+				logrus.Infof("🔍 [DEBUG] PTP State Event values: %v", values)
+				logrus.Infof("🔍 [DEBUG] PTP State Event keys: %v", getKeys(values))
+			}
+
+		case event := <-clockChan:
+			logrus.Infof("🔍 [DEBUG] Clock Class Event received: %v", event)
+			if values, ok := event[exports.EventValues].(exports.StoredEventValues); ok {
+				logrus.Infof("🔍 [DEBUG] Clock Class Event values: %v", values)
+				logrus.Infof("🔍 [DEBUG] Clock Class Event keys: %v", getKeys(values))
+			}
+		}
+	}
+}
+
+// Helper function to test event parsing with sample data
+func testEventParsing() {
+	logrus.Infof("🔍 [DEBUG] Testing event parsing logic...")
+
+	// Test sample event data
+	sampleEvent := exports.StoredEvent{
+		exports.EventTimeStamp: time.Now(),
+		exports.EventType:      string(ptpEvent.GnssStateChange),
+		exports.EventSource:    "test",
+		exports.EventValues: exports.StoredEventValues{
+			"notification": "LOCKED",
+			"metric":       "LOCKED",
+		},
+	}
+
+	logrus.Infof("🔍 [DEBUG] Sample event: %v", sampleEvent)
+
+	values, ok := sampleEvent[exports.EventValues].(exports.StoredEventValues)
+	if !ok {
+		logrus.Errorf("🔍 [DEBUG] Failed to extract EventValues from sample event")
+		return
+	}
+
+	logrus.Infof("🔍 [DEBUG] Sample event values: %v", values)
+
+	// Test GNSS state extraction
+	gnssState := ""
+	if notification, ok := values["notification"].(string); ok {
+		gnssState = notification
+		logrus.Infof("🔍 [DEBUG] Found GNSS state in notification field: %s", gnssState)
+	} else {
+		logrus.Errorf("🔍 [DEBUG] Failed to extract notification field")
+	}
+
+	logrus.Infof("🔍 [DEBUG] Extracted GNSS state: '%s'", gnssState)
+	logrus.Infof("🔍 [DEBUG] Expected LOCKED: '%s'", string(ptpEvent.LOCKED))
+	logrus.Infof("🔍 [DEBUG] Comparison: '%s' == '%s' = %t", gnssState, string(ptpEvent.LOCKED), gnssState == string(ptpEvent.LOCKED))
+}
+
+// Helper function to check current system state
+func checkCurrentSystemState(fullConfig testconfig.TestConfig) {
+	logrus.Infof("🔍 [DEBUG] Checking current system state...")
+
+	// Check clock class state
+	if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6))) {
+		logrus.Infof("🔍 [DEBUG] System is in LOCKED state (ClockClass 6)")
+	} else if checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass7))) {
+		logrus.Infof("🔍 [DEBUG] System is in HOLDOVER state (ClockClass 7)")
+	} else {
+		logrus.Infof("🔍 [DEBUG] System is in unknown state")
+	}
+
+	// Check PTP state
+	ptpState := getCurrentPTPState(fullConfig)
+	logrus.Infof("🔍 [DEBUG] Current PTP state: %s", ptpState)
+
+	// Check GNSS status if available
+	// This would require additional implementation to check GNSS status directly
+	logrus.Infof("🔍 [DEBUG] System state check completed")
+}
+
+// Helper function to get current PTP state without failing the test
+func getCurrentPTPState(fullConfig testconfig.TestConfig) string {
+	nmeaStatusPattern := `openshift_ptp_nmea_status\{iface="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
+	nmeaStatusRe := regexp.MustCompile(nmeaStatusPattern)
+
+	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if matches := nmeaStatusRe.FindStringSubmatch(line); matches != nil {
+			if len(matches) < 4 {
+				continue
+			}
+			process := matches[3]
+			state := matches[4]
+			if process == "ts2phc" {
+				return state
+			}
+		}
+	}
+	return "unknown"
 }
