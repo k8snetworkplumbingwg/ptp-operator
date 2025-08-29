@@ -173,14 +173,10 @@ func GetClockIfRoles(Ifs []string, nodeName *string) (roleInt []MetricRole, err 
 	return roleInt, nil
 }
 
-// gets a metric value string for a given node and interface
-func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
-	const (
-		fromMaster = `from="master",`
-	)
+func getAllOfMetric(nodeName, metricName string) (string, error) {
 	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 	if err != nil {
-		return metric, err
+		return "", err
 	}
 	for index := range ptpPods.Items {
 		if ptpPods.Items[index].Spec.NodeName != nodeName {
@@ -191,28 +187,66 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 		}
 		buf, _, err := pods.ExecCommand(client.Client, false, &ptpPods.Items[index], ptpPods.Items[index].Spec.Containers[0].Name, commands)
 		if err != nil {
-			return metric, fmt.Errorf("error getting ptp pods for metric: %s not found, err: %s", metricName, err)
+			return "", fmt.Errorf("error getting ptp pods for metric: %s not found, err: %s", metricName, err)
 		}
-
-		metrics := buf.String()
-		var regex string
-		if metricName == OpenshiftPtpOffsetNs {
-			aIf = aIf[:len(aIf)-1] + "x"
-			regex = metricName + `{` + fromMaster + `iface="` + aIf + `",node="` + ptpPods.Items[index].Spec.NodeName + `",process="ptp4l"} (-*[0-9]*)`
-		} else if metricName == OpenshiftPtpClockState {
-			aIf = aIf[:len(aIf)-1] + "x"
-			regex = metricName + `{iface="` + aIf + `",node="` + ptpPods.Items[index].Spec.NodeName + `",process="ptp4l"} (-*[0-9]*)`
-		} else {
-			regex = metricName + `{iface="` + aIf + `",node="` + ptpPods.Items[index].Spec.NodeName + `",process="ptp4l"} (-*[0-9]*)`
-		}
-		r := regexp.MustCompile(regex)
-		for _, submatches := range r.FindAllStringSubmatchIndex(metrics, -1) {
-			metric = string(r.ExpandString([]byte{}, "$1", metrics, submatches))
-			return metric, nil
-		}
-		break
+		return buf.String(), nil
 	}
-	return metric, fmt.Errorf("metric: %s, nodeName: %s, aIf: %s not found", metricName, nodeName, aIf)
+	return "", nil
+}
+
+func getAlias(aIf, nodeName string) (string, error) {
+	roles, err := getAllOfMetric(nodeName, OpenshiftPtpInterfaceRole)
+	if err != nil {
+		return "", err
+	}
+	r := regexp.MustCompile(`openshift_ptp_interface_role{alias="(.*)",iface="` + aIf + `",node="` + nodeName + `",process="ptp4l"} (-*[0-9]*)`)
+	matches := r.FindAllStringSubmatchIndex(roles, -1)
+	if matches == nil {
+		return aIf[:len(aIf)-1] + "x", nil
+	}
+	for _, submatches := range matches {
+		return string(r.ExpandString([]byte{}, "$1", roles, submatches)), nil
+	}
+	return aIf, nil
+}
+
+// gets a metric value string for a given node and interface
+func getMetric(nodeName, aIf, metricName string) (string, error) {
+	const (
+		fromMaster = `from="master",`
+	)
+
+	metrics, err := getAllOfMetric(nodeName, metricName)
+	if err != nil {
+		return metrics, err
+	}
+
+	var regex string
+	switch metricName {
+	case OpenshiftPtpOffsetNs:
+		aIf, err = getAlias(aIf, nodeName)
+		if err != nil {
+			return "", fmt.Errorf("failed to figure out alias: %w", err)
+		}
+		regex = metricName + `{` + fromMaster + `iface="` + aIf + `",node="` + nodeName + `",process="ptp4l"} (-*[0-9]*)`
+	case OpenshiftPtpClockState:
+		aIf, err = getAlias(aIf, nodeName)
+		if err != nil {
+			return "", fmt.Errorf("failed to figure out alias: %w", err)
+		}
+		regex = metricName + `{iface="` + aIf + `",node="` + nodeName + `",process="ptp4l"} (-*[0-9]*)`
+	case OpenshiftPtpInterfaceRole:
+		regex = metricName + `{(?:alias=".*",)?iface="` + aIf + `",node="` + nodeName + `",process="ptp4l"} (-*[0-9]*)`
+	default:
+		regex = metricName + `{iface="` + aIf + `",node="` + nodeName + `",process="ptp4l"} (-*[0-9]*)`
+	}
+
+	r := regexp.MustCompile(regex)
+	for _, submatches := range r.FindAllStringSubmatchIndex(metrics, -1) {
+		return string(r.ExpandString([]byte{}, "$1", metrics, submatches)), nil
+	}
+
+	return "", fmt.Errorf("metric: %s, nodeName: %s, aIf: %s not found", metricName, nodeName, aIf)
 }
 
 // gets a node name based on a label
