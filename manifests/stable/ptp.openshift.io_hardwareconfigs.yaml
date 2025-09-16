@@ -74,50 +74,85 @@ spec:
                                     DesiredStates is a list of pin and connector settings that together define the desired state.
                                     The configurations are applied (in the order they are listed) when the condition is triggered.
                                   items:
-                                    description: DesiredState defines the desired
-                                      pin and connector settings that are applied
-                                      when a condition is triggered.
+                                    description: |-
+                                      DesiredState defines the desired configuration that is applied when a condition is triggered.
+                                      It supports either DPLL pin configurations OR sysFS-based Ethernet subsystem configurations.
                                     properties:
-                                      boardLabel:
-                                        description: |-
-                                          BoardLabel and clock ID together unambiguously identify the subsystem and the DPLL pin,
-                                          together with an optional external connector, if defined.
-                                          If the pin is routed through an external connector, the connector settings (direction, frequency, etc.)
-                                          are derived from the pin configuration.
-                                        type: string
-                                      clockId:
-                                        description: ClockID is the subsystem clock
-                                          ID (decimal or hex format)
-                                        type: string
-                                      eec:
-                                        description: EEC defines the desired state
-                                          for the Enhanced Ethernet Clock pin
+                                      dpll:
+                                        description: DPLL defines DPLL pin configurations
+                                          for the subsystem
                                         properties:
-                                          priority:
-                                            description: Priority is the pin input
-                                              priority (for input pins only)
-                                            format: int64
-                                            type: integer
-                                          state:
-                                            description: 'State is the pin desired
-                                              state. Valid values: "connected", "disconnected",
-                                              "selectable"'
+                                          boardLabel:
+                                            description: |-
+                                              BoardLabel and clock ID together unambiguously identify the subsystem and the DPLL pin,
+                                              together with an optional external connector, if defined.
+                                              If the pin is routed through an external connector, the connector settings (direction, frequency, etc.)
+                                              are derived from the pin configuration.
                                             type: string
+                                          clockId:
+                                            description: ClockID is the subsystem
+                                              clock ID (decimal or hex format)
+                                            type: string
+                                          eec:
+                                            description: EEC defines the desired state
+                                              for the Enhanced Ethernet Clock pin
+                                            properties:
+                                              priority:
+                                                description: Priority is the pin input
+                                                  priority (for input pins only)
+                                                format: int64
+                                                type: integer
+                                              state:
+                                                description: 'State is the pin desired
+                                                  state. Valid values: "connected",
+                                                  "disconnected", "selectable"'
+                                                type: string
+                                            type: object
+                                          pps:
+                                            description: PPS defines the desired state
+                                              for the Pulse Per Second pin
+                                            properties:
+                                              priority:
+                                                description: Priority is the pin input
+                                                  priority (for input pins only)
+                                                format: int64
+                                                type: integer
+                                              state:
+                                                description: 'State is the pin desired
+                                                  state. Valid values: "connected",
+                                                  "disconnected", "selectable"'
+                                                type: string
+                                            type: object
                                         type: object
-                                      pps:
-                                        description: PPS defines the desired state
-                                          for the Pulse Per Second pin
+                                      sysfs:
+                                        description: |-
+                                          SysFS defines a sysFS-based configuration for the Ethernet part of the subsystem.
+                                          This configuration is applied by writing a value to a sysFS path, often including interface names
+                                          that can be obtained from PTP sources' ptpTimeReceivers field.
                                         properties:
-                                          priority:
-                                            description: Priority is the pin input
-                                              priority (for input pins only)
-                                            format: int64
-                                            type: integer
-                                          state:
-                                            description: 'State is the pin desired
-                                              state. Valid values: "connected", "disconnected",
-                                              "selectable"'
+                                          description:
+                                            description: Description provides optional
+                                              context about this sysFS configuration
                                             type: string
+                                          path:
+                                            description: |-
+                                              Path is the sysFS path where the value should be written.
+                                              It supports templating with interface names using the format: /sys/class/net/{interface}/...
+                                              The {interface} placeholder will be replaced with actual interface names from PTP sources.
+                                            type: string
+                                          sourceName:
+                                            description: |-
+                                              SourceName specifies which source to use for obtaining interface names.
+                                              If specified, the interface names will be taken from the PTP source's ptpTimeReceivers field.
+                                              If not specified, all available PTP sources will be considered for interface name resolution.
+                                            type: string
+                                          value:
+                                            description: Value is the value to write
+                                              to the sysFS path
+                                            type: string
+                                        required:
+                                        - path
+                                        - value
                                         type: object
                                     type: object
                                   type: array
