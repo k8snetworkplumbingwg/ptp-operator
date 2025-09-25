@@ -1,0 +1,16 @@
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: invalid-config-example
+  namespace: openshift-ptp
+spec:
+  profile:
+  - name: "invalid-profile"
+    # This profile is invalid because it is missing the required 'interface' field.
+    ptp4lOpts: "-s -2"
+    phc2sysOpts: "-a -r"
+  recommend:
+  - profile: "invalid-profile"
+    priority: 1
+    match:
+    - nodeLabel: "all-nodes"
