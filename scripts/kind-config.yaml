@@ -12,7 +12,7 @@ nodes:
       - hostPath: /dev
         containerPath: /dev
       - hostPath: /root/registry
-        containerPath: /etc/containerd/certs.d/IP
+        containerPath: /etc/containerd/certs.d/192.168.64.6
   
   - role: worker
     extraMounts:
@@ -21,7 +21,7 @@ nodes:
       - hostPath: /dev
         containerPath: /dev
       - hostPath: /root/registry
-        containerPath: /etc/containerd/certs.d/IP
+        containerPath: /etc/containerd/certs.d/192.168.64.6
 
   - role: worker
     extraMounts:
@@ -30,7 +30,7 @@ nodes:
       - hostPath: /dev
         containerPath: /dev
       - hostPath: /root/registry
-        containerPath: /etc/containerd/certs.d/IP
+        containerPath: /etc/containerd/certs.d/192.168.64.6
 
   - role: worker
     extraMounts:
@@ -39,4 +39,4 @@ nodes:
       - hostPath: /dev
         containerPath: /dev
       - hostPath: /root/registry
-        containerPath: /etc/containerd/certs.d/IP
+        containerPath: /etc/containerd/certs.d/192.168.64.6

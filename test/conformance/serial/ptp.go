@@ -150,7 +150,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			ptpConfigList, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{})
 			Expect(err).NotTo(HaveOccurred(), "Should be able to list PtpConfigs")
 			Expect(len(ptpConfigList.Items)).To(BeNumerically(">", 0), "Expected at least one PtpConfig to be present for this test")
-
+			fmt.Println("length of ptpConfigList", len(ptpConfigList.Items))
 			By("Checking if the operator is still running despite invalid configuration")
 			ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "name=ptp-operator"})
 			Expect(err).NotTo(HaveOccurred())
@@ -160,7 +160,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// Check that the operator is still running
 			Expect(operatorPod.Status.Phase).To(Equal(v1core.PodRunning), "Operator pod should be in a running state despite the invalid config")
 		})
-	}) 
+	})
 
 	Describe("PTP e2e tests", func() {
 		var ptpPods *v1core.PodList
