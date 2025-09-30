@@ -130,7 +130,7 @@ jobs:
             gh issue create \
               --title "${{ steps.check_issue.outputs.issue_title }}" \
               --body-file failure_report.md \
-              --label "bug,ptp,nightly-failure,needs-investigation"
+              --label "bug"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
