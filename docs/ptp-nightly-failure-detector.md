@@ -34,7 +34,7 @@ The PTP Nightly Failure Detector is a GitHub Action that automatically monitors 
 
 ### Environment Variables
 
-- `OPENSHIFT_VERSION`: OpenShift version to monitor (default: "4.21")
+- `OPENSHIFT_VERSION`: OpenShift version to monitor (default: "main" for latest, or specific version like "4.21")
 - `LOOKBACK_HOURS`: Hours to look back for failures (default: "24")
 
 ### Schedule
@@ -51,7 +51,7 @@ You can manually trigger the workflow with custom parameters:
 2. Select "PTP Nightly Failure Detector"
 3. Click "Run workflow"
 4. Optionally specify:
-   - OpenShift version (e.g., "4.21", "4.22")
+   - OpenShift version (e.g., "main", "4.21", "4.22")
    - Lookback hours (e.g., "12", "48")
 
 ## Failure Analysis
@@ -77,7 +77,7 @@ You can manually trigger the workflow with custom parameters:
 # 🚨 PTP Nightly Test Failures Detected
 
 **Detection Time:** 2024-03-15T08:30:00Z
-**OpenShift Version:** 4.21
+**OpenShift Version:** main
 **Failures Found:** 2
 **Lookback Period:** 24 hours
 
@@ -89,7 +89,7 @@ Automated failure detection found 2 PTP-related test failures...
 
 ```
 ❌ FAILURE DETECTED:
-   Job: periodic-ci-openshift-kni-cnf-features-deploy-release-4.21-e2e-telco5g-ptp
+   Job: periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream
    Time: 2024-03-15T06:30:00Z
    State: failure
    URL: https://prow.ci.openshift.org/view/gs/origin-ci-test/logs/...

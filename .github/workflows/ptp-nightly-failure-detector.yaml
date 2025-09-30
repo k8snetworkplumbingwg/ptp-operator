@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       openshift_version:
-        description: 'OpenShift version to check (e.g., 4.21)'
+        description: 'OpenShift version to check (e.g., 4.21, 4.22) or "main" for latest'
         required: false
-        default: '4.21'
+        default: 'main'
         type: string
       lookback_hours:
         description: 'Hours to look back for failures'
@@ -18,7 +18,7 @@ on:
         type: string
 
 env:
-  DEFAULT_OPENSHIFT_VERSION: "4.21"
+  DEFAULT_OPENSHIFT_VERSION: "main"
   DEFAULT_LOOKBACK_HOURS: "24"
 
 permissions:
@@ -55,7 +55,7 @@ jobs:
           #!/bin/bash
           set -e
 
-          OPENSHIFT_VERSION="${OPENSHIFT_VERSION:-4.21}"
+          OPENSHIFT_VERSION="${OPENSHIFT_VERSION:-main}"
           LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}"
           START_TIME="${START_TIME:-$(date -u -d "${LOOKBACK_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)}"
 
@@ -187,12 +187,21 @@ jobs:
           echo "🚀 Starting PTP failure detection..."
 
           # List of PTP-related jobs to monitor
-          PTP_JOBS=(
-              "periodic-ci-openshift-release-master-nightly-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-upstream"
-              "e2e-telco5g-ptp-upstream"
-              "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp"
-              "e2e-telco5g-ptp"
-          )
+          if [[ "$OPENSHIFT_VERSION" == "main" ]]; then
+              PTP_JOBS=(
+                  "periodic-ci-openshift-release-master-nightly-*-e2e-telco5g-ptp-upstream"
+                  "e2e-telco5g-ptp-upstream"
+                  "periodic-ci-openshift-kni-cnf-features-deploy-release-*-e2e-telco5g-ptp"
+                  "e2e-telco5g-ptp"
+              )
+          else
+              PTP_JOBS=(
+                  "periodic-ci-openshift-release-master-nightly-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-upstream"
+                  "e2e-telco5g-ptp-upstream"
+                  "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp"
+                  "e2e-telco5g-ptp"
+              )
+          fi
 
           failure_count=0
           detected_failures=""
