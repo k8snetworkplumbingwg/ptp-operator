@@ -84,8 +84,8 @@ GitHub Actions (Agent) ←→ Gemini/Claude CLI (AI Analysis) ←→ GitHub MCP 
     - Focus on PTP-specific test failures in Ginkgo test suite
 
     Artifacts Location Pattern:
-    - Job URL: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream/{JOB_ID}
-    - Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream/{JOB_ID}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/
+    - Job URL: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-*-e2e-telco5g-ptp-upstream/{JOB_ID}
+    - Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-*-e2e-telco5g-ptp-upstream/{JOB_ID}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/
 
     TASK: Analyze PTP test artifacts and identify Ginkgo test failures.
 
