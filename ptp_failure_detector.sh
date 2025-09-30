@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 
 OPENSHIFT_VERSION="${OPENSHIFT_VERSION:-main}"
 LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}"
@@ -16,36 +17,27 @@ check_ptp_job() {
     local job_name="$1"
     echo "🔎 Checking job: $job_name"
 
-    # TEST MODE: Simulate failure detection for workflow testing
-    # Once this works, we'll implement proper Prow API integration
+    # SIMPLIFIED TEST MODE: Always simulate finding a failure for workflow testing
+    echo "   🔍 [TEST MODE] Simulating failure detection for workflow testing"
 
-    echo "   🔍 [TEST MODE] Simulating failure check for: $job_name"
+    # Always simulate a failure found to test the workflow
+    local mock_job_id="1973002493642149888"
+    local mock_url="https://prow.ci.openshift.org/view/gs/test-platform-results/logs/${job_name}/${mock_job_id}"
 
-    # For testing, simulate finding a failure every other run
-    local current_minute=$(date +%M)
-    if [[ $((current_minute % 2)) -eq 0 ]]; then
-        # Simulate a failure found
-        local mock_job_id="1973002493642149888"
-        local mock_url="https://prow.ci.openshift.org/view/gs/test-platform-results/logs/${job_name}/${mock_job_id}"
+    echo "❌ FAILURE DETECTED (TEST MODE):"
+    echo "   Job: $job_name"
+    echo "   Time: $START_TIME"
+    echo "   State: failure"
+    echo "   URL: $mock_url"
 
-        echo "❌ FAILURE DETECTED (TEST MODE):"
-        echo "   Job: $job_name"
-        echo "   Time: $START_TIME"
-        echo "   State: failure"
-        echo "   URL: $mock_url"
+    # Simulate fetching artifacts
+    echo "   📄 [TEST MODE] Simulating artifact analysis"
+    echo "     🚨 Mock PTP test failure: Ginkgo test 'should synchronize time across PTP pods' failed"
+    echo "     ⏰ PTP Issue: ptp4l synchronization timeout after 300 seconds"
+    echo "     📊 GCS Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job_name}/${mock_job_id}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/"
+    echo "---"
 
-        # Simulate fetching artifacts
-        echo "   📄 [TEST MODE] Simulating artifact analysis"
-        echo "     🚨 Mock PTP test failure: Ginkgo test 'should synchronize time across PTP pods' failed"
-        echo "     ⏰ PTP Issue: ptp4l synchronization timeout after 300 seconds"
-        echo "     📊 GCS Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job_name}/${mock_job_id}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/"
-        echo "---"
-
-        return 0  # Found a failure
-    else
-        echo "✅ No failures found for: $job_name (TEST MODE)"
-        return 1  # No failures found
-    fi
+    return 0  # Always return success (failure found)
 }
 
 # Function to fetch and analyze job artifacts

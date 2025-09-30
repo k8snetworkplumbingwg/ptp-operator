@@ -1,9 +1,9 @@
 
 🔎 Checking job: periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream
-   🔍 [TEST MODE] Simulating failure check for: periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream
+   🔍 [TEST MODE] Simulating failure detection for workflow testing
 ❌ FAILURE DETECTED (TEST MODE):
    Job: periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream
-   Time: 2025-09-29T17:46:27Z
+   Time: 2025-09-29T17:53:52Z
    State: failure
    URL: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream/1973002493642149888
    📄 [TEST MODE] Simulating artifact analysis
