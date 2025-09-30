@@ -186,22 +186,22 @@ jobs:
           # Main execution
           echo "🚀 Starting PTP failure detection..."
 
-          # List of PTP-related jobs to monitor
+          # Set the actual OpenShift version to use
           if [[ "$OPENSHIFT_VERSION" == "main" ]]; then
-              PTP_JOBS=(
-                  "periodic-ci-openshift-release-master-nightly-*-e2e-telco5g-ptp-upstream"
-                  "e2e-telco5g-ptp-upstream"
-                  "periodic-ci-openshift-kni-cnf-features-deploy-release-*-e2e-telco5g-ptp"
-                  "e2e-telco5g-ptp"
-              )
+              # Use the latest known OpenShift version when "main" is specified
+              ACTUAL_VERSION="4.21"
+              echo "🔄 Converting 'main' to latest version: $ACTUAL_VERSION"
           else
-              PTP_JOBS=(
-                  "periodic-ci-openshift-release-master-nightly-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-upstream"
-                  "e2e-telco5g-ptp-upstream"
-                  "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp"
-                  "e2e-telco5g-ptp"
-              )
+              ACTUAL_VERSION="$OPENSHIFT_VERSION"
           fi
+
+          # List of PTP-related jobs to monitor
+          PTP_JOBS=(
+              "periodic-ci-openshift-release-master-nightly-${ACTUAL_VERSION}-e2e-telco5g-ptp-upstream"
+              "e2e-telco5g-ptp-upstream"
+              "periodic-ci-openshift-kni-cnf-features-deploy-release-${ACTUAL_VERSION}-e2e-telco5g-ptp"
+              "e2e-telco5g-ptp"
+          )
 
           failure_count=0
           detected_failures=""
