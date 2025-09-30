@@ -27,51 +27,30 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install MCP servers and dependencies
+      - name: Install dependencies
         run: |
-          # Install Red Hat Prow MCP Server
-          npm install -g @redhat-ai-tools/prow-mcp-server
+          # Install GitHub CLI for issue operations
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh -y
 
-          # Install official GitHub MCP Server
-          npm install -g @modelcontextprotocol/server-github
-
-          # Install Python dependencies for gemini-cli
+          # Install Python dependencies for Gemini
           pip install --upgrade pip
-          pip install google-generativeai mcp
+          pip install google-generativeai requests
 
-      - name: Setup MCP configuration
+      - name: Prepare AI analysis environment
         run: |
-          # Configure Prow MCP Server
-          cat > prow-mcp-config.json << 'EOF'
-          {
-            "mcpServers": {
-              "prow": {
-                "command": "npx",
-                "args": ["@redhat-ai-tools/prow-mcp-server"],
-                "env": {
-                  "PROW_ORG": "openshift",
-                  "PROW_REPO": "release",
-                  "PROW_DEFAULT_JOB": "e2e-telco5g-ptp-upstream"
-                }
-              },
-              "github": {
-                "command": "npx",
-                "args": ["@modelcontextprotocol/server-github"],
-                "env": {
-                  "GITHUB_PERSONAL_ACCESS_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
-                }
-              }
-            }
-          }
-          EOF
+          echo "🤖 Setting up autonomous AI agent environment"
+          echo "Agent will analyze PTP failures using Gemini AI with issue context"
 
       - name: Create Gemini CLI autonomous agent script
         run: |
           cat > gemini_agent.py << 'EOF'
           #!/usr/bin/env python3
           """
-          Autonomous Gemini agent for PTP failure analysis using MCP servers
-          Architecture: GitHub Actions → Gemini CLI → Prow MCP + GitHub MCP
+          Autonomous Gemini agent for PTP failure analysis
+          Architecture: GitHub Actions → Gemini AI → GitHub Issue Analysis
           """
           import os
           import json
@@ -91,20 +70,17 @@ jobs:
 
                   # Step 1: REASON - Understand the task
                   reasoning_prompt = f"""
-                  You are an autonomous AI agent analyzing PTP CI failures. You have access to:
-                  1. Prow MCP Server - for retrieving CI job data and logs
-                  2. GitHub MCP Server - for repository operations
+                  You are an autonomous AI agent analyzing PTP CI failures.
 
                   TASK: Analyze PTP failure in issue #{issue_number} from {repo}
 
-                  REASONING: I need to:
-                  1. Get the issue details from GitHub
-                  2. Extract PTP job information (e2e-telco5g-ptp-upstream)
-                  3. Retrieve CI logs and artifacts from Prow
-                  4. Analyze PTP-specific failures
-                  5. Provide actionable recommendations
+                  REASONING: I need to analyze the PTP failure information and provide:
+                  1. Root cause analysis of the PTP timing issues
+                  2. Specific investigation steps for the engineering team
+                  3. Actionable recommendations for fixing the failure
+                  4. Priority assessment based on PTP accuracy requirements
 
-                  What's my first action?
+                  Focus on PTP-specific timing, synchronization, and hardware issues.
                   """
 
                   # Step 2: ACT - Execute the analysis
@@ -168,18 +144,19 @@ jobs:
 
           ---
           **Analysis Details:**
-          - **Agent**: Gemini-powered autonomous agent
-          - **MCP Integration**: Prow CI + GitHub repository access
-          - **Focus**: PTP timing synchronization for OpenShift/Kubernetes
+          - **Agent**: Gemini-powered autonomous AI agent
+          - **Specialization**: PTP timing synchronization for OpenShift/Kubernetes
+          - **Focus**: Precision Time Protocol failures in telecom/5G workloads
           - **Trigger**: @ai-triage comment
 
           **Next Steps:**
           1. Review the analysis above
           2. Follow the recommended investigation steps
-          3. Comment `@ai-create-fix` to generate automated fix proposals
+          3. Check PTP pod logs and timing measurements
+          4. Comment `@ai-create-fix` for automated fix proposals (coming soon)
 
           ---
-          *Generated by Autonomous Gemini Agent via Red Hat AI Tools*
+          *Generated by Autonomous Gemini Agent for PTP Failure Analysis*
           """
 
                   # Use GitHub CLI for posting comment
