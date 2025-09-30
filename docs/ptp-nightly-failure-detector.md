@@ -17,6 +17,7 @@ The PTP Nightly Failure Detector is a GitHub Action that automatically monitors 
 
 1. **Job Monitoring**: Monitors specific PTP-related Prow jobs:
    - `periodic-ci-openshift-kni-cnf-features-deploy-release-{version}-e2e-telco5g-ptp`
+   - `periodic-ci-openshift-kni-cnf-features-deploy-release-{version}-e2e-telco5g-ptp-operator`
    - `e2e-telco5g-ptp`
    - `cnf-e2e-ptp`
 
@@ -84,6 +85,16 @@ You can manually trigger the workflow with custom parameters:
 
 Automated failure detection found 2 PTP-related test failures...
 
+## 🚨 Detected Failures
+
+```
+❌ FAILURE DETECTED:
+   Job: periodic-ci-openshift-kni-cnf-features-deploy-release-4.21-e2e-telco5g-ptp
+   Time: 2024-03-15T06:30:00Z
+   State: failure
+   URL: https://prow.ci.openshift.org/view/gs/origin-ci-test/logs/...
+```
+
 ## 🔍 Investigation Required
 
 Please review the job failures and artifacts to identify:
@@ -91,6 +102,10 @@ Please review the job failures and artifacts to identify:
 - Hardware/driver problems
 - Test environment issues
 - Code regressions
+
+## 🤖 AI Analysis Available
+
+To get AI-powered analysis of these failures, comment `@ai-triage` on this issue.
 ```
 
 ## GitHub Issue Management
@@ -143,6 +158,7 @@ To monitor additional PTP jobs, modify the `PTP_JOBS` array in the workflow:
 ```bash
 PTP_JOBS=(
     "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp"
+    "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-operator"
     "e2e-telco5g-ptp"
     "cnf-e2e-ptp"
     "your-new-ptp-job-name"

@@ -6,10 +6,12 @@ This document outlines the implementation plan for an AI-powered system that aut
 
 ## Current State
 
-We have an existing **PTP Nightly Failure Detector** GitHub Action that:
-- Runs every 6 hours to detect PTP test failures
-- Creates GitHub issues when failures are detected
-- Provides basic failure analysis and links to artifacts
+We have an **PTP Nightly Failure Detector** GitHub Action that:
+- **Workflow File**: `.github/workflows/ptp-nightly-failure-detector.yaml` (ready for deployment)
+- **Functionality**: Runs every 6 hours to detect PTP test failures
+- **Issue Creation**: Automatically creates GitHub issues when failures are detected
+- **Analysis**: Provides detailed failure analysis with artifact inspection
+- **Integration Ready**: Includes AI analysis trigger support (`@ai-triage` comments)
 
 ## Proposed Enhancement: AI-Powered Failure Resolution
 
