@@ -188,10 +188,10 @@ jobs:
 
           # List of PTP-related jobs to monitor
           PTP_JOBS=(
+              "periodic-ci-openshift-release-master-nightly-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-upstream"
+              "e2e-telco5g-ptp-upstream"
               "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp"
-              "periodic-ci-openshift-kni-cnf-features-deploy-release-${OPENSHIFT_VERSION}-e2e-telco5g-ptp-operator"
               "e2e-telco5g-ptp"
-              "cnf-e2e-ptp"
           )
 
           failure_count=0

@@ -49,56 +49,59 @@ GitHub Actions (Agent) ←→ Gemini/Claude CLI (AI Analysis) ←→ GitHub MCP 
 ### Stage 1: Enhanced Failure Detection
 **Trigger**: Issue creation in repository (automatically or manually created)
 
-**Multi-Repository Context Analysis**:
-1. **Cross-Repository Access**: AI has read access to all three PTP repositories:
-   - `k8snetworkplumbingwg/ptp-operator` (main operator logic)
-   - `k8snetworkplumbingwg/linuxptp-daemon` (PTP daemon implementation)
-   - `redhat-cne/cloud-event-proxy` (event handling and notifications)
+**PTP Ginkgo Test Analysis Context**:
+1. **Primary Focus**: PTP Operator Ginkgo test failures from `e2e-telco5g-ptp-upstream` job
+2. **Repository**: `k8snetworkplumbingwg/ptp-operator` (main focus for test failures)
+3. **Supporting Repositories** (for context when needed):
+   - `k8snetworkplumbingwg/linuxptp-daemon` (underlying PTP implementation)
+   - `redhat-cne/cloud-event-proxy` (event handling integration)
 
-2. **Comprehensive Failure Analysis**:
-   - **Deep Log Analysis**: AI examines full test logs and artifacts
-   - **Cross-Repo Pattern Recognition**: Identifies failure patterns across all three components
-   - **Dependency Analysis**: Understanding failures in daemon affecting operator, or event proxy issues
-   - **Root Cause Analysis**: Determines likely cause considering all three repositories
-   - **Historical Context**: Reviews similar past failures across the entire PTP ecosystem
+4. **Ginkgo Test Failure Analysis**:
+   - **Prow Job Monitoring**: Focus on `e2e-telco5g-ptp-upstream` job failures only
+   - **Artifact Deep Dive**: Parse JUnit XML and test logs from specific artifact paths
+   - **PTP Test Classification**: Distinguish PTP test failures from platform/infrastructure issues
+   - **Ginkgo Output Parsing**: Extract specific test case failures and error messages
+   - **Historical Pattern Recognition**: Identify recurring PTP test failure patterns
 
 ### Stage 2: Automated Triage (`@ai-triage`)
 **Trigger**: Comment `@ai-triage` on failure issue
 
 **Process**:
 ```yaml
-- name: AI Cross-Repository Failure Analysis
+- name: AI PTP Ginkgo Test Analysis
   prompt: |-
-    You are a PTP ecosystem engineer analyzing failures across the complete PTP stack.
+    You are a PTP test engineer analyzing Ginkgo test failures from the ptp-operator repository.
 
-    Multi-Repository Context:
-    - k8snetworkplumbingwg/ptp-operator: Main K8s operator managing PTP configurations
-    - k8snetworkplumbingwg/linuxptp-daemon: Core PTP daemon (ptp4l, phc2sys) implementations
-    - redhat-cne/cloud-event-proxy: Event handling, notifications, and cloud integration
+    Test Context:
+    - Repository: k8snetworkplumbingwg/ptp-operator
+    - Test Framework: Ginkgo tests for PTP functionality
+    - Target Job: e2e-telco5g-ptp-upstream
+    - Prow URL Pattern: https://prow.ci.openshift.org/?job=**e2e-telco5g-ptp-upstream**
 
-    Repository Interdependencies:
-    - Operator depends on daemon for PTP synchronization
-    - Cloud-event-proxy handles notifications from both operator and daemon
-    - Configuration changes in operator affect daemon behavior
-    - Daemon failures cascade to operator status and events
+    Failure Analysis Focus:
+    - ONLY analyze jobs with state: "failure"
+    - IGNORE all platform failures and infrastructure issues
+    - Focus on PTP-specific test failures in Ginkgo test suite
 
-    Failure Information:
-    ${{ env.FAILURE_LOGS }}
+    Artifacts Location Pattern:
+    - Job URL: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream/{JOB_ID}
+    - Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream/{JOB_ID}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/
 
-    TASK: Use MCP tools to analyze across all three repositories and post comprehensive analysis.
+    TASK: Analyze PTP test artifacts and identify Ginkgo test failures.
 
     Required Analysis Steps:
-    1. **Cross-Repo Code Review**: Use mcp__github__get_file_contents to examine relevant files in all three repos
-    2. **Dependency Analysis**: Check how components interact and where failure originated
-    3. **Historical Pattern Search**: Use mcp__github__search_code across repos for similar issues
+    1. **Artifact Inspection**: Examine JUnit XML and test logs from artifacts directory
+    2. **Ginkgo Test Parsing**: Parse Ginkgo test output for specific PTP test failures
+    3. **PTP Error Classification**: Identify PTP-specific vs platform issues
 
     Analysis must include:
-    1. **Failure Summary** - What specifically failed and in which component?
-    2. **Root Cause Analysis** - Which repository/component is the source? How do others depend on it?
-    3. **Cross-Repository Impact** - How does this failure affect other components?
-    4. **Proposed Solution** - Specific changes needed (may span multiple repos)
-    5. **Test Strategy** - How to verify fix across the entire PTP ecosystem
-    6. **Repository Priority** - Which repo should be fixed first based on dependency chain
+    1. **Test Failure Summary** - Which specific Ginkgo tests failed?
+    2. **PTP Root Cause** - What PTP functionality is broken (ptp4l, phc2sys, sync, config)?
+    3. **Failure Classification** - Is this a test case issue or actual PTP operator bug?
+    4. **Proposed Fix Location** - Fix needed in ptp-operator repository:
+       - Test case fix: Update/fix the failing Ginkgo test
+       - Operator bug fix: Fix actual PTP operator functionality
+    5. **Test Reproduction** - How to reproduce and verify the fix
 ```
 
 ### Stage 3: Automated Fix Creation (`@ai-create-fix`)
@@ -106,36 +109,43 @@ GitHub Actions (Agent) ←→ Gemini/Claude CLI (AI Analysis) ←→ GitHub MCP 
 
 **Process**:
 ```yaml
-- name: AI Fix Implementation
+- name: AI PTP Operator Fix Implementation
   prompt: |-
-    You are implementing a fix for CI failure in PTP Operator repository.
+    You are implementing a fix for PTP Ginkgo test failures in the ptp-operator repository.
+
+    Repository Context:
+    - Focus: k8snetworkplumbingwg/ptp-operator
+    - Test Framework: Ginkgo test suite
+    - Failed Job: e2e-telco5g-ptp-upstream
 
     TASK: Create fix branch for issue #${{ env.ISSUE_NUMBER }}
 
-    STEP 1 - PARSE TRIAGE: Extract fix details from triage analysis
-    STEP 2 - CREATE BRANCH: Branch name: ci-fix-issue-${{ env.ISSUE_NUMBER }}-${{ github.run_number }}
-    STEP 3 - APPLY FIX: Update code based on triage analysis
-    STEP 4 - VALIDATE: Ensure changes follow project patterns
-    STEP 5 - REPORT: Comment with fix summary and PR readiness
+    STEP 1 - PARSE TRIAGE: Extract PTP test failure classification from triage analysis
+    STEP 2 - CREATE BRANCH: Branch name: ptp-fix-issue-${{ env.ISSUE_NUMBER }}-${{ github.run_number }}
+    STEP 3 - APPLY FIX: Choose appropriate fix in ptp-operator repository:
+       - If test case issue: Fix/update the failing Ginkgo test cases
+       - If operator bug: Fix the actual PTP operator functionality/code
+    STEP 4 - VALIDATE: Ensure changes follow PTP operator patterns and test best practices
+    STEP 5 - REPORT: Comment with fix summary and e2e-telco5g-ptp-upstream validation steps
 ```
 
 ## MCP Tools Usage by Stage
 
-### Analysis Stage (Cross-Repository)
-- `get_issue` - Read failure issue details
-- `add_issue_comment` - Post analysis results
-- `get_file_contents` - Examine relevant source files across all three repos
-- `search_code` - Find related code patterns in ptp-operator, linuxptp-daemon, cloud-event-proxy
-- `get_repository_structure` - Understand codebase organization
-- `list_issues` - Check for related issues across repositories
+### Analysis Stage (PTP Ginkgo Test Focus)
+- `get_issue` - Read PTP test failure issue details
+- `add_issue_comment` - Post Ginkgo test analysis results
+- `get_file_contents` - Examine PTP operator source files and test files
+- `search_code` - Find related code patterns in ptp-operator repository
+- `web_fetch` - Retrieve artifacts from Prow/GCS (JUnit XML, test logs)
+- `list_issues` - Check for related PTP test failure issues
 
-### Fix Creation Stage (Multi-Repository)
-- `create_branch` - Create fix branches (potentially in multiple repos)
-- `create_or_update_file` - Apply code changes across repositories
-- `search_code` - Validate fix completeness in all affected repos
-- `add_issue_comment` - Report fix completion with cross-repo impact
-- `create_pull_request` - Submit PRs to appropriate repositories
-- `link_issues` - Connect related issues across repositories
+### Fix Creation Stage (PTP Operator Focus)
+- `create_branch` - Create fix branch in ptp-operator repository
+- `create_or_update_file` - Apply code/test changes in ptp-operator
+- `search_code` - Validate fix completeness in PTP operator codebase
+- `add_issue_comment` - Report fix completion with Ginkgo test validation
+- `create_pull_request` - Submit PR to ptp-operator repository
+- `get_file_contents` - Reference supporting repos for context when needed
 
 ## Implementation Plan
 
