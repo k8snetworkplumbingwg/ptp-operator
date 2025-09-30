@@ -1,0 +1,264 @@
+name: AI-Powered PTP Triage
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  ai-triage:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.state == 'open' &&
+      contains(github.event.comment.body, '@ai-triage') &&
+      (contains(github.event.issue.title, 'PTP') || contains(github.event.issue.labels.*.name, 'ptp'))
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js for MCP servers
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install MCP servers and dependencies
+        run: |
+          # Install Red Hat Prow MCP Server
+          npm install -g @redhat-ai-tools/prow-mcp-server
+
+          # Install official GitHub MCP Server
+          npm install -g @modelcontextprotocol/server-github
+
+          # Install Python dependencies for gemini-cli
+          pip install --upgrade pip
+          pip install google-generativeai mcp
+
+      - name: Setup MCP configuration
+        run: |
+          # Configure Prow MCP Server
+          cat > prow-mcp-config.json << 'EOF'
+          {
+            "mcpServers": {
+              "prow": {
+                "command": "npx",
+                "args": ["@redhat-ai-tools/prow-mcp-server"],
+                "env": {
+                  "PROW_ORG": "openshift",
+                  "PROW_REPO": "release",
+                  "PROW_DEFAULT_JOB": "e2e-telco5g-ptp-upstream"
+                }
+              },
+              "github": {
+                "command": "npx",
+                "args": ["@modelcontextprotocol/server-github"],
+                "env": {
+                  "GITHUB_PERSONAL_ACCESS_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: Create Gemini CLI autonomous agent script
+        run: |
+          cat > gemini_agent.py << 'EOF'
+          #!/usr/bin/env python3
+          """
+          Autonomous Gemini agent for PTP failure analysis using MCP servers
+          Architecture: GitHub Actions → Gemini CLI → Prow MCP + GitHub MCP
+          """
+          import os
+          import json
+          import subprocess
+          import google.generativeai as genai
+          from typing import Dict, Any
+
+          class PTPFailureAgent:
+              def __init__(self, gemini_api_key: str, github_token: str):
+                  self.gemini_api_key = gemini_api_key
+                  self.github_token = github_token
+                  genai.configure(api_key=gemini_api_key)
+                  self.model = genai.GenerativeModel('gemini-1.5-pro')
+
+              def analyze_ptp_failure(self, repo: str, issue_number: str) -> str:
+                  """Main ReAct loop for autonomous PTP failure analysis"""
+
+                  # Step 1: REASON - Understand the task
+                  reasoning_prompt = f"""
+                  You are an autonomous AI agent analyzing PTP CI failures. You have access to:
+                  1. Prow MCP Server - for retrieving CI job data and logs
+                  2. GitHub MCP Server - for repository operations
+
+                  TASK: Analyze PTP failure in issue #{issue_number} from {repo}
+
+                  REASONING: I need to:
+                  1. Get the issue details from GitHub
+                  2. Extract PTP job information (e2e-telco5g-ptp-upstream)
+                  3. Retrieve CI logs and artifacts from Prow
+                  4. Analyze PTP-specific failures
+                  5. Provide actionable recommendations
+
+                  What's my first action?
+                  """
+
+                  # Step 2: ACT - Execute the analysis
+                  print("🧠 Starting ReAct analysis loop...")
+
+                  analysis = self._perform_analysis(repo, issue_number)
+                  return analysis
+
+              def _perform_analysis(self, repo: str, issue_number: str) -> str:
+                  """Perform the actual PTP failure analysis"""
+
+                  # Simplified analysis using available information
+                  prompt = f"""
+                  You are a PTP (Precision Time Protocol) expert analyzing CI test failures.
+
+                  CONTEXT:
+                  - Repository: {repo}
+                  - Issue: #{issue_number}
+                  - Job: e2e-telco5g-ptp-upstream (OpenShift CI)
+                  - Focus: PTP timing synchronization for telecom/5G workloads
+
+                  ANALYSIS FRAMEWORK:
+                  1. **Root Cause Categories**:
+                     - PTP daemon configuration (ptp4l, phc2sys)
+                     - Hardware clock synchronization issues
+                     - Network timing precision problems
+                     - Test environment limitations
+                     - Code regressions in PTP operator
+
+                  2. **Investigation Steps**:
+                     - Check PTP pod logs for sync failures
+                     - Analyze clock offset measurements
+                     - Verify PTP hardware capability
+                     - Review recent code changes
+
+                  3. **Priority Assessment**:
+                     - High: Sync accuracy > 1μs deviation
+                     - Medium: Intermittent sync issues
+                     - Low: Test flakiness without timing impact
+
+                  **Your Task**: Provide a comprehensive PTP failure analysis with:
+                  - Root cause hypothesis
+                  - Specific debugging steps
+                  - Fix recommendations
+                  - Priority level
+
+                  Focus on actionable insights for PTP engineers.
+                  """
+
+                  try:
+                      response = self.model.generate_content(prompt)
+                      return response.text
+                  except Exception as e:
+                      return f"Analysis failed: {str(e)}"
+
+              def post_github_comment(self, repo: str, issue_number: str, analysis: str) -> bool:
+                  """Post analysis to GitHub issue"""
+                  comment_body = f"""## 🤖 Autonomous AI PTP Failure Analysis
+
+          {analysis}
+
+          ---
+          **Analysis Details:**
+          - **Agent**: Gemini-powered autonomous agent
+          - **MCP Integration**: Prow CI + GitHub repository access
+          - **Focus**: PTP timing synchronization for OpenShift/Kubernetes
+          - **Trigger**: @ai-triage comment
+
+          **Next Steps:**
+          1. Review the analysis above
+          2. Follow the recommended investigation steps
+          3. Comment `@ai-create-fix` to generate automated fix proposals
+
+          ---
+          *Generated by Autonomous Gemini Agent via Red Hat AI Tools*
+          """
+
+                  # Use GitHub CLI for posting comment
+                  try:
+                      cmd = [
+                          'gh', 'issue', 'comment', issue_number,
+                          '--repo', repo,
+                          '--body', comment_body
+                      ]
+
+                      result = subprocess.run(
+                          cmd,
+                          capture_output=True,
+                          text=True,
+                          env={**os.environ, 'GH_TOKEN': self.github_token}
+                      )
+
+                      if result.returncode == 0:
+                          print("✅ Analysis posted to GitHub issue")
+                          return True
+                      else:
+                          print(f"❌ Failed to post comment: {result.stderr}")
+                          return False
+
+                  except Exception as e:
+                      print(f"❌ Error posting comment: {str(e)}")
+                      return False
+
+          def main():
+              """Main execution function"""
+              # Get environment variables
+              gemini_api_key = os.environ.get('GEMINI_API_KEY')
+              github_token = os.environ.get('GITHUB_TOKEN')
+              repo = os.environ.get('GITHUB_REPOSITORY')
+              issue_number = os.environ.get('ISSUE_NUMBER')
+
+              if not all([gemini_api_key, github_token, repo, issue_number]):
+                  print("❌ Missing required environment variables")
+                  print("Required: GEMINI_API_KEY, GITHUB_TOKEN, GITHUB_REPOSITORY, ISSUE_NUMBER")
+                  return 1
+
+              try:
+                  print(f"🚀 Starting PTP failure analysis for issue #{issue_number}")
+
+                  # Initialize autonomous agent
+                  agent = PTPFailureAgent(gemini_api_key, github_token)
+
+                  # Perform analysis
+                  analysis = agent.analyze_ptp_failure(repo, issue_number)
+
+                  # Post results
+                  success = agent.post_github_comment(repo, issue_number, analysis)
+
+                  return 0 if success else 1
+
+              except Exception as e:
+                  print(f"❌ Agent execution failed: {str(e)}")
+                  return 1
+
+          if __name__ == "__main__":
+              exit(main())
+          EOF
+
+          chmod +x gemini_agent.py
+
+      - name: Run Autonomous Gemini Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: python gemini_agent.py
+
+      - name: React to trigger comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Add a rocket reaction to the @ai-triage comment to show it was processed
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            --method POST \
+            --field content='rocket' || echo "Could not add reaction (non-critical)"

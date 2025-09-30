@@ -2,6 +2,9 @@
 set -e
 set -o pipefail
 
+# Production PTP Failure Detector
+# Uses real Prow/GCS API to detect actual CI failures
+
 OPENSHIFT_VERSION="${OPENSHIFT_VERSION:-main}"
 LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}"
 START_TIME="${START_TIME:-$(date -u -d "${LOOKBACK_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)}"
@@ -17,61 +20,72 @@ check_ptp_job() {
     local job_name="$1"
     echo "🔎 Checking job: $job_name"
 
-    # SIMPLIFIED TEST MODE: Always simulate finding a failure for workflow testing
-    echo "   🔍 [TEST MODE] Simulating failure detection for workflow testing"
+    # Production Prow/GCS API integration
+    echo "   🔍 Querying Prow/GCS API for real failures in last ${LOOKBACK_HOURS} hours"
 
-    # Always simulate a failure found to test the workflow
-    local mock_job_id="1973002493642149888"
-    local mock_url="https://prow.ci.openshift.org/view/gs/test-platform-results/logs/${job_name}/${mock_job_id}"
+    # Direct approach: Check known recent job ID or use Prow web interface
+    # For production, we'll use a more targeted approach
+    local prow_job_url="${PROW_API_BASE}/?job=${job_name}&state=failure"
 
-    echo "❌ FAILURE DETECTED (TEST MODE):"
-    echo "   Job: $job_name"
-    echo "   Time: $START_TIME"
-    echo "   State: failure"
-    echo "   URL: $mock_url"
+    echo "   📡 Checking Prow for recent failures: $prow_job_url"
 
-    # Simulate fetching artifacts
-    echo "   📄 [TEST MODE] Simulating artifact analysis"
-    echo "     🚨 Mock PTP test failure: Ginkgo test 'should synchronize time across PTP pods' failed"
-    echo "     ⏰ PTP Issue: ptp4l synchronization timeout after 300 seconds"
-    echo "     📊 GCS Artifacts: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job_name}/${mock_job_id}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/"
-    echo "---"
+    # Use Prow web interface to check for recent failures
+    local prow_content=$(curl -s --max-time 10 "$prow_job_url" 2>/dev/null || echo "")
 
-    return 0  # Always return success (failure found)
+    if [[ -n "$prow_content" ]] && echo "$prow_content" | grep -q "failed\|error"; then
+        echo "   🔍 Found failure indicators in Prow dashboard"
+
+        # Extract a recent failure job ID from the page
+        local job_id=$(echo "$prow_content" | grep -o 'gs/test-platform-results/logs/[^/]*/[0-9]\{19\}' | head -1 | grep -o '[0-9]\{19\}' || echo "")
+
+        if [[ -n "$job_id" ]]; then
+            echo "❌ FAILURE DETECTED:"
+            echo "   Job: $job_name"
+            echo "   Job ID: $job_id"
+            echo "   Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "   State: failure"
+            echo "   URL: https://prow.ci.openshift.org/view/gs/test-platform-results/logs/${job_name}/${job_id}"
+
+            # Analyze artifacts for detailed failure info
+            local job_artifacts_url="https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job_name}/${job_id}/artifacts/"
+            fetch_job_artifacts "$job_name" "$job_artifacts_url"
+            echo "---"
+            return 0  # Found a failure
+        else
+            echo "   ⚠️  Found failure indicators but couldn't extract job ID"
+        fi
+    fi
+
+    # If we get here, no failures were found
+    echo "✅ No failures found for: $job_name in the last ${LOOKBACK_HOURS} hours"
+    return 1  # No failures found
 }
 
 # Function to fetch and analyze job artifacts
 fetch_job_artifacts() {
     local job_run="$1"
-    local job_url="$2"
+    local artifacts_base_url="$2"
 
-    # Extract job ID from the job_run name or URL
-    # For job names like "periodic-ci-openshift-release-master-nightly-4.21-e2e-telco5g-ptp-upstream"
-    # We need to construct the GCS URL pattern
-    if [[ "$job_url" != "N/A" ]] && [[ -n "$job_url" ]]; then
-        # Try to extract job ID from Prow URL
-        local job_id=$(echo "$job_url" | grep -o '[0-9]\{19\}' | head -1)
+    echo "   🔍 Analyzing artifacts from: $artifacts_base_url"
 
-        if [[ -n "$job_id" ]]; then
-            # Use the GCS URL pattern you provided
-            local gcs_artifacts_url="https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/logs/${job_run}/${job_id}/artifacts/e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/"
+    # Look for PTP-specific test artifacts
+    local ptp_artifacts_url="${artifacts_base_url}e2e-telco5g-ptp-upstream/telco5g-ptp-tests/artifacts/"
 
-            echo "   🔍 Checking GCS artifacts: $gcs_artifacts_url"
+    echo "   📊 Checking PTP test artifacts: $ptp_artifacts_url"
+    local ptp_artifacts_content=$(curl -s --max-time 5 "$ptp_artifacts_url" 2>/dev/null || echo "")
 
-            # Try to fetch artifacts listing from GCS
-            artifacts_content=$(curl -s "$gcs_artifacts_url" 2>/dev/null || echo "")
-
-            if [[ -n "$artifacts_content" ]]; then
-                # Look for common failure indicators in artifacts
-                analyze_artifacts "$artifacts_content" "$gcs_artifacts_url"
-            else
-                echo "   ⚠️  Could not fetch artifacts from GCS"
-            fi
-        else
-            echo "   ⚠️  Could not extract job ID from URL: $job_url"
-        fi
+    if [[ -n "$ptp_artifacts_content" ]]; then
+        echo "   ✅ Found PTP test artifacts"
+        analyze_artifacts "$ptp_artifacts_content" "$ptp_artifacts_url"
     else
-        echo "   ℹ️  No artifacts URL available"
+        echo "   📋 No specific PTP test artifacts found, checking general artifacts"
+        # Fallback to general artifacts analysis
+        local general_artifacts=$(curl -s --max-time 5 "$artifacts_base_url" 2>/dev/null || echo "")
+        if [[ -n "$general_artifacts" ]]; then
+            analyze_artifacts "$general_artifacts" "$artifacts_base_url"
+        else
+            echo "   ⚠️  Could not fetch any artifacts"
+        fi
     fi
 }
 
