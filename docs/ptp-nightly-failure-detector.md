@@ -6,7 +6,7 @@ The PTP Nightly Failure Detector is a GitHub Action that automatically monitors 
 
 ## Features
 
-- **Automated Monitoring**: Runs every 6 hours to check for new failures
+- **Automated Monitoring**: Runs daily at 8 AM EST to check for new failures
 - **OpenShift Version Support**: Configurable to monitor specific OpenShift versions (default: 4.21)
 - **Intelligent Filtering**: Filters out platform failures and focuses on PTP-specific issues
 - **Artifact Analysis**: Downloads and analyzes test artifacts to identify root causes
@@ -40,7 +40,7 @@ The PTP Nightly Failure Detector is a GitHub Action that automatically monitors 
 ### Schedule
 
 The workflow runs automatically:
-- Every 6 hours: `0 */6 * * *`
+- Daily at 8 AM EST: `0 13 * * *` (1 PM UTC)
 - Only on the main branch
 
 ### Manual Trigger

@@ -2,8 +2,8 @@ name: PTP Nightly Failure Detector
 
 on:
   schedule:
-    # Run every 6 hours to check for new failures
-    - cron: '0 */6 * * *'
+    # Run every day at 8 AM EST (1 PM UTC) to check for new failures
+    - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
       openshift_version:
