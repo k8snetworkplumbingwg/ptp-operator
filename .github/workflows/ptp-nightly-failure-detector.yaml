@@ -70,41 +70,50 @@ jobs:
               local job_name="$1"
               echo "🔎 Checking job: $job_name"
 
-              # Get recent job runs for the specific job
-              local api_url="${PROW_API_BASE}/api/jobs/${job_name}"
+              # Use Prow's prowjobs API to get all recent jobs
+              local api_url="${PROW_API_BASE}/prowjobs.js?var=allBuilds"
 
               # Fetch job data with proper error handling
-              job_data=$(curl -s "$api_url" 2>/dev/null || echo '{"items":[]}')
+              raw_data=$(curl -s "$api_url" 2>/dev/null || echo "")
 
-              # Validate JSON response
-              if ! echo "$job_data" | jq . >/dev/null 2>&1; then
-                  echo "⚠️  Invalid JSON response from Prow API for job: $job_name"
+              if [[ -z "$raw_data" ]]; then
+                  echo "⚠️  Could not fetch data from Prow API"
                   return 1
               fi
 
-              # Parse and analyze failures
-              if echo "$job_data" | jq -e '.items[]' >/dev/null 2>&1; then
-                  echo "$job_data" | jq -r --arg start_time "$START_TIME" '
-                      .items[] |
-                      select(.spec.type == "periodic" and .status.startTime >= $start_time) |
-                      select(.status.state == "failure" or .status.state == "error") |
-                      "\(.metadata.name)|\(.status.startTime)|\(.status.state)|\(.status.url // "N/A")"
-                  ' | while IFS='|' read -r job_run start_time state url; do
-                      if [[ -n "$job_run" ]]; then
-                          echo "❌ FAILURE DETECTED:"
-                          echo "   Job: $job_run"
-                          echo "   Time: $start_time"
-                          echo "   State: $state"
-                          echo "   URL: $url"
+              # Extract JSON from JavaScript variable assignment
+              job_data=$(echo "$raw_data" | sed 's/^var allBuilds = //' | sed 's/;$//')
 
-                          # Try to fetch artifacts
-                          fetch_job_artifacts "$job_run" "$url"
-                          echo "---"
-                      fi
-                  done
-              else
-                  echo "⚠️  Could not fetch data for job: $job_name"
+              # Validate JSON response
+              if ! echo "$job_data" | jq . >/dev/null 2>&1; then
+                  echo "⚠️  Invalid JSON response from Prow API"
+                  return 1
               fi
+
+              # Parse and analyze failures for the specific job
+              echo "$job_data" | jq -r --arg job_pattern "$job_name" --arg start_time "$START_TIME" '
+                  .items[] |
+                  select(.metadata.name | test($job_pattern)) |
+                  select(.spec.type == "periodic" and .status.startTime >= $start_time) |
+                  select(.status.state == "failure" or .status.state == "error") |
+                  "\(.metadata.name)|\(.status.startTime)|\(.status.state)|\(.status.url // "N/A")"
+              ' | while IFS='|' read -r job_run start_time state url; do
+                  if [[ -n "$job_run" ]]; then
+                      echo "❌ FAILURE DETECTED:"
+                      echo "   Job: $job_run"
+                      echo "   Time: $start_time"
+                      echo "   State: $state"
+                      echo "   URL: $url"
+
+                      # Try to fetch artifacts
+                      fetch_job_artifacts "$job_run" "$url"
+                      echo "---"
+                      return 0  # Found a failure
+                  fi
+              done
+
+              echo "✅ No failures found for: $job_name"
+              return 1  # No failures found
           }
 
           # Function to fetch and analyze job artifacts
@@ -208,10 +217,11 @@ jobs:
           for job in "${PTP_JOBS[@]}"; do
               echo "========================================="
               job_output=$(check_ptp_job "$job" 2>&1)
+              job_exit_code=$?
               echo "$job_output"
 
-              # Count failures if any detected
-              if echo "$job_output" | grep -q "❌ FAILURE DETECTED:"; then
+              # Count failures if any detected (exit code 0 means failure found)
+              if [[ $job_exit_code -eq 0 ]] && echo "$job_output" | grep -q "❌ FAILURE DETECTED:"; then
                   job_failure_count=$(echo "$job_output" | grep -c "❌ FAILURE DETECTED:" || echo "0")
                   failure_count=$((failure_count + job_failure_count))
                   detected_failures="${detected_failures}\n${job_output}"
