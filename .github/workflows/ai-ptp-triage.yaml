@@ -63,7 +63,7 @@ jobs:
                   self.gemini_api_key = gemini_api_key
                   self.github_token = github_token
                   genai.configure(api_key=gemini_api_key)
-                  self.model = genai.GenerativeModel('gemini-1.5-pro')
+                  self.model = genai.GenerativeModel('gemini-pro')
 
               def analyze_ptp_failure(self, repo: str, issue_number: str) -> str:
                   """Main ReAct loop for autonomous PTP failure analysis"""
