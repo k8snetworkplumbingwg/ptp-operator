@@ -4,6 +4,7 @@
 - [PTP Operator](#ptp-operator)
 - [PtpOperatorConfig](#ptpoperatorconfig)
 - [PtpConfig](#ptpconfig)
+- [PtpConfig Status](#ptpconfig-status)
 - [Quick Start](#quick-start)
 
 ## PTP Operator
@@ -313,6 +314,146 @@ Requirements:
 Two ptp4l configurations must exist with the phc2sysOPts field set to an empty string.
 The names of these ptp4l configurations will be used and listed under the ptpSettings/haProfiles key in the phc2sys-only enabled ptpConfig.
 
+
+## PtpConfig Status
+PtpConfig includes a status subresource with `ptpStatus.conditions[]` that operands (linuxptp-daemon, cloud-event-proxy) can update. Each condition includes `type`, `profile` (logical profile), `filename` (active config file), `status`, `reason`, `message`, and `lastUpdateTime`.
+
+Example populated status (GM):
+```yaml
+status:
+  matchList:
+    - nodeName: worker-0
+      profile: GM-Profile-A
+  ptpStatus:
+    conditions:
+      - type: PTP4lRunning
+        profile: GM-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Started
+        message: "ptp4l is running (pid 3124)"
+        lastUpdateTime: "2025-06-27T10:13:10Z"
+      - type: LockState
+        profile: GM-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: LOCKED
+        message: "clock state is LOCKED"
+        lastUpdateTime: "2025-06-27T10:15:00Z"
+      - type: ClockClass
+        profile: GM-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Class6
+        message: "clock class is 6"
+        lastUpdateTime: "2025-06-27T10:15:00Z"
+      - type: PortState
+        profile: GM-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: MASTER
+        message: "interface ens5f0 state MASTER"
+        lastUpdateTime: "2025-06-27T10:13:50Z"
+      - type: ClockType
+        profile: GM-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: T-GM
+        message: "profile reports T-GM Clock"
+        lastUpdateTime: "2025-06-27T10:13:00Z"
+
+Example populated status (OC):
+```yaml
+status:
+  ptpStatus:
+    conditions:
+      - type: PTP4lRunning
+        profile: OC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Started
+        message: "ptp4l is running"
+        lastUpdateTime: "2025-06-27T11:05:00Z"
+      - type: LockState
+        profile: OC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: LOCKED
+        message: "OC locked to GM"
+        lastUpdateTime: "2025-06-27T11:06:10Z"
+      - type: ClockClass
+        profile: OC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Class6
+        message: "clock class is 6"
+        lastUpdateTime: "2025-06-27T11:06:10Z"
+      - type: PortState
+        profile: OC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: SLAVE
+        message: "interface ens5f1 state SLAVE (receiving time)"
+        lastUpdateTime: "2025-06-27T11:05:20Z"
+      - type: ClockType
+        profile: OC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: OC
+        message: "profile reports Ordinary Clock"
+        lastUpdateTime: "2025-06-27T11:05:00Z"
+```
+
+Example populated status (BC):
+```yaml
+status:
+  ptpStatus:
+    conditions:
+      - type: PTP4lRunning
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Started
+        message: "ptp4l is running"
+        lastUpdateTime: "2025-06-27T12:00:00Z"
+      - type: LockState
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: HOLDOVER
+        message: "BC in holdover"
+        lastUpdateTime: "2025-06-27T12:01:00Z"
+      - type: ClockClass
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: Class7
+        message: "clock class is 7"
+        lastUpdateTime: "2025-06-27T12:01:00Z"
+      - type: PortState
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: SLAVE
+        message: "ingress port ens5f1 state SLAVE (receiving time)"
+        lastUpdateTime: "2025-06-27T12:00:20Z"
+      - type: PortState
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: MASTER
+        message: "egress port ens5f0 state MASTER (transmitting time)"
+        lastUpdateTime: "2025-06-27T12:00:25Z"
+      - type: ClockType
+        profile: BC-Profile-A
+        filename: ptp4l.0.config
+        status: "True"
+        reason: BC
+        message: "profile reports Boundary Clock"
+        lastUpdateTime: "2025-06-27T12:00:00Z"
+```
+
+RBAC for linuxptp-daemon to update `ptpconfigs/status` is included in `bindata/linuxptp/ptp-daemon.yaml`.
 
 ## Quick Start
 
