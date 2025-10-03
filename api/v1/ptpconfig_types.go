@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -38,6 +39,7 @@ type PtpConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	MatchList []NodeMatchList `json:"matchList,omitempty"`
+	PtpStatus PtpStatus       `json:"ptpStatus,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -110,6 +112,60 @@ type MatchRule struct {
 type NodeMatchList struct {
 	NodeName *string `json:"nodeName"`
 	Profile  *string `json:"profile"`
+}
+
+// PtpConditionType represents categories of PTP conditions reported by operands
+type PtpConditionType string
+
+const (
+	// Process lifecycle
+	ConditionPodRestarted   PtpConditionType = "PodRestarted"
+	ConditionPTP4lRunning   PtpConditionType = "PTP4lRunning"
+	ConditionPhc2sysRunning PtpConditionType = "Phc2sysRunning"
+	ConditionTs2phcRunning  PtpConditionType = "Ts2phcRunning"
+    ConditionSynce4lRunning PtpConditionType = "Synce4lRunning"
+    ConditionChronydRunning PtpConditionType = "ChronydRunning"
+    ConditionGPSPipeRunning PtpConditionType = "GPSPipeRunning"
+    ConditionGPSDRunning    PtpConditionType = "GPSDRunning"
+
+	// Profile/apply
+	ConditionProfileApplied PtpConditionType = "ProfileApplied"
+
+	// NIC/PHC capabilities
+	ConditionNICCapabilities PtpConditionType = "NICCapabilities"
+
+	// State and class (values reflected in Reason/Message)
+	ConditionLockState  PtpConditionType = "LockState"  // LOCKED/HOLDOVER/FREERUN
+	ConditionClockClass PtpConditionType = "ClockClass" // 6/7/248
+	ConditionPortState  PtpConditionType = "PortState"  // INITIALIZING/LISTENING/SLAVE/MASTER/FAULTY
+	ConditionClockType  PtpConditionType = "ClockType"  // OC/BC
+
+	// Event/CEP
+	ConditionEventFramework PtpConditionType = "EventFramework"
+
+	// GNSS/DPLL (when applicable)
+	ConditionGNSSState  PtpConditionType = "GNSSState"
+	ConditionDPLLStatus PtpConditionType = "DPLLStatus"
+
+	// Overall service readiness
+	ConditionPTPServiceReady PtpConditionType = "PTPServiceReady"
+)
+
+// PtpCondition mirrors standard Kubernetes condition patterns
+type PtpCondition struct {
+	Type           PtpConditionType       `json:"type"`
+	Profile        string                 `json:"profile,omitempty"`
+	Filename       string                 `json:"filename,omitempty"`
+    Process        string                 `json:"process,omitempty"`
+	Status         corev1.ConditionStatus `json:"status"`
+	Reason         string                 `json:"reason,omitempty"`
+	Message        string                 `json:"message,omitempty"`
+	LastUpdateTime metav1.Time            `json:"lastUpdateTime,omitempty"`
+}
+
+// PtpStatus aggregates conditions emitted by operands for this PtpConfig
+type PtpStatus struct {
+	Conditions []PtpCondition `json:"conditions,omitempty"`
 }
 
 func init() {
