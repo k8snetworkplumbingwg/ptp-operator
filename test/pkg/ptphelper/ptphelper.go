@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,12 +37,17 @@ import (
 )
 
 func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (id string, err error) {
-	const logIDRegex = `(?m).*?Ptp4lConf: #profile: %s(.|\n)*?message_tag \[(.*)\]`
-	const logIDIndex = 2
+	// Instead of parsing logs, read the config file directly from the container
+	// The config file contains both the profile name and message_tag
+	// Note: ptpConfigName parameter is kept for compatibility but not used for matching
+	// since the ptpconfig object name may differ from the profile name in the config
+	const messageTagRegex = `(?m)^message_tag\s+\[([^\]]+)\]`
+
 	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 	if err != nil {
 		return id, err
 	}
+
 	for _, pod := range ptpPods.Items {
 		isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
 		if err != nil {
@@ -52,17 +58,60 @@ func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (id 
 			continue
 		}
 
-		renderedRegex := fmt.Sprintf(logIDRegex, ptpConfigName)
-		matches, err := pods.GetPodLogsRegex(pod.Namespace,
-			pod.Name, pkg.PtpContainerName,
-			renderedRegex, false, pkg.TimeoutIn3Minutes)
-		if err != nil {
-			return id, fmt.Errorf("could not get any profile line, err=%s", err)
-		}
-		return matches[len(matches)-1][logIDIndex], nil
+		// Use Eventually to handle timing issues during pod startup
+		var messageTag string
+		Eventually(func() error {
+			// List actual config files in /var/run/ instead of guessing
+			listCmd := []string{"sh", "-c", "ls /var/run/ptp4l.*.config 2>/dev/null || true"}
+			listStdout, _, listErr := pods.ExecCommand(client.Client, true, &pod, pkg.PtpContainerName, listCmd)
 
+			if listErr != nil {
+				return fmt.Errorf("failed to list config files: %w", listErr)
+			}
+
+			configFiles := strings.Fields(strings.TrimSpace(listStdout.String()))
+			if len(configFiles) == 0 {
+				return fmt.Errorf("no ptp4l config files found yet in pod %s", pod.Name)
+			}
+
+			logrus.Debugf("Found %d ptp4l config files in pod %s: %v", len(configFiles), pod.Name, configFiles)
+
+			// Try each config file found
+			for _, configPath := range configFiles {
+				cmd := []string{"cat", configPath}
+
+				stdout, _, cmdErr := pods.ExecCommand(client.Client, true, &pod, pkg.PtpContainerName, cmd)
+				if cmdErr != nil {
+					logrus.Debugf("Failed to read %s: %v", configPath, cmdErr)
+					continue
+				}
+
+				configContent := stdout.String()
+
+				// Extract the message_tag from the config file
+				messageTagRe := regexp.MustCompile(messageTagRegex)
+				messageTagMatches := messageTagRe.FindStringSubmatch(configContent)
+				if len(messageTagMatches) >= 2 {
+					messageTag = strings.TrimSpace(messageTagMatches[1])
+					logrus.Infof("Found message_tag in %s for pod %s: %s", configPath, pod.Name, messageTag)
+					return nil
+				}
+
+				logrus.Debugf("No message_tag found in %s:\n %s", configPath, configContent)
+			}
+
+			return fmt.Errorf("no message_tag found in any config file yet")
+		}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeNil(),
+			"timeout waiting for ptp4l config file with message_tag in pod %s", pod.Name)
+
+		if messageTag != "" {
+			return messageTag, nil
+		}
+
+		return id, fmt.Errorf("failed to get message_tag from pod %s", pod.Name)
 	}
-	return id, nil
+
+	return id, fmt.Errorf("no suitable pod found with label/nodeName filter")
 }
 
 func GetClockIDMaster(ptpConfigName string, label *string, nodeName *string, isGM bool) (id string, err error) {
@@ -665,12 +714,12 @@ func IsPtpMaster(ptp4lOpts, phc2sysOpts *string) bool {
 // Checks for DualNIC BC
 func GetProfileName(config *ptpv1.PtpConfig) (string, error) {
 	for _, profile := range config.Spec.Profile {
-		if profile.Name != nil && *profile.Name == pkg.PtpGrandMasterPolicyName ||
+		if profile.Name != nil && (*profile.Name == pkg.PtpGrandMasterPolicyName ||
 			*profile.Name == pkg.PtpBcMaster1PolicyName ||
 			*profile.Name == pkg.PtpBcMaster2PolicyName ||
 			*profile.Name == pkg.PtpSlave1PolicyName ||
 			*profile.Name == pkg.PtpSlave2PolicyName ||
-			*profile.Name == pkg.PtpTempPolicyName {
+			*profile.Name == pkg.PtpTempPolicyName) {
 			return *profile.Name, nil
 		}
 	}
@@ -795,7 +844,6 @@ func IsExternalGM() (out bool) {
 
 func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 	var retList = make([]string, 0)
-	var deviceId = ""
 	WPCifaces := getWPCEnabledIfaces(nodeName)
 	for _, iFace := range WPCifaces {
 		if strings.HasSuffix(iFace, "0") {
@@ -806,7 +854,7 @@ func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 			}
 		}
 	}
-	return retList, deviceId
+	return retList, ""
 }
 func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
 	var ret = make([]string, 0)
