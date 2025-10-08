@@ -150,6 +150,40 @@ spec:
                   - profile
                   type: object
                 type: array
+              ptpStatus:
+                description: PtpStatus aggregates conditions emitted by operands for
+                  this PtpConfig
+                properties:
+                  conditions:
+                    items:
+                      description: PtpCondition mirrors standard Kubernetes condition
+                        patterns
+                      properties:
+                        filename:
+                          type: string
+                        lastUpdateTime:
+                          format: date-time
+                          type: string
+                        message:
+                          type: string
+                        process:
+                          type: string
+                        profile:
+                          type: string
+                        reason:
+                          type: string
+                        status:
+                          type: string
+                        type:
+                          description: PtpConditionType represents categories of PTP
+                            conditions reported by operands
+                          type: string
+                      required:
+                      - status
+                      - type
+                      type: object
+                    type: array
+                type: object
             type: object
         type: object
     served: true
