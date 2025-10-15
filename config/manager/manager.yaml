@@ -45,6 +45,9 @@ spec:
           image: controller
           command:
           - ptp-operator
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           args:
           - --enable-leader-election
           - --logtostderr
