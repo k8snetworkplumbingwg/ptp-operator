@@ -2236,7 +2236,7 @@ func coldBootInBackground(stopChan chan struct{}, fullConfig testconfig.TestConf
 	}
 }
 
-func killTs2phcInBackground(stopChan chan struct{}, fullConfig testconfig.TestConfig) {
+func killTs2phcInBackground(stopChan chan struct{}, fullConfig tesftconfig.TestConfig) {
 	for {
 		select {
 		case <-stopChan:
