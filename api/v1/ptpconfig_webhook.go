@@ -171,8 +171,32 @@ func (r *PtpConfig) validate() error {
 					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
 						return errors.New("inSyncConditionThreshold='" + v + "' is invalid; must be an unsigned integer")
 					}
+
+				case strings.Contains(k, "clockId"):
+					// Allow explicit clockId
+					if _, err := strconv.ParseUint(v, 10, 64); err != nil {
+						if _, err := strconv.ParseUint(v, 16, 64); err != nil {
+							return errors.New("clockId='" + v + "' is invalid; must be an unsigned integer")
+						}
+					}
+				case k == "LocalHoldoverTimeout":
+					// Validate LocalHoldoverTimeout is an unsigned integer
+					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
+						return errors.New("LocalHoldoverTimeout='" + v + "' is invalid; must be an unsigned integer")
+					}
+				case k == "LocalMaxHoldoverOffSet":
+					// Validate LocalMaxHoldoverOffSet is an unsigned integer
+					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
+						return errors.New("LocalMaxHoldoverOffSet='" + v + "' is invalid; must be an unsigned integer")
+					}
+				case k == "MaxInSpecOffset":
+					// Validate MaxInSpecOffset is an unsigned integer
+					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
+						return errors.New("MaxInSpecOffset='" + v + "' is invalid; must be an unsigned integer")
+					}
 				case k == "controllingProfile":
 					// Allow controllingProfile setting - no specific validation required for string
+
 				default:
 					return errors.New("profile.PtpSettings '" + k + "' is not a configurable setting")
 				}
