@@ -238,12 +238,28 @@ type Subsystem struct {
 	Ethernet []Ethernet `json:"ethernet"`
 }
 
+// HoldoverParameters defines the combination of the DPLL complex hardware parameters and the holdover specification threshold.
+type HoldoverParameters struct {
+	// MaxInSpecOffset is the holdover specification threshold in nanoseconds. Default - 100ns
+	MaxInSpecOffset uint64 `json:"maxInSpecOffset,omitempty"`
+
+	// LocalMaxHoldoverOffset is the maximum holdover offset in nanoseconds. Default - 1500ns
+	LocalMaxHoldoverOffset uint64 `json:"localMaxHoldoverOffset,omitempty"`
+
+	// LocalHoldoverTimeout is the time the clock will stay in the holdover state before reaching the
+	// LocalMaxHoldoverOffset (in seconds). Default - 14400s
+	LocalHoldoverTimeout uint64 `json:"localHoldoverTimeout,omitempty"`
+}
+
 // DPLL represents generic DPLL configuration within a synchronization subsystem.
 // Configuration of this section will result in DPLL device configurations through the Netlink driver.
 type DPLL struct {
 	// ClockID is an optional clock ID. If omitted, the hardware must support clock ID discovery.
 	// Format: decimal or hex ("5799633565432596414" or "0xaabbccfffeddeeff")
 	ClockID string `json:"clockId,omitempty"`
+
+	// HoldoverParameters defines the combination of the DPLL complex hardware parameters and the holdover specification threshold.
+	HoldoverParameters HoldoverParameters `json:"holdoverParameters,omitempty"`
 
 	// PhaseInputs are phase reference input pins, keyed by board label
 	PhaseInputs map[string]PinConfig `json:"phaseInputs,omitempty"`
@@ -423,6 +439,25 @@ func (cc *ClockChain) ResolveClockAliases() error {
 	return nil
 }
 
+// ValidateHoldoverParameters validates holdover parameter values
+func (hp *HoldoverParameters) Validate() error {
+	// Validate that LocalMaxHoldoverOffset is greater than MaxInSpecOffset if both are set
+	if hp.MaxInSpecOffset > 0 && hp.LocalMaxHoldoverOffset > 0 {
+		if hp.LocalMaxHoldoverOffset <= hp.MaxInSpecOffset {
+			return fmt.Errorf("localMaxHoldoverOffset (%d ns) must be greater than maxInSpecOffset (%d ns)",
+				hp.LocalMaxHoldoverOffset, hp.MaxInSpecOffset)
+		}
+	}
+
+	// Validate reasonable timeout values (not zero if set, and not excessively large)
+	if hp.LocalHoldoverTimeout > 0 && hp.LocalHoldoverTimeout > 86400*7 { // 7 days in seconds
+		return fmt.Errorf("localHoldoverTimeout (%d seconds) exceeds maximum allowed value (7 days)",
+			hp.LocalHoldoverTimeout)
+	}
+
+	return nil
+}
+
 // ValidatePinConfig ensures frequency and esyncConfigName are mutually exclusive
 func (pc *PinConfig) Validate() error {
 	if pc.Frequency != nil && pc.ESyncConfigName != "" {
@@ -499,6 +534,11 @@ func (cc *ClockChain) Validate() error {
 				return fmt.Errorf("invalid clock ID in subsystem %s: %w", subsystem.Name, err)
 			}
 			clockIDs[subsystem.DPLL.ClockID] = true
+		}
+
+		// Validate holdover parameters
+		if err := subsystem.DPLL.HoldoverParameters.Validate(); err != nil {
+			return fmt.Errorf("invalid holdover parameters in subsystem %s: %w", subsystem.Name, err)
 		}
 
 		// Validate pin configs

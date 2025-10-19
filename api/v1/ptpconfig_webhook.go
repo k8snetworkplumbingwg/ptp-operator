@@ -179,24 +179,12 @@ func (r *PtpConfig) validate() error {
 							return errors.New("clockId='" + v + "' is invalid; must be an unsigned integer")
 						}
 					}
-				case k == "LocalHoldoverTimeout":
-					// Validate LocalHoldoverTimeout is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("LocalHoldoverTimeout='" + v + "' is invalid; must be an unsigned integer")
-					}
-				case k == "LocalMaxHoldoverOffSet":
-					// Validate LocalMaxHoldoverOffSet is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("LocalMaxHoldoverOffSet='" + v + "' is invalid; must be an unsigned integer")
-					}
-				case k == "MaxInSpecOffset":
-					// Validate MaxInSpecOffset is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("MaxInSpecOffset='" + v + "' is invalid; must be an unsigned integer")
-					}
 				case k == "controllingProfile":
 					// Allow controllingProfile setting - no specific validation required for string
-
+				case k == "upstreamPort":
+					// Temporary allow upstreamPort setting - no specific validation required for string
+				case k == "leadingInterface":
+					// Temporary allow leadingInterface setting - no specific validation required for string
 				default:
 					return errors.New("profile.PtpSettings '" + k + "' is not a configurable setting")
 				}
