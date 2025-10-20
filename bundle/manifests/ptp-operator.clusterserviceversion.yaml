@@ -421,8 +421,8 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.name
-                image: ghcr.io/k8snetworkplumbingwg/ptp-operator:4.21
-                imagePullPolicy: IfNotPresent
+                image: ghcr.io/vitus133/ptp-operator:v2
+                imagePullPolicy: Always
                 name: ptp-operator
                 ports:
                 - containerPort: 9443

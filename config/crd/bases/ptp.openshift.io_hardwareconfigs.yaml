@@ -271,7 +271,7 @@ spec:
                               description: ESyncDefinition defines a named eSync configuration
                                 that can be referenced by name from pin configurations.
                               properties:
-                                esyncConfig:
+                                eSyncConfig:
                                   description: ESyncConfig contains the eSync feature
                                     configuration parameters
                                   properties:
@@ -300,7 +300,7 @@ spec:
                                     eSync configuration
                                   type: string
                               required:
-                              - esyncConfig
+                              - eSyncConfig
                               - name
                               type: object
                             type: array
@@ -363,7 +363,7 @@ spec:
                                         description: Description is an optional description
                                           for this pin configuration
                                         type: string
-                                      esyncConfigName:
+                                      eSyncConfigName:
                                         description: |-
                                           ESyncConfigName is an optional eSync configuration name (defined in CommonDefinitions).
                                           Mutually exclusive with frequency.
@@ -420,7 +420,7 @@ spec:
                                         description: Description is an optional description
                                           for this pin configuration
                                         type: string
-                                      esyncConfigName:
+                                      eSyncConfigName:
                                         description: |-
                                           ESyncConfigName is an optional eSync configuration name (defined in CommonDefinitions).
                                           Mutually exclusive with frequency.
@@ -462,6 +462,30 @@ spec:
                                     outputs for other devices or measurements, keyed
                                     by board label
                                   type: object
+                                holdoverParameters:
+                                  description: HoldoverParameters defines the combination
+                                    of the DPLL complex hardware parameters and the
+                                    holdover specification threshold.
+                                  properties:
+                                    localHoldoverTimeout:
+                                      description: |-
+                                        LocalHoldoverTimeout is the time the clock will stay in the holdover state before reaching the
+                                        LocalMaxHoldoverOffset (in seconds). Default - 14400s
+                                      format: int64
+                                      type: integer
+                                    localMaxHoldoverOffset:
+                                      description: LocalMaxHoldoverOffset is the maximum
+                                        holdover offset in nanoseconds. Default -
+                                        1500ns
+                                      format: int64
+                                      type: integer
+                                    maxInSpecOffset:
+                                      description: MaxInSpecOffset is the holdover
+                                        specification threshold in nanoseconds. Default
+                                        - 100ns
+                                      format: int64
+                                      type: integer
+                                  type: object
                                 phaseInputs:
                                   additionalProperties:
                                     description: |-
@@ -478,7 +502,7 @@ spec:
                                         description: Description is an optional description
                                           for this pin configuration
                                         type: string
-                                      esyncConfigName:
+                                      eSyncConfigName:
                                         description: |-
                                           ESyncConfigName is an optional eSync configuration name (defined in CommonDefinitions).
                                           Mutually exclusive with frequency.
@@ -535,7 +559,7 @@ spec:
                                         description: Description is an optional description
                                           for this pin configuration
                                         type: string
-                                      esyncConfigName:
+                                      eSyncConfigName:
                                         description: |-
                                           ESyncConfigName is an optional eSync configuration name (defined in CommonDefinitions).
                                           Mutually exclusive with frequency.
@@ -596,9 +620,9 @@ spec:
                                 - ports
                                 type: object
                               type: array
-                            hardwarePlugin:
-                              description: HardwarePlugin is the hardware-specific
-                                plugin identifier that handles default configurations
+                            hardwareSpecificDefinitions:
+                              description: HardwareSpecificDefinitions is the hardware-specific
+                                identifier that handles default configurations
                               type: string
                             name:
                               description: Name is a human-readable identifier for

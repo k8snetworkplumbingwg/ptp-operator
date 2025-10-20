@@ -59,7 +59,7 @@ type ESyncDefinition struct {
 	Name string `json:"name"`
 
 	// ESyncConfig contains the eSync feature configuration parameters
-	ESyncConfig ESyncConfig `json:"esyncConfig"`
+	ESyncConfig ESyncConfig `json:"eSyncConfig"`
 }
 
 // RefSyncDefinition defines a named reference sync configuration that can be
@@ -228,8 +228,8 @@ type Subsystem struct {
 	// Name is a human-readable identifier for this subsystem
 	Name string `json:"name"`
 
-	// HardwarePlugin is the hardware-specific plugin identifier that handles default configurations
-	HardwarePlugin string `json:"hardwarePlugin,omitempty"`
+	// HardwareSpecificDefinitions is the hardware-specific identifier that handles default configurations
+	HardwareSpecificDefinitions string `json:"hardwareSpecificDefinitions,omitempty"`
 
 	// DPLL contains the DPLL configuration for this subsystem
 	DPLL DPLL `json:"dpll"`
@@ -299,7 +299,7 @@ type PinConfig struct {
 
 	// ESyncConfigName is an optional eSync configuration name (defined in CommonDefinitions).
 	// Mutually exclusive with frequency.
-	ESyncConfigName string `json:"esyncConfigName,omitempty"`
+	ESyncConfigName string `json:"eSyncConfigName,omitempty"`
 
 	// Description is an optional description for this pin configuration
 	Description string `json:"description,omitempty"`
@@ -650,7 +650,7 @@ func (cc *ClockChain) String() string {
 }
 
 func (s *Subsystem) String() string {
-	plugin := s.HardwarePlugin
+	plugin := s.HardwareSpecificDefinitions
 	if plugin == "" {
 		plugin = "default"
 	}

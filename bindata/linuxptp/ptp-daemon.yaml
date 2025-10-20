@@ -34,7 +34,7 @@ spec:
       containers:
         {{ if (eq .EnableEventPublisher true) }}
         - name: cloud-event-proxy
-          image: {{ .SideCar }}
+          image: quay.io/vgrinber/cloud-event-proxy:tbc
           imagePullPolicy: IfNotPresent
           args:
             - "--metrics-addr=127.0.0.1:9091"
@@ -92,7 +92,7 @@ spec:
         - name: linuxptp-daemon-container
           securityContext:
             privileged: true
-          image: {{.Image}}
+          image: ghcr.io/vitus133/linuxptp-daemon:tbc
           imagePullPolicy: IfNotPresent
           command: [ "/bin/bash", "-c", "--" ]
           args:
