@@ -89,6 +89,9 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
+    - kind: HardwareConfig
+      name: hardwareconfigs.ptp.openshift.io
+      version: v2alpha1
     - description: NodePtpDevice is the Schema for the nodeptpdevices API
       displayName: Node Ptp Device
       kind: NodePtpDevice
@@ -300,6 +303,32 @@ spec:
         - apiGroups:
           - ptp.openshift.io
           resources:
+          - hardwareconfigs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ptp.openshift.io
+          resources:
+          - hardwareconfigs/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - ptp.openshift.io
+          resources:
+          - hardwareconfigs/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - ptp.openshift.io
+          resources:
           - ptpconfigs
           verbs:
           - create
@@ -393,8 +422,8 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.name
-                image: ghcr.io/k8snetworkplumbingwg/ptp-operator:4.21
-                imagePullPolicy: IfNotPresent
+                image: ghcr.io/vitus133/ptp-operator:v2
+                imagePullPolicy: Always
                 name: ptp-operator
                 ports:
                 - containerPort: 9443
