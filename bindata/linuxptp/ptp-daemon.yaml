@@ -227,6 +227,35 @@ subjects:
     name: prometheus-k8s
     namespace: openshift-monitoring
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ptpconfig-status-writer
+  namespace: openshift-ptp
+rules:
+  - apiGroups:
+      - ptp.openshift.io
+    resources:
+      - ptpconfigs/status
+    verbs:
+      - get
+      - update
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ptpconfig-status-writer-linuxptp
+  namespace: openshift-ptp
+subjects:
+  - kind: ServiceAccount
+    name: linuxptp-daemon
+    namespace: openshift-ptp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ptpconfig-status-writer
+---
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
