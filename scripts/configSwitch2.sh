@@ -1,4 +1,5 @@
 #!/bin/bash
+#test
 set -x
 set -euo pipefail
 VM_IP=$1
