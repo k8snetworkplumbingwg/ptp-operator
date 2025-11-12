@@ -535,6 +535,11 @@ func (in *PtpProfile) DeepCopyInto(out *PtpProfile) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.PtpSecretName != nil {
+		in, out := &in.PtpSecretName, &out.PtpSecretName
+		*out = new(string)
+		**out = **in
+	}
 	if in.PtpSchedulingPolicy != nil {
 		in, out := &in.PtpSchedulingPolicy, &out.PtpSchedulingPolicy
 		*out = new(string)
