@@ -30,6 +30,11 @@ export SKIP_INTERFACES="eth0"
 export IMAGE_REGISTRY="$VM_IP/"
 export CNF_TESTS_IMAGE=test:lptpd
 
+# Configure switch1 for authentication testing
+podman cp ptpswitchconfig.cfg switch1:/etc/ptp4l.conf
+podman exec switch1 systemctl restart ptp4l
+echo "✓ Switch1 restored"
+
 systemctl stop chronyd
 
 set -e
@@ -43,3 +48,10 @@ PTP_TEST_MODE=dualnicbc ginkgo --skip=".*The interfaces supporting ptp can be di
 PTP_TEST_MODE=dualnicbcha ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
 # Dual port
 PTP_TEST_MODE=dualfollower ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
+
+# Configure switch1 for authentication testing
+kubectl apply -f ptp-security.yaml
+./configure-switch-ptp-security.sh
+
+# Run OC tests with authentication enabled
+PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial

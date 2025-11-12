@@ -371,6 +371,505 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
+			It("Slave fails to sync when SPP mismatch occurs (negative test)", func() {
+				// Only run if authentication is enabled
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("Authentication negative test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				By("Changing SPP in test-grandmaster from 1 to 0 to create mismatch", func() {
+					// Get current PtpConfig
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Modify ptp4lConf to change spp from 1 to 0
+					originalConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					modifiedConf := strings.Replace(originalConf, "spp 1", "spp 0", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+
+					// Update the PtpConfig
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Wait for controller to reconcile and pods to restart
+					time.Sleep(60 * time.Second)
+				})
+
+				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
+					// For negative test: expect sync to FAIL
+					// Check that slave does NOT reach LOCKED state for 2 minutes
+
+					// Wait 2 minutes and continuously verify slave is NOT in LOCKED state
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+
+					// Use a simple metric check in a loop
+					failedToSync := false
+					for i := 0; i < 12; i++ { // 12 iterations × 10 seconds = 2 minutes
+						// Try to check if it's in LOCKED state (this will return error if not LOCKED)
+						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+							nodeNameStr := slavePod.Spec.NodeName
+
+							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+							if err != nil {
+								// Error means NOT in LOCKED state - good for negative test
+								failedToSync = true
+							} else {
+								// No error means it IS in LOCKED state - bad for negative test!
+								Fail("Slave unexpectedly reached LOCKED state despite SPP mismatch")
+								return
+							}
+						}
+						time.Sleep(10 * time.Second)
+					}
+
+					Expect(failedToSync).To(BeTrue(), "Slave should fail to sync for 2 minutes due to SPP mismatch")
+					fmt.Fprintf(GinkgoWriter, "✓ PASS: Authentication mismatch prevented sync (slave did not lock for 2 minutes)\n")
+				})
+
+				By("Restoring SPP to 1 in test-grandmaster (cleanup)", func() {
+					// Get current PtpConfig
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Restore spp back to 1
+					modifiedConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					restoredConf := strings.Replace(modifiedConf, "spp 0", "spp 1", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &restoredConf
+
+					// Update the PtpConfig
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Wait for restoration
+					time.Sleep(30 * time.Second)
+				})
+			})
+
+			It("Rogue PTP client without authentication cannot sync (injection test)", func() {
+				// Only run if authentication is enabled
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("Rogue client test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				By("Removing authentication from test-slave1 (simulates rogue client)", func() {
+					// Get test-slave1 PtpConfig
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpSlave1PolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Remove ptpSecretName (rogue client has no credentials)
+					ptpConfig.Spec.Profile[0].PtpSecretName = nil
+
+					// Remove auth settings from ptp4lConf
+					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					// Remove sa_file, spp, active_key_id lines
+					lines := strings.Split(ptp4lConf, "\n")
+					var cleanedLines []string
+					for _, line := range lines {
+						trimmed := strings.TrimSpace(line)
+						if !strings.HasPrefix(trimmed, "sa_file ") &&
+							!strings.HasPrefix(trimmed, "spp ") &&
+							!strings.HasPrefix(trimmed, "active_key_id ") {
+							cleanedLines = append(cleanedLines, line)
+						}
+					}
+					cleanedConf := strings.Join(cleanedLines, "\n")
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &cleanedConf
+
+					// Update (now acts as rogue client without auth)
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					fmt.Fprintf(GinkgoWriter, "Created rogue client (test-slave1 without authentication)\n")
+					time.Sleep(90 * time.Second)
+				})
+
+				By("Verifying rogue client CANNOT sync (authentication prevents it)", func() {
+					// Rogue client sends unauthenticated messages
+					// Authenticated GM/network should reject them
+					// Check for 2 minutes - should NOT achieve LOCKED state
+
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+
+					failedToSync := false
+					for i := 0; i < 12; i++ { // 12 × 10s = 2 minutes
+						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+							nodeNameStr := slavePod.Spec.NodeName
+
+							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+							if err != nil {
+								// NOT in LOCKED state - expected for rogue client
+								failedToSync = true
+							} else {
+								Fail("Rogue client without auth unexpectedly achieved sync!")
+								return
+							}
+						}
+						time.Sleep(10 * time.Second)
+					}
+
+					Expect(failedToSync).To(BeTrue(), "Rogue client should fail to sync")
+					fmt.Fprintf(GinkgoWriter, "✓ PASS: Rogue client blocked (no sync for 2 minutes)\n")
+				})
+
+				By("Restoring authentication to test-slave1 (cleanup)", func() {
+					// Delete the broken config
+					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(),
+						pkg.PtpSlave1PolicyName,
+						metav1.DeleteOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Wait for deletion
+					time.Sleep(10 * time.Second)
+
+					// Recreate test-slave1 with proper auth using testconfig function
+					if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+						slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+						slavePod := fullConfig.DiscoveredClockUnderTestPod
+						Expect(slavePod).NotTo(BeNil())
+
+						// Recreate with auth (PTP_AUTH_ENABLED is still true)
+						err = testconfig.CreatePtpConfigOC(pkg.PtpSlave1PolicyName,
+							slavePod.Spec.NodeName,
+							slaveInterface,
+							true,
+							pkg.PtpClockUnderTestNodeLabel)
+						Expect(err).NotTo(HaveOccurred())
+					}
+
+					fmt.Fprintf(GinkgoWriter, "Recreated test-slave1 with proper authentication\n")
+
+					// Wait for new config to be applied and pods to stabilize
+					time.Sleep(90 * time.Second)
+					ptphelper.WaitForPtpDaemonToExist()
+					time.Sleep(30 * time.Second)
+				})
+			})
+
+			It("Tampered PTP messages are dropped (MITM protection test)", func() {
+				// Only run if authentication is enabled
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("MITM test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				By("Creating attacker secret with different keys (simulates MITM tampering)", func() {
+					// Delete if already exists (from previous test run)
+					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(),
+						"ptp-security-attacker",
+						metav1.DeleteOptions{},
+					)
+					time.Sleep(2 * time.Second)
+
+					// Create a secret with COMPLETELY DIFFERENT keys
+					// This simulates an attacker who modified messages and re-signed with their own keys
+					attackerSecret := &v1core.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "ptp-security-attacker",
+							Namespace: pkg.PtpLinuxDaemonNamespace,
+						},
+						StringData: map[string]string{
+							"ptp-security.conf": `[security_association]
+spp 1
+seqid_window 20
+1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
+2 AES256 B64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+3 SHA256 26 attacker_key_different_value
+`,
+						},
+					}
+
+					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
+						context.Background(),
+						attackerSecret,
+						metav1.CreateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					fmt.Fprintf(GinkgoWriter, "Created attacker secret with different keys\n")
+				})
+
+				By("Changing test-grandmaster to use attacker keys (simulates compromised GM)", func() {
+					// Get test-grandmaster
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Change to attacker secret (simulates MITM or compromised GM)
+					attackerSecretName := "ptp-security-attacker"
+					ptpConfig.Spec.Profile[0].PtpSecretName = &attackerSecretName
+
+					// IMPORTANT: Also change sa_file path to avoid webhook conflict
+					// (webhook blocks same sa_file path with different secrets)
+					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					modifiedConf := strings.Replace(ptp4lConf,
+						"sa_file /etc/ptp/ptp-security.conf",
+						"sa_file /etc/ptp/ptp-security-attacker.conf", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+
+					// Update
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					fmt.Fprintf(GinkgoWriter, "GM now uses attacker keys (simulates MITM/compromised GM)\n")
+
+					// Wait for pods to restart with attacker keys
+					time.Sleep(60 * time.Second)
+
+					// Refresh configuration to get new pod names after restart
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+				})
+
+				By("Verifying slave rejects tampered messages (no sync for 2 minutes)", func() {
+					// GM signs messages with WRONG keys (simulates MITM tampering)
+					// Slave has CORRECT keys
+					// Signature verification fails → messages dropped
+
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+
+					failedToSync := false
+					for i := 0; i < 12; i++ { // 2 minutes
+						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+							nodeNameStr := slavePod.Spec.NodeName
+
+							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+							if err != nil {
+								// NOT in LOCKED - slave rejected tampered messages
+								failedToSync = true
+							} else {
+								Fail("Slave synced despite tampered messages (MITM not detected)!")
+								return
+							}
+						}
+						time.Sleep(10 * time.Second)
+					}
+
+					Expect(failedToSync).To(BeTrue(), "Slave should reject tampered messages")
+					fmt.Fprintf(GinkgoWriter, "✓ PASS: Tampered messages dropped (MITM attack blocked)\n")
+				})
+
+				By("Checking for authentication failure indicators in logs (optional)", func() {
+					// Try to find authentication failure messages
+					// Note: The critical test is that sync FAILS (above), not that specific log messages appear
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					if slavePod == nil {
+						fmt.Fprintf(GinkgoWriter, "Note: Could not check logs (slave pod not found)\n")
+						return
+					}
+
+					// Search for auth error in logs
+					matches, err := pods.GetPodLogsRegex(slavePod.Namespace, slavePod.Name, pkg.PtpContainerName,
+						"auth:", false, 10*time.Second)
+
+					if err == nil && len(matches) > 0 {
+						fmt.Fprintf(GinkgoWriter, "✓ Found %d auth-related log entries:\n", len(matches))
+						for i, match := range matches {
+							if i < 3 && len(match) > 0 {
+								fmt.Fprintf(GinkgoWriter, "  %s\n", match[0])
+							}
+						}
+					} else {
+						// Auth messages not found, but that's OK
+						// The fact that sync failed (previous check) proves MITM protection works
+						fmt.Fprintf(GinkgoWriter, "Note: No explicit 'auth:' messages found in logs\n")
+						fmt.Fprintf(GinkgoWriter, "      (Sync failure already proves MITM protection)\n")
+					}
+				})
+
+				By("Restoring correct keys and sa_file to test-grandmaster (cleanup)", func() {
+					// Restore original secret
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Restore secret name
+					correctSecret := "ptp-security-conf"
+					ptpConfig.Spec.Profile[0].PtpSecretName = &correctSecret
+
+					// Restore sa_file path
+					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					restoredConf := strings.Replace(ptp4lConf,
+						"sa_file /etc/ptp/ptp-security-attacker.conf",
+						"sa_file /etc/ptp/ptp-security.conf", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &restoredConf
+
+					// Update
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Delete attacker secret
+					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(),
+						"ptp-security-attacker",
+						metav1.DeleteOptions{},
+					)
+
+					fmt.Fprintf(GinkgoWriter, "Restored correct keys and sa_file to GM\n")
+
+					// Wait longer for pods to fully restart and stabilize after restoration
+					time.Sleep(60 * time.Second)
+
+					// Ensure pods are ready before next test
+					ptphelper.WaitForPtpDaemonToExist()
+					time.Sleep(30 * time.Second)
+				})
+			})
+
+			It("Replay attack protection is enabled via seqid_window", func() {
+				// Only run if authentication is enabled
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("Replay attack test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				By("Ensuring system is stable after previous tests", func() {
+					// Wait for pods to fully recover from previous test
+					fmt.Fprintf(GinkgoWriter, "Waiting for system to stabilize...\n")
+					time.Sleep(60 * time.Second)
+
+					// Refresh config to ensure we have current state
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
+					// Additional wait for ptp4l to establish communication
+					time.Sleep(30 * time.Second)
+					fmt.Fprintf(GinkgoWriter, "System stabilized\n")
+				})
+
+				By("Verifying seqid_window is configured in security associations", func() {
+					// Check that secret has seqid_window configured (anti-replay protection)
+					secret, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						"ptp-security-conf",
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Decode secret content
+					secretData := secret.Data["ptp-security.conf"]
+					Expect(secretData).NotTo(BeNil(), "Secret should have ptp-security.conf key")
+
+					secretContent := string(secretData)
+
+					// Verify seqid_window is configured
+					Expect(secretContent).To(ContainSubstring("seqid_window"),
+						"Security association should include seqid_window for replay protection")
+
+					fmt.Fprintf(GinkgoWriter, "✓ seqid_window configured in security associations\n")
+				})
+
+				By("Verifying sync works with seqid_window protection active", func() {
+					// With seqid_window configured, normal messages are accepted
+					// Out-of-sequence messages (replays) would be rejected
+					// We verify that normal sync works (proves window is not blocking legitimate traffic)
+
+					isExternalMaster := ptphelper.IsExternalGM()
+					var grandmasterID *string
+					if fullConfig.L2Config != nil && !isExternalMaster {
+						aLabel := pkg.PtpGrandmasterNodeLabel
+						aString, err := ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
+						grandmasterID = &aString
+						Expect(err).To(BeNil())
+					}
+
+					// Verify sync works (seqid_window allows legitimate sequential messages)
+					err := ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+					Expect(err).To(BeNil(), "Sync should work with seqid_window protection (legitimate messages accepted)")
+
+					fmt.Fprintf(GinkgoWriter, "✓ PASS: Sync works with seqid_window active (replay protection enabled)\n")
+				})
+
+				By("Documenting replay protection mechanism", func() {
+					// Note: Actual replay attack testing requires packet injection at network level
+					// The seqid_window setting provides protection by:
+					// - Tracking sequence numbers of received messages
+					// - Rejecting messages with sequence numbers outside the window
+					// - This prevents attackers from replaying captured valid messages
+
+					fmt.Fprintf(GinkgoWriter, "\n")
+					fmt.Fprintf(GinkgoWriter, "Replay Attack Protection Summary:\n")
+					fmt.Fprintf(GinkgoWriter, "- seqid_window is configured in security associations ✓\n")
+					fmt.Fprintf(GinkgoWriter, "- Normal sequential messages are accepted ✓\n")
+					fmt.Fprintf(GinkgoWriter, "- Out-of-sequence replays would be rejected (implicit)\n")
+					fmt.Fprintf(GinkgoWriter, "\n")
+					fmt.Fprintf(GinkgoWriter, "Note: Full replay injection testing requires packet-level\n")
+					fmt.Fprintf(GinkgoWriter, "      manipulation which is beyond test framework scope.\n")
+					fmt.Fprintf(GinkgoWriter, "      The presence and proper configuration of seqid_window\n")
+					fmt.Fprintf(GinkgoWriter, "      ensures protection is enabled per IEEE 1588 spec.\n")
+				})
+			})
+
 			// Test That clock can sync in dual follower scenario when one port is down
 			It("Dual follower can sync when one follower port goes down", func() {
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {

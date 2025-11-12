@@ -17,6 +17,7 @@ limitations under the License.
 package v1
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -26,8 +27,12 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -45,7 +50,12 @@ var ptpconfiglog = logf.Log.WithName("ptpconfig-resource")
 var profileRegEx = regexp.MustCompile(`^([\w\-_]+)(,\s*([\w\-_]+))*$`)
 var clockTypes = []string{"T-GM", "T-BC"}
 
+// webhookClient is used by the webhook to query existing PtpConfigs
+var webhookClient client.Client
+
 func (r *PtpConfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
+	// Store the client for use in validation
+	webhookClient = mgr.GetClient()
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		Complete()
@@ -59,6 +69,26 @@ type ptp4lConfSection struct {
 
 type ptp4lConf struct {
 	sections map[string]ptp4lConfSection
+}
+
+// Ptp4lConf is a public wrapper for ptp4lConf
+type Ptp4lConf struct {
+	conf ptp4lConf
+}
+
+// PopulatePtp4lConf parses the ptp4l configuration
+func (p *Ptp4lConf) PopulatePtp4lConf(config *string, ptp4lopts *string) error {
+	return p.conf.populatePtp4lConf(config, ptp4lopts)
+}
+
+// GetOption retrieves an option value from a specific section
+func (p *Ptp4lConf) GetOption(section, key string) string {
+	if sec, ok := p.conf.sections[section]; ok {
+		if val, ok := sec.options[key]; ok {
+			return val
+		}
+	}
+	return ""
 }
 
 func (output *ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) error {
@@ -103,6 +133,7 @@ func (output *ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) er
 
 func (r *PtpConfig) validate() error {
 	profiles := r.Spec.Profile
+
 	for _, profile := range profiles {
 		conf := &ptp4lConf{}
 		conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts)
@@ -194,12 +225,251 @@ func (r *PtpConfig) validate() error {
 	return nil
 }
 
+// validateSecretConflicts checks if this PtpConfig's sa_file + secret combination
+// conflicts with any existing PtpConfigs in the openshift-ptp namespace
+func (r *PtpConfig) validateSecretConflicts(ctx context.Context) error {
+	if webhookClient == nil {
+		ptpconfiglog.Info("webhook client not initialized, skipping cross-PtpConfig validation")
+		return nil
+	}
+
+	// Build map of sa_file -> secret for THIS PtpConfig
+	currentSaFileToSecret := make(map[string]string)
+	for _, profile := range r.Spec.Profile {
+		if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
+			continue
+		}
+		if profile.Ptp4lConf == nil {
+			continue
+		}
+
+		conf := &ptp4lConf{}
+		if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
+			continue
+		}
+
+		if globalSection, exists := conf.sections["[global]"]; exists {
+			if saFile, exists := globalSection.options["sa_file"]; exists && saFile != "" {
+				currentSaFileToSecret[saFile] = *profile.PtpSecretName
+			}
+		}
+	}
+
+	// If this PtpConfig doesn't use any secrets, no conflict possible
+	if len(currentSaFileToSecret) == 0 {
+		return nil
+	}
+
+	// List all existing PtpConfigs in openshift-ptp namespace
+	ptpConfigList := &PtpConfigList{}
+	if err := webhookClient.List(ctx, ptpConfigList, &client.ListOptions{
+		Namespace: "openshift-ptp",
+	}); err != nil {
+		ptpconfiglog.Error(err, "failed to list PtpConfigs for validation")
+		// Don't block creation if we can't list - fail open
+		return nil
+	}
+
+	// Check each existing PtpConfig
+	for _, existingConfig := range ptpConfigList.Items {
+		// Skip checking against ourselves (for updates)
+		if existingConfig.Name == r.Name && existingConfig.Namespace == r.Namespace {
+			continue
+		}
+
+		// Check each profile in the existing config
+		for _, profile := range existingConfig.Spec.Profile {
+			if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
+				continue
+			}
+			if profile.Ptp4lConf == nil {
+				continue
+			}
+
+			conf := &ptp4lConf{}
+			if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
+				continue
+			}
+
+			if globalSection, exists := conf.sections["[global]"]; exists {
+				if saFile, exists := globalSection.options["sa_file"]; exists && saFile != "" {
+					// Check if THIS PtpConfig uses the same sa_file
+					if currentSecret, found := currentSaFileToSecret[saFile]; found {
+						// Conflict: same sa_file but different secret
+						if currentSecret != *profile.PtpSecretName {
+							return fmt.Errorf("sa_file '%s' conflict: PtpConfig '%s' already uses secret '%s' with this sa_file path, but this PtpConfig tries to use secret '%s'. All PtpConfigs using the same sa_file must reference the same secret",
+								saFile, existingConfig.Name, *profile.PtpSecretName, currentSecret)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateSecretExists checks that ptpSecretName references an existing secret
+func (r *PtpConfig) validateSecretExists(ctx context.Context) error {
+	if webhookClient == nil {
+		ptpconfiglog.Info("webhook client not initialized, skipping secret existence validation")
+		return nil
+	}
+
+	for _, profile := range r.Spec.Profile {
+		// Skip if no secret specified
+		if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
+			continue
+		}
+
+		secretName := *profile.PtpSecretName
+		profileName := "unknown"
+		if profile.Name != nil {
+			profileName = *profile.Name
+		}
+
+		// Try to get the secret from openshift-ptp namespace
+		secret := &corev1.Secret{}
+		err := webhookClient.Get(ctx, types.NamespacedName{
+			Namespace: "openshift-ptp",
+			Name:      secretName,
+		}, secret)
+
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("secret '%s' referenced by profile '%s' does not exist in namespace 'openshift-ptp'. Please create the secret before referencing it in PtpConfig",
+					secretName, profileName)
+			}
+			// For other errors (like permission issues), log but don't block
+			ptpconfiglog.Error(err, "failed to verify secret existence", "secret", secretName, "profile", profileName)
+			// Fail open - don't block if we can't verify
+			return nil
+		}
+
+		ptpconfiglog.Info("validated secret exists", "secret", secretName, "profile", profileName)
+
+		// Validate SPP (Security Parameter Profile) if specified
+		if err := r.validateSppInSecret(profile, secret); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateSppInSecret checks that the spp value in ptp4lConf exists in the referenced secret
+func (r *PtpConfig) validateSppInSecret(profile PtpProfile, secret *corev1.Secret) error {
+	// Skip if no ptp4lConf
+	if profile.Ptp4lConf == nil {
+		return nil
+	}
+
+	// Parse ptp4lConf to get spp value from [global] section
+	conf := &ptp4lConf{}
+	if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
+		// If we can't parse the config, skip validation (other validations will catch this)
+		return nil
+	}
+
+	globalSection, exists := conf.sections["[global]"]
+	if !exists {
+		return nil
+	}
+
+	sppValue, exists := globalSection.options["spp"]
+	if !exists || sppValue == "" {
+		// No spp specified, nothing to validate
+		return nil
+	}
+
+	profileName := "unknown"
+	if profile.Name != nil {
+		profileName = *profile.Name
+	}
+
+	// Parse the secret data to find valid SPP values
+	validSpps, err := parseValidSppsFromSecret(secret)
+	if err != nil {
+		ptpconfiglog.Error(err, "failed to parse SPPs from secret", "secret", secret.Name, "profile", profileName)
+		// Fail open - don't block if we can't parse
+		return nil
+	}
+
+	// Check if the specified SPP exists in the secret
+	if !contains(validSpps, sppValue) {
+		return fmt.Errorf("spp '%s' in profile '%s' is not defined in secret '%s'. Valid SPPs in secret: %v",
+			sppValue, profileName, secret.Name, validSpps)
+	}
+
+	ptpconfiglog.Info("validated spp exists in secret", "spp", sppValue, "secret", secret.Name, "profile", profileName)
+	return nil
+}
+
+// parseValidSppsFromSecret extracts all valid SPP numbers from a PTP security secret
+// It looks for any line starting with "spp <number>" regardless of structure or sections
+func parseValidSppsFromSecret(secret *corev1.Secret) ([]string, error) {
+	var validSpps []string
+
+	// Iterate through all keys in the secret
+	for key, value := range secret.Data {
+		// Parse the security configuration
+		content := string(value)
+		lines := strings.Split(content, "\n")
+
+		// Look for any line starting with "spp <number>"
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+
+			// Skip empty lines and comments
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+
+			// Check if line starts with "spp " (case-insensitive)
+			if strings.HasPrefix(strings.ToLower(line), "spp ") {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					sppNumber := parts[1]
+					// Add if not already in list
+					if !contains(validSpps, sppNumber) {
+						validSpps = append(validSpps, sppNumber)
+					}
+				}
+			}
+		}
+
+		ptpconfiglog.Info("parsed SPPs from secret", "key", key, "spps", validSpps)
+	}
+
+	return validSpps, nil
+}
+
+// contains checks if a string slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
 var _ webhook.Validator = &PtpConfig{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *PtpConfig) ValidateCreate() (admission.Warnings, error) {
 	ptpconfiglog.Info("validate create", "name", r.Name)
 	if err := r.validate(); err != nil {
+		return admission.Warnings{}, err
+	}
+
+	// Check that referenced secrets exist
+	if err := r.validateSecretExists(context.Background()); err != nil {
+		return admission.Warnings{}, err
+	}
+
+	// Check for cross-PtpConfig secret conflicts
+	if err := r.validateSecretConflicts(context.Background()); err != nil {
 		return admission.Warnings{}, err
 	}
 
@@ -210,6 +480,16 @@ func (r *PtpConfig) ValidateCreate() (admission.Warnings, error) {
 func (r *PtpConfig) ValidateUpdate(old runtime.Object) (admission.Warnings, error) {
 	ptpconfiglog.Info("validate update", "name", r.Name)
 	if err := r.validate(); err != nil {
+		return admission.Warnings{}, err
+	}
+
+	// Check that referenced secrets exist
+	if err := r.validateSecretExists(context.Background()); err != nil {
+		return admission.Warnings{}, err
+	}
+
+	// Check for cross-PtpConfig secret conflicts
+	if err := r.validateSecretConflicts(context.Background()); err != nil {
 		return admission.Warnings{}, err
 	}
 
