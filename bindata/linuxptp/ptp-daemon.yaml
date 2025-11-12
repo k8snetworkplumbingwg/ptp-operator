@@ -31,6 +31,26 @@ spec:
       - operator: Exists
       serviceAccountName: linuxptp-daemon
       priorityClassName: "system-node-critical"
+      initContainers:
+        - name: disable-chronyd
+          image: {{ .Image }}
+          args:
+            - |
+              if ! chroot /host systemctl list-unit-files | grep -q "chronyd.service"; then
+                echo "Chronyd service does not exist. Nothing to do. Exiting"
+                exit 0
+              fi
+              chroot /host systemctl status chronyd.service
+              chroot /host systemctl stop --now chronyd.service
+              chroot /host systemctl disable --now chronyd.service
+              chroot /host systemctl status chronyd.service
+              exit 0
+          command: [ "/bin/sh", "-c", "--"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - name: host-root
+            mountPath: /host
       containers:
         {{ if (eq .EnableEventPublisher true) }}
         - name: cloud-event-proxy
@@ -150,6 +170,9 @@ spec:
           hostPath:
             path: /var/run/ptp
             type: DirectoryOrCreate
+        - name: host-root
+          hostPath:
+            path: /
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
