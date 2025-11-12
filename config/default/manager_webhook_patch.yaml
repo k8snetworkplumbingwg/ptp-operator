@@ -10,6 +10,9 @@ spec:
     spec:
       containers:
       - name: ptp-operator
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
         ports:
         - containerPort: 9443
           name: webhook-server
