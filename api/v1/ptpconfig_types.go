@@ -62,18 +62,19 @@ type PtpConfigList struct {
 }
 
 type PtpProfile struct {
-	Name        *string `json:"name"`
-	Interface   *string `json:"interface,omitempty"`
-	Ptp4lOpts   *string `json:"ptp4lOpts,omitempty"`
-	Phc2sysOpts *string `json:"phc2sysOpts,omitempty"`
-	Ts2PhcOpts  *string `json:"ts2phcOpts,omitempty"`
-	Synce4lOpts *string `json:"synce4lOpts,omitempty"`
-	ChronydOpts *string `json:"chronydOpts,omitempty"`
-	Ptp4lConf   *string `json:"ptp4lConf,omitempty"`
-	Phc2sysConf *string `json:"phc2sysConf,omitempty"`
-	Ts2PhcConf  *string `json:"ts2phcConf,omitempty"`
-	Synce4lConf *string `json:"synce4lConf,omitempty"`
-	ChronydConf *string `json:"chronydConf,omitempty"`
+	Name          *string `json:"name"`
+	Interface     *string `json:"interface,omitempty"`
+	Ptp4lOpts     *string `json:"ptp4lOpts,omitempty"`
+	Phc2sysOpts   *string `json:"phc2sysOpts,omitempty"`
+	Ts2PhcOpts    *string `json:"ts2phcOpts,omitempty"`
+	Synce4lOpts   *string `json:"synce4lOpts,omitempty"`
+	ChronydOpts   *string `json:"chronydOpts,omitempty"`
+	Ptp4lConf     *string `json:"ptp4lConf,omitempty"`
+	Phc2sysConf   *string `json:"phc2sysConf,omitempty"`
+	Ts2PhcConf    *string `json:"ts2phcConf,omitempty"`
+	Synce4lConf   *string `json:"synce4lConf,omitempty"`
+	ChronydConf   *string `json:"chronydConf,omitempty"`
+	PtpSecretName *string `json:"ptpSecretName,omitempty"`
 	// +kubebuilder:validation:Enum=SCHED_OTHER;SCHED_FIFO;
 	PtpSchedulingPolicy *string `json:"ptpSchedulingPolicy,omitempty"`
 	// +kubebuilder:validation:Minimum=1
