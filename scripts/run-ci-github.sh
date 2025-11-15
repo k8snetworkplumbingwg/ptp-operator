@@ -43,3 +43,10 @@ PTP_TEST_MODE=dualnicbc ginkgo --skip=".*The interfaces supporting ptp can be di
 PTP_TEST_MODE=dualnicbcha ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
 # Dual port
 PTP_TEST_MODE=dualfollower ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
+
+# Configure switch1 if authentication is enabled
+## make sure that ptp-security.yaml file exist in the current directory
+kubectl apply -f ptp-security.yaml
+./configure-switch-ptp-security.sh
+# Run OC tests with authentication enabled
+PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial

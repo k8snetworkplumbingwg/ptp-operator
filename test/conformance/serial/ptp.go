@@ -371,6 +371,103 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
+			It("Slave fails to sync when SPP mismatch occurs (negative test)", func() {
+				// Only run if authentication is enabled
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("Authentication negative test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				By("Changing SPP in test-grandmaster from 1 to 0 to create mismatch", func() {
+					// Get current PtpConfig
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Modify ptp4lConf to change spp from 1 to 0
+					originalConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					modifiedConf := strings.Replace(originalConf, "spp 1", "spp 0", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+
+					// Update the PtpConfig
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Wait for controller to reconcile and pods to restart
+					time.Sleep(60 * time.Second)
+				})
+
+				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
+					// For negative test: expect sync to FAIL
+					// Check that slave does NOT reach LOCKED state for 2 minutes
+
+					// Wait 2 minutes and continuously verify slave is NOT in LOCKED state
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+
+					// Use a simple metric check in a loop
+					failedToSync := false
+					for i := 0; i < 12; i++ { // 12 iterations × 10 seconds = 2 minutes
+						// Try to check if it's in LOCKED state (this will return error if not LOCKED)
+						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+							nodeNameStr := slavePod.Spec.NodeName
+
+							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+							if err != nil {
+								// Error means NOT in LOCKED state - good for negative test
+								failedToSync = true
+							} else {
+								// No error means it IS in LOCKED state - bad for negative test!
+								Fail("Slave unexpectedly reached LOCKED state despite SPP mismatch")
+								return
+							}
+						}
+						time.Sleep(10 * time.Second)
+					}
+
+					Expect(failedToSync).To(BeTrue(), "Slave should fail to sync for 2 minutes due to SPP mismatch")
+					fmt.Fprintf(GinkgoWriter, "✓ PASS: Authentication mismatch prevented sync (slave did not lock for 2 minutes)\n")
+				})
+
+				By("Restoring SPP to 1 in test-grandmaster (cleanup)", func() {
+					// Get current PtpConfig
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Restore spp back to 1
+					modifiedConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					restoredConf := strings.Replace(modifiedConf, "spp 0", "spp 1", 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &restoredConf
+
+					// Update the PtpConfig
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Wait for restoration
+					time.Sleep(30 * time.Second)
+				})
+			})
+
 			// Test That clock can sync in dual follower scenario when one port is down
 			It("Dual follower can sync when one follower port goes down", func() {
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
