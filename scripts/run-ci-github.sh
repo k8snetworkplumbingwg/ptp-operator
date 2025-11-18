@@ -30,10 +30,36 @@ export SKIP_INTERFACES="eth0"
 export IMAGE_REGISTRY="$VM_IP/"
 export CNF_TESTS_IMAGE=test:lptpd
 
-# Configure switch1 for authentication testing
-podman cp ptpswitchconfig.cfg switch1:/etc/ptp4l.conf
-podman exec switch1 systemctl restart ptp4l
-echo "✓ Switch1 restored"
+# Function to disable switch1 authentication
+disable_switch_auth() {
+    echo "Disabling switch1 authentication..."
+    podman cp ptpswitchconfig.cfg switch1:/etc/ptp4l.conf
+    podman exec switch1 systemctl restart ptp4l
+    echo "✓ Switch1 authentication disabled"
+}
+
+# Function to enable switch1 authentication
+enable_switch_auth() {
+    echo "Configuring switch1 with PTP authentication..."
+    
+    # 1. Copy auth-enabled ptp4l.conf to switch1
+    podman cp ptpswitchconfig_auth.cfg switch1:/etc/ptp4l.conf
+    
+    # 2. Create directory and copy security file
+    podman exec switch1 mkdir -p /etc/ptp
+    podman cp ptp-security.conf switch1:/etc/ptp/ptp-security.conf
+    
+    # 3. Restart ptp4l with authentication enabled
+    podman exec switch1 systemctl restart ptp4l || {
+    echo "WARNING: systemctl restart failed, trying pkill..."
+    podman exec switch1 pkill ptp4l 2>/dev/null || true
+    sleep 2
+}
+    
+    echo "✓ Switch1 configured with authentication"
+}
+
+disable_switch_auth
 
 systemctl stop chronyd
 
@@ -51,7 +77,6 @@ PTP_TEST_MODE=dualfollower ginkgo --skip=".*The interfaces supporting ptp can be
 
 # Configure switch1 for authentication testing
 kubectl apply -f ptp-security.yaml
-./configure-switch-ptp-security.sh
-
+enable_switch_auth
 # Run OC tests with authentication enabled
 PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
