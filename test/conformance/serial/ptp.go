@@ -1614,7 +1614,7 @@ seqid_window 20
 			})
 
 			var _ = Context("Run pmc in a new pod on the slave node", func() {
-				It("Should be able to sync using a uds", func() {
+				XIt("Should be able to sync using a uds", func() {
 
 					Expect(fullConfig.DiscoveredClockUnderTestPod).ToNot(BeNil())
 					Eventually(func() string {

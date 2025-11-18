@@ -90,6 +90,8 @@ spec:
                       maximum: 65
                       minimum: 1
                       type: integer
+                    ptpSecretName:
+                      type: string
                     ptpSettings:
                       additionalProperties:
                         type: string

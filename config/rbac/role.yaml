@@ -72,7 +72,6 @@ rules:
   - ptp.openshift.io
   resources:
   - ptpconfigs
-  - ptpoperatorconfigs
   verbs:
   - create
   - delete
@@ -85,13 +84,37 @@ rules:
   - ptp.openshift.io
   resources:
   - ptpconfigs/finalizers
-  - ptpoperatorconfigs/finalizers
   verbs:
   - update
 - apiGroups:
   - ptp.openshift.io
   resources:
   - ptpconfigs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ptp.openshift.io
+  resources:
+  - ptpoperatorconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ptp.openshift.io
+  resources:
+  - ptpoperatorconfigs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - ptp.openshift.io
+  resources:
   - ptpoperatorconfigs/status
   verbs:
   - get
