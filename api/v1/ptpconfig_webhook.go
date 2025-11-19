@@ -63,28 +63,28 @@ func (r *PtpConfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 //+kubebuilder:webhook:path=/validate-ptp-openshift-io-v1-ptpconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=ptp.openshift.io,resources=ptpconfigs,verbs=create;update,versions=v1,name=vptpconfig.kb.io,admissionReviewVersions=v1
 
-type ptp4lConfSection struct {
+type Ptp4lConfSection struct {
 	options map[string]string
 }
 
-type ptp4lConf struct {
-	sections map[string]ptp4lConfSection
+type Ptp4lConf struct {
+	sections map[string]Ptp4lConfSection
 }
 
-// +kubebuilder:object:generate=false
-// Ptp4lConf is a public wrapper for ptp4lConf
-type Ptp4lConf struct {
-	conf ptp4lConf
-}
+// // +kubebuilder:object:generate=false
+// // Ptp4lConf is a public wrapper for ptp4lConf
+// type Ptp4lConf struct {
+// 	conf ptp4lConf
+// }
 
 // PopulatePtp4lConf parses the ptp4l configuration
 func (p *Ptp4lConf) PopulatePtp4lConf(config *string, ptp4lopts *string) error {
-	return p.conf.populatePtp4lConf(config, ptp4lopts)
+	return p.populatePtp4lConf(config, ptp4lopts)
 }
 
 // GetOption retrieves an option value from a specific section
 func (p *Ptp4lConf) GetOption(section, key string) string {
-	if sec, ok := p.conf.sections[section]; ok {
+	if sec, ok := p.sections[section]; ok {
 		if val, ok := sec.options[key]; ok {
 			return val
 		}
@@ -92,14 +92,14 @@ func (p *Ptp4lConf) GetOption(section, key string) string {
 	return ""
 }
 
-func (output *ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) error {
+func (output *Ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) error {
 	var string_config string
 	if config != nil {
 		string_config = *config
 	}
 	lines := strings.Split(string_config, "\n")
 	var currentSection string
-	output.sections = make(map[string]ptp4lConfSection)
+	output.sections = make(map[string]Ptp4lConfSection)
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "[") {
@@ -111,7 +111,7 @@ func (output *ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) er
 			}
 
 			currentSection = fmt.Sprintf("%s]", currentLine[0])
-			section := ptp4lConfSection{options: map[string]string{}}
+			section := Ptp4lConfSection{options: map[string]string{}}
 			output.sections[currentSection] = section
 		} else if currentSection != "" {
 			split := strings.IndexByte(line, ' ')
@@ -126,7 +126,7 @@ func (output *ptp4lConf) populatePtp4lConf(config *string, ptp4lopts *string) er
 	}
 	_, exist := output.sections["[global]"]
 	if !exist {
-		output.sections["[global]"] = ptp4lConfSection{options: map[string]string{}}
+		output.sections["[global]"] = Ptp4lConfSection{options: map[string]string{}}
 	}
 
 	return nil
@@ -136,7 +136,7 @@ func (r *PtpConfig) validate() error {
 	profiles := r.Spec.Profile
 
 	for _, profile := range profiles {
-		conf := &ptp4lConf{}
+		conf := &Ptp4lConf{}
 		conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts)
 
 		// Validate that interface field only set in ordinary clock
@@ -256,7 +256,7 @@ func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profi
 	}
 
 	// Get sa_file for THIS profile
-	conf := &ptp4lConf{}
+	conf := &Ptp4lConf{}
 	if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
 		return nil // Skip if can't parse
 	}
@@ -299,7 +299,7 @@ func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profi
 				continue
 			}
 
-			existingConf := &ptp4lConf{}
+			existingConf := &Ptp4lConf{}
 			if err := existingConf.populatePtp4lConf(existingProfile.Ptp4lConf, existingProfile.Ptp4lOpts); err != nil {
 				continue
 			}
@@ -377,7 +377,7 @@ func (r *PtpConfig) validateSppInSecret(profile PtpProfile, secret *corev1.Secre
 	}
 
 	// Parse ptp4lConf to get spp value from [global] section
-	conf := &ptp4lConf{}
+	conf := &Ptp4lConf{}
 	if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
 		// If we can't parse the config, skip validation (other validations will catch this)
 		return nil
@@ -466,7 +466,7 @@ func (r *PtpConfig) ValidateDelete() (admission.Warnings, error) {
 	return admission.Warnings{}, nil
 }
 
-func getInterfaces(input *ptp4lConf, mode PtpRole) (interfaces []string) {
+func getInterfaces(input *Ptp4lConf, mode PtpRole) (interfaces []string) {
 
 	for index, section := range input.sections {
 		sectionName := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(index, "[", ""), "]", ""))
@@ -486,7 +486,7 @@ func GetInterfaces(config PtpConfig, mode PtpRole) (interfaces []string) {
 		logrus.Warnf("No profile detected for ptpconfig %s", config.ObjectMeta.Name)
 		return interfaces
 	}
-	conf := &ptp4lConf{}
+	conf := &Ptp4lConf{}
 	var dummy *string
 	err := conf.populatePtp4lConf(config.Spec.Profile[0].Ptp4lConf, dummy)
 	if err != nil {
