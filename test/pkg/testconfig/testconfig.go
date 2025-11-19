@@ -182,6 +182,7 @@ const (
 
 type ptpDiscoveryRes ptpv1.PtpConfig
 
+// BasePtp4lConfig is the base ptp4l configuration template
 const BasePtp4lConfig = `[global]
 #
 # Default Data Set
@@ -277,6 +278,32 @@ manufacturerIdentity 00:00:00
 userDescription ;
 timeSource 0xA0
 `
+
+// GetPtp4lConfigWithAuth returns the base config with optional auth settings
+func GetPtp4lConfigWithAuth(baseConfig string) string {
+	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+	if authEnabled == "true" {
+		// Add auth settings after [global] line
+		authSettings := `sa_file /etc/ptp/ptp-security.conf
+spp 1
+active_key_id 1
+`
+		// Insert auth settings after the [global] line
+		lines := strings.Split(baseConfig, "\n")
+		result := []string{}
+		for i, line := range lines {
+			result = append(result, line)
+			// After [global] line and comments, insert auth
+			if line == "[global]" && i+3 < len(lines) {
+				// Skip comment lines, insert before twoStepFlag
+				result = append(result, authSettings)
+			}
+		}
+		return strings.Join(result, "\n")
+	}
+	return baseConfig
+}
+
 const BaseTs2PhcConfig = `[nmea]
 ts2phc.master 1
 [global]
@@ -734,7 +761,7 @@ func CreatePtpConfigGrandMaster(nodeName, ifName string) error {
 	}
 
 	// Grandmaster
-	gmConfig := BasePtp4lConfig + "\nmasterOnly 1\npriority1 0\npriority2 0\nclockClass 6\n"
+	gmConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nmasterOnly 1\npriority1 0\npriority2 0\nclockClass 6\n"
 	ptp4lsysOpts := ptp4lEthernet
 	phc2sysOpts := phc2sysGM
 	return createConfig(pkg.PtpGrandMasterPolicyName,
@@ -764,7 +791,7 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 
 	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  /dev/%s\n", deviceID)
 	ts2phcConfig = fmt.Sprintf("%s\n[%s]\nts2phc.extts_polarity rising\nts2phc.extts_correction 0\n", ts2phcConfig, ifList[0])
-	ptp4lConfig := BasePtp4lConfig + "boundary_clock_jbod 1\n"
+	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\n"
 	ptp4lConfig = AddInterface(ptp4lConfig, ifList[0], 1)
 	ptp4lConfig = AddInterface(ptp4lConfig, ifList[1], 1)
 	ptp4lsysOpts := ptp4lEthernet
@@ -893,7 +920,7 @@ func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, p
 		logrus.Errorf("Error setting BC node role label: %s", err)
 	}
 
-	bcConfig := BasePtp4lConfig + "\nboundary_clock_jbod 1\ngmCapable 0"
+	bcConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nboundary_clock_jbod 1\ngmCapable 0"
 	bcConfig = AddInterface(bcConfig, ifSlaveName, 0)
 	bcConfig = AddInterface(bcConfig, ifMasterName, 1)
 	ptp4lsysOpts := ptp4lEthernet
@@ -940,7 +967,7 @@ func CreatePtpConfigOC(profileName, nodeName, ifSlaveName string, phc2sys bool, 
 	return createConfig(profileName,
 		&ifSlaveName,
 		&ptp4lsysOpts,
-		BasePtp4lConfig,
+		GetPtp4lConfigWithAuth(BasePtp4lConfig),
 		phc2sysOpts,
 		label,
 		pointer.Int64Ptr(int5),
@@ -969,7 +996,7 @@ func CreatePtpConfigDualFollower(profileName, nodeName, ifSlave1Name, ifSlave2Na
 		phc2sysOpts = nil
 	}
 
-	ptp4lDualFollowerConfig := BasePtp4lConfig + "\nslaveOnly 1\n[" + ifSlave1Name + "]\nmasterOnly 0\n" + "\n[" + ifSlave2Name + "]\nmasterOnly 0\n"
+	ptp4lDualFollowerConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nslaveOnly 1\n[" + ifSlave1Name + "]\nmasterOnly 0\n" + "\n[" + ifSlave2Name + "]\nmasterOnly 0\n"
 
 	return createConfig(profileName,
 		nil,
@@ -1493,6 +1520,14 @@ func createConfigWithTs2PhcAndPlugins(profileName string, ifaceName, ptp4lOpts *
 	thresholds.MinOffsetThreshold = int64(testParameters.GlobalConfig.MinOffset)
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds, Ts2PhcOpts: ts2phcOpts, Plugins: plugins, PtpSettings: map[string]string{"logReduce": "false"}}
+
+	// Conditionally add PtpSecretName if auth is enabled
+	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+	if authEnabled == "true" {
+		ptpSecretName := "ptp-security-conf"
+		ptpProfile.PtpSecretName = &ptpSecretName
+	}
+
 	if ptp4lConfig != "" {
 		ptpProfile.Ptp4lConf = &ptp4lConfig
 	}
@@ -1526,8 +1561,15 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 		phc2sysOpts = &temp
 	}
 
+	// Conditionally add PtpSecretName if auth is enabled
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds}
+
+	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+	if authEnabled == "true" {
+		ptpSecretName := "ptp-security-conf"
+		ptpProfile.PtpSecretName = &ptpSecretName
+	}
 	if ptp4lConfig != "" {
 		ptpProfile.Ptp4lConf = &ptp4lConfig
 	}
