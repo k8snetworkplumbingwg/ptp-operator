@@ -71,12 +71,6 @@ type Ptp4lConf struct {
 	sections map[string]Ptp4lConfSection
 }
 
-// // +kubebuilder:object:generate=false
-// // Ptp4lConf is a public wrapper for ptp4lConf
-// type Ptp4lConf struct {
-// 	conf ptp4lConf
-// }
-
 // PopulatePtp4lConf parses the ptp4l configuration
 func (p *Ptp4lConf) PopulatePtp4lConf(config *string, ptp4lopts *string) error {
 	return p.populatePtp4lConf(config, ptp4lopts)
