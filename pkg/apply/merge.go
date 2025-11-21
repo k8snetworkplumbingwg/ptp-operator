@@ -125,7 +125,15 @@ func MergeDaemonSetForUpdate(ctx context.Context, current, updated *uns.Unstruct
 // isSecurityItem checks if a volume/mount name is a security item
 // Security items end with "-ptpconfig-sec" suffix
 func isSecurityItem(name string) bool {
-	return len(name) >= 14 && name[len(name)-14:] == "-ptpconfig-sec"
+	// Check for regular security volumes (ends with "-ptpconfig-sec")
+	if len(name) >= 14 && name[len(name)-14:] == "-ptpconfig-sec" {
+		return true
+	}
+	// Check for projected security volumes (starts with "ptp-secrets-")
+	if len(name) >= 12 && name[:12] == "ptp-secrets-" {
+		return true
+	}
+	return false
 }
 
 // filterNonSecurityVolumes extracts non-security volumes from a volume list

@@ -346,10 +346,9 @@ func (r *PtpConfig) validateSecretExistsForProfile(ctx context.Context, profile 
 			return fmt.Errorf("secret '%s' referenced by profile '%s' does not exist in namespace 'openshift-ptp'. Please create the secret before referencing it in PtpConfig",
 				secretName, profileName)
 		}
-		// For other errors (like permission issues), log but don't block
-		ptpconfiglog.Error(err, "failed to verify secret existence", "secret", secretName, "profile", profileName)
-		// Fail open - don't block if we can't verify
-		return nil
+		// For other errors (like permission issues), fail closed - reject to ensure security
+		return fmt.Errorf("failed to verify secret '%s' for profile '%s': %v. This may indicate webhook permission issues or API connectivity problems",
+			secretName, profileName, err)
 	}
 
 	ptpconfiglog.Info("validated secret exists", "secret", secretName, "profile", profileName)
