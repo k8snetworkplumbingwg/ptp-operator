@@ -28,7 +28,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -219,57 +218,36 @@ func (r *PtpConfig) validate() error {
 
 		// Validate secret-related settings for this profile
 		if profile.PtpSecretName != nil && *profile.PtpSecretName != "" {
-			// Check that secret exists
-			if err := r.validateSecretExistsForProfile(context.Background(), profile); err != nil {
-				return err
+			sppValue, err := getSppFromPtp4lConf(conf)
+			if err != nil {
+				return fmt.Errorf("failed to get spp value from ptp4lConf: %w", err)
 			}
-
-			// Check for conflicts with other PtpConfigs
-			if err := r.validateSecretConflictsForProfile(context.Background(), profile); err != nil {
-				return err
+			if err := validateSecretExists(sppValue, *profile.PtpSecretName); err != nil {
+				return fmt.Errorf("failed to validate secret from profile: %w", err)
+			}
+			saFilePath, err := getSaFileFromPtp4lConf(conf)
+			if err != nil {
+				return fmt.Errorf("failed to get sa file path from ptp4lConf: %w", err)
+			}
+			if err := validateSaFileSecretConflicts(saFilePath, *profile.PtpSecretName, r.Name, r.Namespace); err != nil {
+				return fmt.Errorf("failed to validate secret conflicts from profile: %w", err)
 			}
 		}
 	}
 	return nil
 }
 
-// validateSecretConflictsForProfile checks if a single profile's sa_file + secret combination
+// validateSecretConflicts checks if a single profile's sa_file + secret combination
 // conflicts with any existing PtpConfigs in the openshift-ptp namespace
-func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profile PtpProfile) error {
+func validateSaFileSecretConflicts(saFilePath string, secretName string, name string, namespace string) error {
 	if webhookClient == nil {
 		ptpconfiglog.Info("webhook client not initialized, skipping cross-PtpConfig validation")
 		return nil
 	}
 
-	// Skip if profile doesn't use secrets
-	if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
-		return nil
-	}
-	if profile.Ptp4lConf == nil {
-		return nil
-	}
-
-	// Get sa_file for THIS profile
-	conf := &Ptp4lConf{}
-	if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
-		return nil // Skip if can't parse
-	}
-
-	globalSection, exists := conf.sections["[global]"]
-	if !exists {
-		return nil
-	}
-
-	saFile, exists := globalSection.options["sa_file"]
-	if !exists || saFile == "" {
-		return nil // No sa_file, no conflict possible
-	}
-
-	currentSecret := *profile.PtpSecretName
-
 	// List all existing PtpConfigs in openshift-ptp namespace
 	ptpConfigList := &PtpConfigList{}
-	if err := webhookClient.List(ctx, ptpConfigList, &client.ListOptions{
+	if err := webhookClient.List(context.Background(), ptpConfigList, &client.ListOptions{
 		Namespace: "openshift-ptp",
 	}); err != nil {
 		ptpconfiglog.Error(err, "failed to list PtpConfigs for validation")
@@ -280,7 +258,7 @@ func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profi
 	// Check each existing PtpConfig for conflicts
 	for _, existingConfig := range ptpConfigList.Items {
 		// Skip checking against ourselves (for updates)
-		if existingConfig.Name == r.Name && existingConfig.Namespace == r.Namespace {
+		if existingConfig.Name == name && existingConfig.Namespace == namespace {
 			continue
 		}
 
@@ -297,18 +275,18 @@ func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profi
 			if err := existingConf.populatePtp4lConf(existingProfile.Ptp4lConf, existingProfile.Ptp4lOpts); err != nil {
 				continue
 			}
-
-			if globalSection, exists := existingConf.sections["[global]"]; exists {
-				if existingSaFile, exists := globalSection.options["sa_file"]; exists && existingSaFile != "" {
-					// Check if same sa_file as our profile
-					if existingSaFile == saFile {
-						// Same sa_file - check if different secret
-						if *existingProfile.PtpSecretName != currentSecret {
-							return fmt.Errorf("sa_file '%s' conflict: PtpConfig '%s' already uses secret '%s' with this sa_file path, but this profile tries to use secret '%s'. All PtpConfigs using the same sa_file must reference the same secret",
-								saFile, existingConfig.Name, *existingProfile.PtpSecretName, currentSecret)
-						}
-					}
-				}
+			globalSection, exists := existingConf.sections["[global]"]
+			if !exists {
+				continue
+			}
+			existingSaFile, exists := globalSection.options["sa_file"]
+			if !exists {
+				continue
+			}
+			// Check if same sa_file as our profile and different secret
+			if existingSaFile == saFilePath && *existingProfile.PtpSecretName != secretName {
+				return fmt.Errorf("sa_file '%s' conflict: PtpConfig '%s' already uses secret '%s' with this sa_file path, but this profile tries to use secret '%s'. All PtpConfigs using the same sa_file must reference the same secret",
+					saFilePath, existingConfig.Name, *existingProfile.PtpSecretName, secretName)
 			}
 		}
 	}
@@ -316,86 +294,63 @@ func (r *PtpConfig) validateSecretConflictsForProfile(ctx context.Context, profi
 	return nil
 }
 
-// validateSecretExistsForProfile checks that a single profile's ptpSecretName references an existing secret
-func (r *PtpConfig) validateSecretExistsForProfile(ctx context.Context, profile PtpProfile) error {
+// validateSecretExists checks that a single profile's ptpSecretName references an existing secret
+func validateSecretExists(sppValue string, secretName string) error {
 	if webhookClient == nil {
 		ptpconfiglog.Info("webhook client not initialized, skipping secret existence validation")
 		return nil
 	}
 
-	// Skip if no secret specified
-	if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
-		return nil
-	}
-
-	secretName := *profile.PtpSecretName
-	profileName := "unknown"
-	if profile.Name != nil {
-		profileName = *profile.Name
-	}
-
 	// Try to get the secret from openshift-ptp namespace
 	secret := &corev1.Secret{}
-	err := webhookClient.Get(ctx, types.NamespacedName{
+	err := webhookClient.Get(context.Background(), types.NamespacedName{
 		Namespace: "openshift-ptp",
 		Name:      secretName,
 	}, secret)
 
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("secret '%s' referenced by profile '%s' does not exist in namespace 'openshift-ptp'. Please create the secret before referencing it in PtpConfig",
-				secretName, profileName)
-		}
-		// For other errors (like permission issues), fail closed - reject to ensure security
-		return fmt.Errorf("failed to verify secret '%s' for profile '%s': %v. This may indicate webhook permission issues or API connectivity problems",
-			secretName, profileName, err)
+		return fmt.Errorf("failed to get secret %q: %w", secretName, err)
 	}
 
-	ptpconfiglog.Info("validated secret exists", "secret", secretName, "profile", profileName)
-
 	// Validate SPP (Security Parameter Profile) if specified
-	if err := r.validateSppInSecret(profile, secret); err != nil {
-		return err
+	if err := validateSppInSecret(sppValue, secret); err != nil {
+		return fmt.Errorf("failed to validate spp in secret %q: %w", secretName, err)
 	}
 
 	return nil
 }
-
-// validateSppInSecret checks that the spp value in ptp4lConf exists in the referenced secret
-// Combines parsing and validation in one pass for efficiency
-func (r *PtpConfig) validateSppInSecret(profile PtpProfile, secret *corev1.Secret) error {
-	// Skip if no ptp4lConf
-	if profile.Ptp4lConf == nil {
-		return nil
-	}
-
-	// Parse ptp4lConf to get spp value from [global] section
-	conf := &Ptp4lConf{}
-	if err := conf.populatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
-		// If we can't parse the config, skip validation (other validations will catch this)
-		return nil
-	}
-
+func getSppFromPtp4lConf(conf *Ptp4lConf) (string, error) {
 	globalSection, exists := conf.sections["[global]"]
 	if !exists {
-		return nil
+		return "", nil
 	}
-
 	sppValue, exists := globalSection.options["spp"]
+
 	if !exists || sppValue == "" {
-		// No spp specified, nothing to validate
-		return nil
+		return "", nil
 	}
-
-	profileName := "unknown"
-	if profile.Name != nil {
-		profileName = *profile.Name
+	if sppValue == "" {
+		return "", errors.New("spp value is not set in the ptp4lConf")
 	}
+	return sppValue, nil
+}
+func getSaFileFromPtp4lConf(conf *Ptp4lConf) (string, error) {
+	globalSection, exists := conf.sections["[global]"]
+	if !exists {
+		return "", nil
+	}
+	saFileValue, exists := globalSection.options["sa_file"]
+	if !exists {
+		return "", nil
+	}
+	if saFileValue == "" {
+		return "", errors.New("sa_file value is not set in the ptp4lConf")
+	}
+	return saFileValue, nil
+}
 
-	// Validate SPP exists in secret by iterating through secret content
-	// Early return on match for efficiency
-
-	// Iterate through all keys in the secret
+// validateSppInSecret checks that the spp value in ptp4lConf exists in the referenced secret
+func validateSppInSecret(sppValue string, secret *corev1.Secret) error {
 	for key, value := range secret.Data {
 		content := string(value)
 		lines := strings.Split(content, "\n")
@@ -417,7 +372,7 @@ func (r *PtpConfig) validateSppInSecret(profile PtpProfile, secret *corev1.Secre
 
 					// Check if this matches the PtpConfig's spp
 					if secretSppValue == sppValue {
-						ptpconfiglog.Info("validated spp match", "spp", sppValue, "secret", secret.Name, "profile", profileName, "key", key)
+						ptpconfiglog.Info("validated spp match", "spp", sppValue, "secret", secret.Name, "key", key)
 						return nil // Early return - validation passed ✅
 					}
 				}
@@ -425,8 +380,7 @@ func (r *PtpConfig) validateSppInSecret(profile PtpProfile, secret *corev1.Secre
 		}
 	}
 
-	return fmt.Errorf("spp '%s' in profile '%s' is not found in secret '%s' ",
-		sppValue, profileName, secret.Name)
+	return fmt.Errorf("spp '%s' is not found in secret '%s' ", sppValue, secret.Name)
 }
 
 var _ webhook.Validator = &PtpConfig{}
