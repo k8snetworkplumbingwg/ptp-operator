@@ -20,10 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/golang/glog"
@@ -43,6 +41,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+const PTP_SEC_FOLDER = "/etc/ptp-secret-mount/"
+const TLV_AUTH_SUFFIX = "-tlv-auth"
 
 // PtpConfigReconciler reconciles a PtpConfig object
 type PtpConfigReconciler struct {
@@ -282,16 +283,9 @@ func (r *PtpConfigReconciler) syncLinuxptpDaemonSecrets(ctx context.Context, ptp
 				profileName = *profile.Name
 			}
 
-			// Check if profile has both PtpSecretName and sa_file
-			if profile.PtpSecretName == nil || *profile.PtpSecretName == "" {
-				continue
-			}
 			if profile.Ptp4lConf == nil {
 				continue
 			}
-
-			secretName := *profile.PtpSecretName
-
 			// Parse ptp4lConf to get sa_file
 			conf := &ptpv1.Ptp4lConf{}
 			if err := conf.PopulatePtp4lConf(profile.Ptp4lConf, profile.Ptp4lOpts); err != nil {
@@ -304,34 +298,12 @@ func (r *PtpConfigReconciler) syncLinuxptpDaemonSecrets(ctx context.Context, ptp
 			if saFilePath == "" {
 				continue
 			}
-
+			secretName := ptpv1.GetSecretNameFromSaFilePath(saFilePath)
 			glog.Infof("Found {secret, sa_file} pair in PtpConfig %s, profile %s: {%s, %s}",
 				cfg.Name, profileName, secretName, saFilePath)
 
-			// Load secret to get the key name
-			sec := &corev1.Secret{}
-			if err := r.Get(ctx, types.NamespacedName{Namespace: names.Namespace, Name: secretName}, sec); err != nil {
-				glog.Errorf("Failed to load secret %s for profile %s: %v", secretName, profileName, err)
-				continue
-			}
-
-			// Check secret has data
-			if len(sec.Data) == 0 {
-				glog.Warningf("Secret %s for profile %s has no data keys", secretName, profileName)
-				continue
-			}
-
-			// Get the first key from the secret (we'll use this in the volume items field)
-			var secretKey string
-			for k := range sec.Data {
-				secretKey = k
-				break
-			}
-
-			if len(sec.Data) > 1 {
-				glog.Infof("Secret %s for profile %s has multiple keys (%d total) - using key '%s'",
-					secretName, profileName, len(sec.Data), secretKey)
-			}
+			// extract the secret key from the sa_file path
+			secretKey := ptpv1.GetSecretKeyFromSaFilePath(saFilePath)
 
 			mounts = append(mounts, secretMount{
 				secretName: secretName,
@@ -341,46 +313,17 @@ func (r *PtpConfigReconciler) syncLinuxptpDaemonSecrets(ctx context.Context, ptp
 		}
 	}
 
-	// Group by directory - if multiple secrets target same directory, combine them using projected volume
-	type directoryGroup struct {
-		mountDir string
-		secrets  []secretMount
-	}
-
-	dirGroups := make(map[string]*directoryGroup)
+	uniqueSecrets := make(map[string]secretMount)
 	for _, mount := range mounts {
-		mountDir := filepath.Dir(mount.saFilePath)
-		if _, exists := dirGroups[mountDir]; !exists {
-			dirGroups[mountDir] = &directoryGroup{
-				mountDir: mountDir,
-				secrets:  []secretMount{},
-			}
+		if _, exists := uniqueSecrets[mount.secretName]; !exists {
+			uniqueSecrets[mount.secretName] = mount
+			glog.Infof("Adding unique secret '%s'", mount.secretName)
+		} else {
+			glog.Infof("Skipping duplicate secret '%s'", mount.secretName)
 		}
-		dirGroups[mountDir].secrets = append(dirGroups[mountDir].secrets, mount)
 	}
 
-	// Deduplicate secrets within each directory group
-	// Multiple PtpConfigs may reference the same secret+file combination
-	for mountDir, group := range dirGroups {
-		uniqueSecrets := make(map[string]secretMount) // Key: secretName+saFilePath
-		for _, mount := range group.secrets {
-			key := mount.secretName + ":" + mount.saFilePath
-			if _, exists := uniqueSecrets[key]; !exists {
-				uniqueSecrets[key] = mount
-			}
-		}
-		// Replace with deduplicated list
-		group.secrets = []secretMount{}
-		for _, mount := range uniqueSecrets {
-			group.secrets = append(group.secrets, mount)
-		}
-		glog.Infof("Directory '%s': %d unique secrets after deduplication", mountDir, len(group.secrets))
-	}
-
-	glog.Infof("Found %d directory(ies) with unique secret(s)", len(dirGroups))
-
-	// Always update DaemonSet, even if mounts is empty
-	// This ensures volumes are removed when sa_file is deleted from PtpConfigs
+	glog.Infof("Found %d unique secret(s) to mount", len(uniqueSecrets))
 
 	// 2. Get the linuxptp-daemon DaemonSet
 	daemonSet := &appsv1.DaemonSet{}
@@ -391,30 +334,18 @@ func (r *PtpConfigReconciler) syncLinuxptpDaemonSecrets(ctx context.Context, ptp
 	if err != nil {
 		if errors.IsNotFound(err) {
 			glog.Info("linuxptp-daemon DaemonSet not found yet - will retry in 10 seconds")
-			// Requeue to retry after DaemonSet is created
 			return fmt.Errorf("DaemonSet not found, will retry")
 		}
 		return fmt.Errorf("failed to get linuxptp-daemon DaemonSet: %v", err)
 	}
-
 	// 3. Remove all old security volumes first
 	removeSecurityVolumesFromDaemonSet(daemonSet)
 
-	// 4. Add volumes - use projected volume if multiple secrets share a directory
-	for _, group := range dirGroups {
-		if len(group.secrets) == 1 {
-			// Single secret in this directory - use simple secret volume
-			mount := group.secrets[0]
-			glog.Infof("Injecting security volume for secret '%s' at path '%s' (using secret key '%s')",
-				mount.secretName, mount.saFilePath, mount.secretKey)
-			injectPtpSecurityVolume(daemonSet, mount.secretName, mount.saFilePath, mount.secretKey)
-		} else {
-			// Multiple secrets in same directory - use projected volume to combine them
-			glog.Infof("Injecting projected volume for directory '%s' with %d secrets", group.mountDir, len(group.secrets))
-			injectPtpSecurityProjectedVolume(daemonSet, group.mountDir, group.secrets)
-		}
+	// 4. Add volumes - iterate over DEDUPLICATED secrets
+	for _, mount := range uniqueSecrets {
+		glog.Infof("Injecting security volume for secret '%s'", mount.secretName)
+		injectPtpSecurityVolume(daemonSet, mount.secretName)
 	}
-
 	// 5. Convert to Unstructured and apply with merge (like PtpOperatorConfig does)
 	scheme := kscheme.Scheme
 	updated := &uns.Unstructured{}
@@ -435,22 +366,13 @@ func (r *PtpConfigReconciler) syncLinuxptpDaemonSecrets(ctx context.Context, ptp
 }
 
 // removeSecurityVolumesFromDaemonSet removes all PTP security-related volumes and mounts from DaemonSet
-// Security volumes are identified by: ending with "-ptpconfig-sec" suffix OR starting with "ptp-secrets-" prefix
+// Security volumes are identified by: ending with "-tlv-auth" suffix
 func removeSecurityVolumesFromDaemonSet(ds *appsv1.DaemonSet) {
 	// Remove security volumes (both regular and projected)
 	var filteredVolumes []corev1.Volume
 	for _, vol := range ds.Spec.Template.Spec.Volumes {
-		isSecurityVolume := false
-		// Check if volume ends with "-ptpconfig-sec" (14 characters)
-		if len(vol.Name) >= 14 && vol.Name[len(vol.Name)-14:] == "-ptpconfig-sec" {
-			isSecurityVolume = true
-		}
-		// Check if volume starts with "ptp-secrets-" (projected volumes)
-		if strings.HasPrefix(vol.Name, "ptp-secrets-") {
-			isSecurityVolume = true
-		}
-
-		if isSecurityVolume {
+		// Check if volume ends with "-tlv-auth" (9 characters)
+		if len(vol.Name) >= 9 && vol.Name[len(vol.Name)-9:] == TLV_AUTH_SUFFIX {
 			glog.Infof("Removing old security volume: %s", vol.Name)
 			continue
 		}
@@ -463,17 +385,8 @@ func removeSecurityVolumesFromDaemonSet(ds *appsv1.DaemonSet) {
 		if ds.Spec.Template.Spec.Containers[i].Name == "linuxptp-daemon-container" {
 			var filteredMounts []corev1.VolumeMount
 			for _, mount := range ds.Spec.Template.Spec.Containers[i].VolumeMounts {
-				isSecurityMount := false
-				// Skip mounts ending with "-ptpconfig-sec" (14 characters)
-				if len(mount.Name) >= 14 && mount.Name[len(mount.Name)-14:] == "-ptpconfig-sec" {
-					isSecurityMount = true
-				}
-				// Skip mounts starting with "ptp-secrets-" (projected volumes)
-				if strings.HasPrefix(mount.Name, "ptp-secrets-") {
-					isSecurityMount = true
-				}
-
-				if isSecurityMount {
+				// Skip mounts ending with "-tlv-auth" (9 characters)
+				if len(mount.Name) >= 9 && mount.Name[len(mount.Name)-9:] == TLV_AUTH_SUFFIX {
 					glog.Infof("Removing old security mount: %s", mount.Name)
 					continue
 				}
@@ -485,53 +398,22 @@ func removeSecurityVolumesFromDaemonSet(ds *appsv1.DaemonSet) {
 	}
 }
 
-// lastIndexByte returns the index of the last instance of c in s, or -1 if not present
-func lastIndexByte(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
-}
+// injectPtpSecurityVolume adds a single secret volume and mount to the DaemonSet
+func injectPtpSecurityVolume(ds *appsv1.DaemonSet, secretName string) {
+	volumeName := secretName + TLV_AUTH_SUFFIX
+	mountDir := PTP_SEC_FOLDER + secretName
 
-// injectPtpSecurityProjectedVolume creates a projected volume combining multiple secrets for the same directory
-// This is needed because Kubernetes requires unique mountPath - we can't have multiple mounts to same directory
-func injectPtpSecurityProjectedVolume(ds *appsv1.DaemonSet, mountDir string, secrets []secretMount) {
-	// Create volume name from directory path
-	volumeName := "ptp-secrets-" + strings.ReplaceAll(strings.Trim(mountDir, "/"), "/", "-")
-
-	// Build projected sources from all secrets
-	var sources []corev1.VolumeProjection
-	for _, mount := range secrets {
-		filename := filepath.Base(mount.saFilePath)
-		sources = append(sources, corev1.VolumeProjection{
-			Secret: &corev1.SecretProjection{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: mount.secretName,
-				},
-				Items: []corev1.KeyToPath{
-					{
-						Key:  mount.secretKey,
-						Path: filename,
-					},
-				},
-			},
-		})
-		glog.Infof("  - Adding secret '%s' key '%s' as file '%s'", mount.secretName, mount.secretKey, filename)
-	}
-
-	// Add projected volume
+	// Add volume - mount ENTIRE secret (all keys become files)
 	ds.Spec.Template.Spec.Volumes = append(ds.Spec.Template.Spec.Volumes, corev1.Volume{
 		Name: volumeName,
 		VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: sources,
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName,
 			},
 		},
 	})
 
-	// Add ONE volume mount for all secrets in this directory
+	// Add volume mount
 	for i := range ds.Spec.Template.Spec.Containers {
 		if ds.Spec.Template.Spec.Containers[i].Name == "linuxptp-daemon-container" {
 			ds.Spec.Template.Spec.Containers[i].VolumeMounts = append(
@@ -545,61 +427,6 @@ func injectPtpSecurityProjectedVolume(ds *appsv1.DaemonSet, mountDir string, sec
 			break
 		}
 	}
-}
 
-// injectPtpSecurityVolume adds a single secret volume and mount to the DaemonSet
-// secretKey is the actual key name in the secret, which gets mapped to the sa_file filename
-func injectPtpSecurityVolume(ds *appsv1.DaemonSet, secretName string, saFilePath string, secretKey string) {
-	// Use filename from sa_file as volume name
-	// Example: /etc/ptp/ptp-security.conf -> ptp-security-ptpconfig-sec
-	filename := filepath.Base(saFilePath)
-
-	// Remove extension (everything after the last dot)
-	nameWithoutExt := filename
-	if lastDot := lastIndexByte(filename, '.'); lastDot >= 0 {
-		nameWithoutExt = filename[:lastDot]
-	}
-
-	volumeName := nameWithoutExt + "-ptpconfig-sec"
-
-	// 1. Add the volume with items field to map secret key to desired filename
-	ds.Spec.Template.Spec.Volumes = append(ds.Spec.Template.Spec.Volumes, corev1.Volume{
-		Name: volumeName,
-		VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: secretName,
-				Items: []corev1.KeyToPath{
-					{
-						Key:  secretKey, // The actual key in the secret
-						Path: filename,  // Map it to the filename from sa_file
-					},
-				},
-			},
-		},
-	})
-
-	// 2. Add volume mount to linuxptp-daemon-container
-	// Mount to directory WITHOUT subPath to enable Kubernetes auto-updates when secret changes
-	// File will appear at: <directory>/<filename> (exactly as user specified in sa_file)
-	mountDir := filepath.Dir(saFilePath)
-
-	for i := range ds.Spec.Template.Spec.Containers {
-		if ds.Spec.Template.Spec.Containers[i].Name == "linuxptp-daemon-container" {
-			// Mount to directory (not file) WITHOUT subPath
-			// This allows Kubernetes to auto-update file content when secret changes
-			ds.Spec.Template.Spec.Containers[i].VolumeMounts = append(
-				ds.Spec.Template.Spec.Containers[i].VolumeMounts,
-				corev1.VolumeMount{
-					Name:      volumeName,
-					MountPath: mountDir, // User's directory from sa_file path
-					ReadOnly:  true,
-					// NO subPath - enables automatic file updates!
-				},
-			)
-			break
-		}
-	}
-
-	glog.Infof("Mounted secret '%s' to directory %s, file will be at %s",
-		secretName, mountDir, saFilePath)
+	glog.Infof("Mounted secret '%s' to %s", secretName, mountDir)
 }

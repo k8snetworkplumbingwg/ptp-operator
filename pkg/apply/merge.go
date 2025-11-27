@@ -9,6 +9,8 @@ import (
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+const TLV_AUTH_SUFFIX = "-tlv-auth"
+
 // MergeMetadataForUpdate merges the read-only fields of metadata.
 // This is to be able to do a a meaningful comparison in apply,
 // since objects created on runtime do not have these fields populated.
@@ -123,14 +125,10 @@ func MergeDaemonSetForUpdate(ctx context.Context, current, updated *uns.Unstruct
 // ============================================================================
 
 // isSecurityItem checks if a volume/mount name is a security item
-// Security items end with "-ptpconfig-sec" suffix
+// Security items end with TLV_AUTH_SUFFIX suffix
 func isSecurityItem(name string) bool {
-	// Check for regular security volumes (ends with "-ptpconfig-sec")
-	if len(name) >= 14 && name[len(name)-14:] == "-ptpconfig-sec" {
-		return true
-	}
-	// Check for projected security volumes (starts with "ptp-secrets-")
-	if len(name) >= 12 && name[:12] == "ptp-secrets-" {
+	// Check for regular security volumes (ends with TLV_AUTH_SUFFIX)
+	if len(name) >= 9 && name[len(name)-9:] == TLV_AUTH_SUFFIX {
 		return true
 	}
 	return false

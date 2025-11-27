@@ -488,9 +488,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					// Remove ptpSecretName (rogue client has no credentials)
-					ptpConfig.Spec.Profile[0].PtpSecretName = nil
-
 					// Remove auth settings from ptp4lConf
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
 					// Remove sa_file, spp, active_key_id lines
@@ -642,8 +639,6 @@ seqid_window 20
 					Expect(err).NotTo(HaveOccurred())
 
 					// Change to attacker secret (simulates MITM or compromised GM)
-					attackerSecretName := "ptp-security-attacker"
-					ptpConfig.Spec.Profile[0].PtpSecretName = &attackerSecretName
 
 					// IMPORTANT: Also change sa_file path to avoid webhook conflict
 					// (webhook blocks same sa_file path with different secrets)
@@ -740,10 +735,6 @@ seqid_window 20
 						metav1.GetOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
-
-					// Restore secret name
-					correctSecret := "ptp-security-conf"
-					ptpConfig.Spec.Profile[0].PtpSecretName = &correctSecret
 
 					// Restore sa_file path
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf

@@ -1521,13 +1521,6 @@ func createConfigWithTs2PhcAndPlugins(profileName string, ifaceName, ptp4lOpts *
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds, Ts2PhcOpts: ts2phcOpts, Plugins: plugins, PtpSettings: map[string]string{"logReduce": "false"}}
 
-	// Conditionally add PtpSecretName if auth is enabled
-	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
-	if authEnabled == "true" {
-		ptpSecretName := "ptp-security-conf"
-		ptpProfile.PtpSecretName = &ptpSecretName
-	}
-
 	if ptp4lConfig != "" {
 		ptpProfile.Ptp4lConf = &ptp4lConfig
 	}
@@ -1565,11 +1558,6 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds}
 
-	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
-	if authEnabled == "true" {
-		ptpSecretName := "ptp-security-conf"
-		ptpProfile.PtpSecretName = &ptpSecretName
-	}
 	if ptp4lConfig != "" {
 		ptpProfile.Ptp4lConf = &ptp4lConfig
 	}
