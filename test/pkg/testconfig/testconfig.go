@@ -284,7 +284,7 @@ func GetPtp4lConfigWithAuth(baseConfig string) string {
 	authEnabled := os.Getenv("PTP_AUTH_ENABLED")
 	if authEnabled == "true" {
 		// Add auth settings after [global] line
-		authSettings := `sa_file /etc/ptp/ptp-security.conf
+		authSettings := `sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf
 spp 1
 active_key_id 1
 `

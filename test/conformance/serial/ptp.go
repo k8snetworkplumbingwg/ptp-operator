@@ -644,8 +644,8 @@ seqid_window 20
 					// (webhook blocks same sa_file path with different secrets)
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
 					modifiedConf := strings.Replace(ptp4lConf,
-						"sa_file /etc/ptp/ptp-security.conf",
-						"sa_file /etc/ptp/ptp-security-attacker.conf", 1)
+						"sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf",
+						"sa_file /etc/ptp-secret-mount/ptp-security-attacker/ptp-security.conf", 1)
 					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
 
 					// Update
@@ -739,8 +739,8 @@ seqid_window 20
 					// Restore sa_file path
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
 					restoredConf := strings.Replace(ptp4lConf,
-						"sa_file /etc/ptp/ptp-security-attacker.conf",
-						"sa_file /etc/ptp/ptp-security.conf", 1)
+						"sa_file /etc/ptp-secret-mount/ptp-security-attacker/ptp-security.conf",
+						"sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf", 1)
 					ptpConfig.Spec.Profile[0].Ptp4lConf = &restoredConf
 
 					// Update
@@ -761,7 +761,7 @@ seqid_window 20
 					fmt.Fprintf(GinkgoWriter, "Restored correct keys and sa_file to GM\n")
 
 					// Wait longer for pods to fully restart and stabilize after restoration
-					time.Sleep(60 * time.Second)
+					time.Sleep(10 * time.Second)
 
 					// Ensure pods are ready before next test
 					ptphelper.WaitForPtpDaemonToExist()
@@ -782,7 +782,7 @@ seqid_window 20
 				By("Ensuring system is stable after previous tests", func() {
 					// Wait for pods to fully recover from previous test
 					fmt.Fprintf(GinkgoWriter, "Waiting for system to stabilize...\n")
-					time.Sleep(60 * time.Second)
+					time.Sleep(10 * time.Second)
 
 					// Refresh config to ensure we have current state
 					ptphelper.WaitForPtpDaemonToExist()
@@ -792,7 +792,7 @@ seqid_window 20
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 
 					// Additional wait for ptp4l to establish communication
-					time.Sleep(30 * time.Second)
+					time.Sleep(10 * time.Second)
 					fmt.Fprintf(GinkgoWriter, "System stabilized\n")
 				})
 
@@ -1596,7 +1596,7 @@ seqid_window 20
 					if authEnabled == "true" {
 						// Mount the same secret that linuxptp-daemon uses
 						podDefinition.Spec.Volumes = append(podDefinition.Spec.Volumes, v1core.Volume{
-							Name: "ptp-security",
+							Name: "ptp-security-conf-tlv-auth",
 							VolumeSource: v1core.VolumeSource{
 								Secret: &v1core.SecretVolumeSource{
 									SecretName: "ptp-security-conf", // Same secret as linuxptp-daemon
@@ -1604,11 +1604,11 @@ seqid_window 20
 							},
 						})
 						podDefinition.Spec.Containers[0].VolumeMounts = append(podDefinition.Spec.Containers[0].VolumeMounts, v1core.VolumeMount{
-							Name:      "ptp-security",
-							MountPath: "/etc/ptp",
+							Name:      "ptp-security-conf-tlv-auth",
+							MountPath: "/etc/ptp-secret-mount/ptp-security-conf",
 							ReadOnly:  true,
 						})
-						logrus.Infof("Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp in test pod")
+						logrus.Infof("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -1617,7 +1617,7 @@ seqid_window 20
 					Eventually(func() string {
 						buf, _, _ := pods.ExecCommand(client.Client, true, pod, pod.Spec.Containers[0].Name, []string{"pmc", "-b", "0", "-u", "-f", "/var/run/ptp4l.0.config", "GET CURRENT_DATA_SET"})
 						return buf.String()
-					}, 1*time.Minute, 2*time.Second).Should(ContainSubstring("Permission denied"), "unprivileged pod can access the uds socket")
+					}, 1*time.Minute, 2*time.Second).Should(ContainSubstring("Permission denied"), "unprivileged pod can access the q socket")
 				})
 			})
 
@@ -1659,7 +1659,7 @@ seqid_window 20
 					if authEnabled == "true" {
 						// Mount the same secret that linuxptp-daemon uses
 						podDefinition.Spec.Volumes = append(podDefinition.Spec.Volumes, v1core.Volume{
-							Name: "ptp-security",
+							Name: "ptp-security-conf-tlv-auth",
 							VolumeSource: v1core.VolumeSource{
 								Secret: &v1core.SecretVolumeSource{
 									SecretName: "ptp-security-conf", // Same secret as linuxptp-daemon
@@ -1667,11 +1667,11 @@ seqid_window 20
 							},
 						})
 						podDefinition.Spec.Containers[0].VolumeMounts = append(podDefinition.Spec.Containers[0].VolumeMounts, v1core.VolumeMount{
-							Name:      "ptp-security",
-							MountPath: "/etc/ptp",
+							Name:      "ptp-security-conf-tlv-auth",
+							MountPath: "/etc/ptp-secret-mount/ptp-security-conf",
 							ReadOnly:  true,
 						})
-						logrus.Infof("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp in test pod")
+						logrus.Infof("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
