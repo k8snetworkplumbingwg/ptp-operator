@@ -28,25 +28,25 @@ podman exec switch1 yum install iputils iproute ptp4l ethtool ps -y
 
 # TODO: netdevsim needs to implement real PCI address, right now we are reusing the address of existing devices
 # Server 1 nic 1
-./configpair.sh 1 2 ens1f0 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:07.0
-./configpair.sh 3 4 ens1f1 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:08.0
+./configpair.sh 1 2 ens1f0 1 1 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:08.0
+./configpair.sh 3 4 ens1f1 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:07.0
 
 # Server 1 nic 2
-./configpair.sh 5 6 ens2f0 2 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.0 ${PCI_PREFIX}:09.0
-./configpair.sh 7 8 ens2f1 2 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.1 ${PCI_PREFIX}:0a.0
+./configpair.sh 5 6 ens2f0 2 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.0 ${PCI_PREFIX}:07.1
+./configpair.sh 7 8 ens2f1 2 2 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.1 ${PCI_PREFIX}:09.0
 
 # Server 2 nic 1
-./configpair.sh 9 10 ens3f0 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.0 ${PCI_PREFIX}:0b.0
-./configpair.sh 11 12 ens3f1 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.1 ${PCI_PREFIX}:0c.0
+./configpair.sh 9 10 ens3f0 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.0 ${PCI_PREFIX}:07.2
+./configpair.sh 11 12 ens3f1 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.1 ${PCI_PREFIX}:07.3
 
 # Server 3 nic 1
-./configpair.sh 13 14 ens4f0 4 0 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:04.0 ${PCI_PREFIX}:0d.0
+./configpair.sh 13 14 ens4f0 4 1 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:04.0 ${PCI_PREFIX}:08.1
 
 # Server 3 nic 2
-./configpair.sh 15 16 ens5f0 5 0 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:05.0 ${PCI_PREFIX}:0e.0
+./configpair.sh 15 16 ens5f0 5 2 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:05.0 ${PCI_PREFIX}:09.1
 
 # Server 3 nic 3
-./configpair.sh 17 18 ens6f0 6 0 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:06.0 ${PCI_PREFIX}:0f.0
+./configpair.sh 17 18 ens6f0 6 2 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:06.0 ${PCI_PREFIX}:09.2
 
 # start openvswitch service
 $(podman exec switch1 systemctl enable --now openvswitch)|| {
@@ -88,14 +88,84 @@ podman exec switch1 ip link set dev ens6f0 up
 # Disable ptp4l frame forwarding
 podman exec switch1 ovs-ofctl add-flow br0 "dl_type=0x88f7, actions=drop"
 
-# Configure and start ptp4l boundary clock on the bridge ports
-podman cp ptpswitchconfig.cfg switch1:/etc/ptp4l.conf
+# Configure and start ptp4l boundary clock services per VLAN
+# Copy ptp4l config files for each VLAN
+podman cp ptp4l.1500.conf switch1:/etc/ptp4l.1500.conf
+podman cp ptp4l.1501.conf switch1:/etc/ptp4l.1501.conf
+podman cp ptp4l.1502.conf switch1:/etc/ptp4l.1502.conf
 
-$(podman exec switch1 systemctl enable --now ptp4l) || {
+# Create systemd service files for each VLAN
+podman exec switch1 bash -c 'cat > /etc/systemd/system/ptp4l.1500.service << EOF
+[Unit]
+Description=Precision Time Protocol (PTP) service for VLAN 1500
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ptp4l -f /etc/ptp4l.1500.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+podman exec switch1 bash -c 'cat > /etc/systemd/system/ptp4l.1501.service << EOF
+[Unit]
+Description=Precision Time Protocol (PTP) service for VLAN 1501
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ptp4l -f /etc/ptp4l.1501.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+podman exec switch1 bash -c 'cat > /etc/systemd/system/ptp4l.1502.service << EOF
+[Unit]
+Description=Precision Time Protocol (PTP) service for VLAN 1502
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ptp4l -f /etc/ptp4l.1502.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+# Reload systemd and start all ptp4l services
+podman exec switch1 systemctl daemon-reload
+
+# Start ptp4l.1500 service
+$(podman exec switch1 systemctl enable --now ptp4l.1500) || {
     status=$?
-    echo "❌ command failed with code $status"
-    podman exec switch1 systemctl start ptp4l || true
-    podman exec switch1 systemctl status ptp4l
-    podman exec switch1 journalctl -u ptp4l
+    echo "❌ ptp4l.1500 service failed with code $status"
+    podman exec switch1 systemctl start ptp4l.1500 || true
+    podman exec switch1 systemctl status ptp4l.1500
+    podman exec switch1 journalctl -u ptp4l.1500
+    exit $status
+}
+
+# Start ptp4l.1501 service
+$(podman exec switch1 systemctl enable --now ptp4l.1501) || {
+    status=$?
+    echo "❌ ptp4l.1501 service failed with code $status"
+    podman exec switch1 systemctl start ptp4l.1501 || true
+    podman exec switch1 systemctl status ptp4l.1501
+    podman exec switch1 journalctl -u ptp4l.1501
+    exit $status
+}
+
+# Start ptp4l.1502 service
+$(podman exec switch1 systemctl enable --now ptp4l.1502) || {
+    status=$?
+    echo "❌ ptp4l.1502 service failed with code $status"
+    podman exec switch1 systemctl start ptp4l.1502 || true
+    podman exec switch1 systemctl status ptp4l.1502
+    podman exec switch1 journalctl -u ptp4l.1502
     exit $status
 }

@@ -30,6 +30,56 @@ export SKIP_INTERFACES="eth0"
 export IMAGE_REGISTRY="$VM_IP/"
 export CNF_TESTS_IMAGE=test:lptpd
 
+# Function to disable switch1 authentication for all 3 VLAN services
+disable_switch_auth() {
+    echo "Disabling switch1 authentication for all VLAN services..."
+    
+    # Copy non-auth configs for each VLAN
+    podman cp ptp4l.1500.conf switch1:/etc/ptp4l.1500.conf
+    podman cp ptp4l.1501.conf switch1:/etc/ptp4l.1501.conf
+    podman cp ptp4l.1502.conf switch1:/etc/ptp4l.1502.conf
+    
+    # Restart all ptp4l services
+    podman exec switch1 systemctl restart ptp4l.1500 || true
+    podman exec switch1 systemctl restart ptp4l.1501 || true
+    podman exec switch1 systemctl restart ptp4l.1502 || true
+    
+    echo "✓ Switch1 authentication disabled for all VLAN services"
+}
+
+# Function to enable switch1 authentication for all 3 VLAN services
+enable_switch_auth() {
+    echo "Configuring switch1 with PTP authentication for all VLAN services..."
+    
+    # 1. Create directory and copy security file
+    podman exec switch1 mkdir -p /etc/ptp-secret-mount/ptp-security-conf
+    podman cp ptp-security.conf switch1:/etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf
+    
+    # 2. Copy auth-enabled configs for each VLAN
+    podman cp ptp4l.1500_auth.conf switch1:/etc/ptp4l.1500.conf
+    podman cp ptp4l.1501_auth.conf switch1:/etc/ptp4l.1501.conf
+    podman cp ptp4l.1502_auth.conf switch1:/etc/ptp4l.1502.conf
+    
+    # 3. Restart all ptp4l services with authentication enabled
+    podman exec switch1 systemctl restart ptp4l.1500 || {
+        echo "WARNING: ptp4l.1500 restart failed, trying pkill..."
+        podman exec switch1 pkill -f "ptp4l.*1500" 2>/dev/null || true
+    }
+    podman exec switch1 systemctl restart ptp4l.1501 || {
+        echo "WARNING: ptp4l.1501 restart failed, trying pkill..."
+        podman exec switch1 pkill -f "ptp4l.*1501" 2>/dev/null || true
+    }
+    podman exec switch1 systemctl restart ptp4l.1502 || {
+        echo "WARNING: ptp4l.1502 restart failed, trying pkill..."
+        podman exec switch1 pkill -f "ptp4l.*1502" 2>/dev/null || true
+    }
+    
+    sleep 2
+    echo "✓ Switch1 configured with authentication for all VLAN services"
+}
+
+disable_switch_auth
+
 systemctl stop chronyd
 
 set -e
