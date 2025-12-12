@@ -1,4 +1,4 @@
-GOLANGCI_VERSION=v1.53.2
+GOLANGCI_VERSION=v1.59
 
 .PHONY: all clean test build lint install-lint vet fmt
 
@@ -7,10 +7,16 @@ fmt:
 
 lint:
 	golangci-lint run
+
 # Install golangci-lint	
 install-lint:
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b ${GO_PATH}/bin ${GOLANGCI_VERSION}
+
 vet:
-	go vet ${GO_PACKAGES}
+	go vet ./...
+
+build:
+	go build ./...
+
 test:
 	./scripts/test.sh
