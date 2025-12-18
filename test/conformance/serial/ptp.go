@@ -1072,12 +1072,207 @@ spp 0
 				Eventually(func() string {
 					buf, _, _ := pods.ExecCommand(client.Client, false, fullConfig.DiscoveredClockUnderTestPod, pkg.EventProxyContainerName, []string{"curl", pkg.MetricsEndPoint})
 					return buf.String()
-				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpThreshold),
-					"Threshold metrics are not detected")
-			})
+			}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpThreshold),
+				"Threshold metrics are not detected")
 		})
 
-		Context("Running with event enabled, v1 regression", func() {
+		// Verify cloud-event-proxy defaults to v2 when apiVersion is not set
+		It("Should default to event API v2 when apiVersion is not explicitly set in PtpOperatorConfig", func() {
+			By("Verifying apiVersion is not explicitly set in PtpOperatorConfig")
+			ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+				context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Skip if apiVersion is explicitly set - this test is for default behavior
+			if ptpOperatorConfig.Spec.EventConfig != nil && ptpOperatorConfig.Spec.EventConfig.ApiVersion != "" {
+				Skip(fmt.Sprintf("apiVersion is explicitly set to '%s', skipping default test",
+					ptpOperatorConfig.Spec.EventConfig.ApiVersion))
+			}
+
+			By("Checking cloud-event-proxy logs for v2 API config on all pods")
+			for _, pod := range ptpPods.Items {
+				// Verify cloud-event-proxy container exists
+				cloudProxyFound := false
+				for _, c := range pod.Spec.Containers {
+					if c.Name == pkg.EventProxyContainerName {
+						cloudProxyFound = true
+					}
+				}
+				Expect(cloudProxyFound).ToNot(BeFalse(),
+					fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+
+				logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+
+				// Get existing logs (no streaming)
+				podLogOptions := v1core.PodLogOptions{
+					Container: pkg.EventProxyContainerName,
+					Follow:    false,
+				}
+
+				req := client.Client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOptions)
+				logs, err := req.DoRaw(context.Background())
+				Expect(err).NotTo(HaveOccurred(),
+					fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+
+				logStr := string(logs)
+				apiConfigPrefix := "REST API config: version="
+				lastIndexOfApiConfigSubstringInLogs := strings.LastIndex(logStr, apiConfigPrefix)
+				if lastIndexOfApiConfigSubstringInLogs == -1 {
+					Fail(fmt.Sprintf("No 'REST API config:' found in cloud-event-proxy logs on pod %s", pod.Name))
+				}
+				// Extract the version from the last occurrence
+				remainingLog := logStr[lastIndexOfApiConfigSubstringInLogs:]
+				// Find end of line
+				endOfLine := strings.Index(remainingLog, "\n")
+				if endOfLine == -1 {
+					endOfLine = len(remainingLog)
+				}
+				lastApiVersionLine := remainingLog[:endOfLine]
+				Expect(lastApiVersionLine).To(ContainSubstring("version=2.0"),
+					fmt.Sprintf("cloud-event-proxy on pod %s: most recent API config is not v2.0. Got: '%s'",
+						pod.Name, lastApiVersionLine))
+
+			logrus.Infof("Pod %s: last REST API config line: %s", pod.Name, lastApiVersionLine)
+		}
+	})
+
+	// Verify cloud-event-proxy runs v2 when apiVersion is explicitly set to "2.0"
+	It("Should run event API v2 when apiVersion is explicitly set to 2.0 in PtpOperatorConfig", func() {
+		By("Setting apiVersion to 2.0 in PtpOperatorConfig")
+		err := ptphelper.EnablePTPEvent("2.0", "")
+		Expect(err).NotTo(HaveOccurred(), "Failed to set apiVersion to 2.0")
+
+		By("Verifying apiVersion is set to 2.0 in PtpOperatorConfig")
+		ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ptpOperatorConfig.Spec.EventConfig).NotTo(BeNil(), "EventConfig should not be nil")
+		Expect(ptpOperatorConfig.Spec.EventConfig.ApiVersion).To(Equal("2.0"),
+			"apiVersion should be explicitly set to 2.0")
+
+		// Wait for operator to process config change
+		time.Sleep(5 * time.Second)
+
+		By("Waiting for daemonset to be ready and refreshing pods list")
+		ptphelper.WaitForPtpDaemonToExist()
+		fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+		podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+		Expect(err).NotTo(HaveOccurred())
+		ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
+		ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
+			context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
+
+		By("Checking cloud-event-proxy logs for v2 API config on all pods")
+		for _, pod := range ptpPods.Items {
+			// Verify cloud-event-proxy container exists
+			cloudProxyFound := false
+			for _, c := range pod.Spec.Containers {
+				if c.Name == pkg.EventProxyContainerName {
+					cloudProxyFound = true
+				}
+			}
+			Expect(cloudProxyFound).ToNot(BeFalse(),
+				fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+
+			logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+
+			podLogOptions := v1core.PodLogOptions{
+				Container: pkg.EventProxyContainerName,
+				Follow:    false,
+			}
+
+			req := client.Client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOptions)
+			logs, err := req.DoRaw(context.Background())
+			Expect(err).NotTo(HaveOccurred(),
+				fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+
+			logStr := string(logs)
+			apiConfigPrefix := "REST API config: version="
+			lastIndexOfApiConfigSubstringInLogs := strings.LastIndex(logStr, apiConfigPrefix)
+			if lastIndexOfApiConfigSubstringInLogs == -1 {
+				Fail(fmt.Sprintf("No 'REST API config:' found in cloud-event-proxy logs on pod %s", pod.Name))
+			}
+			remainingLog := logStr[lastIndexOfApiConfigSubstringInLogs:]
+			endOfLine := strings.Index(remainingLog, "\n")
+			if endOfLine == -1 {
+				endOfLine = len(remainingLog)
+			}
+			lastApiVersionLine := remainingLog[:endOfLine]
+			Expect(lastApiVersionLine).To(ContainSubstring("version=2.0"),
+				fmt.Sprintf("cloud-event-proxy on pod %s: most recent API config is not v2.0. Got: '%s'",
+					pod.Name, lastApiVersionLine))
+
+			logrus.Infof("Pod %s: last REST API config line: %s", pod.Name, lastApiVersionLine)
+		}
+	})
+	// Verify invalid apiVersion values are rejected and pods are not restarted
+	DescribeTable("Should reject invalid apiVersion and not restart pods",
+		func(invalidVersion string, expectedErrorSubstring string) {
+			By("Recording current pod UIDs and container count")
+			originalPodUIDs := make(map[string]string)
+			originalContainerCounts := make(map[string]int)
+			for _, pod := range ptpPods.Items {
+				originalPodUIDs[pod.Name] = string(pod.UID)
+				originalContainerCounts[pod.Name] = len(pod.Spec.Containers)
+				logrus.Infof("Pod %s: UID=%s, containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+			}
+
+			By("Recording current apiVersion in PtpOperatorConfig")
+			ptpOperatorConfigBefore, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+				context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			originalApiVersion := ""
+			if ptpOperatorConfigBefore.Spec.EventConfig != nil {
+				originalApiVersion = ptpOperatorConfigBefore.Spec.EventConfig.ApiVersion
+			}
+			logrus.Infof("Original apiVersion: '%s'", originalApiVersion)
+
+			By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", invalidVersion))
+			err = ptphelper.EnablePTPEvent(invalidVersion, "")
+			Expect(err).To(HaveOccurred(),
+				fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", invalidVersion))
+			Expect(err.Error()).To(ContainSubstring(expectedErrorSubstring),
+				"Error should contain expected message")
+			logrus.Infof("Received expected rejection error: %s", err.Error())
+
+			By("Verifying PtpOperatorConfig was not changed")
+			ptpOperatorConfigAfter, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+				context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			afterApiVersion := ""
+			if ptpOperatorConfigAfter.Spec.EventConfig != nil {
+				afterApiVersion = ptpOperatorConfigAfter.Spec.EventConfig.ApiVersion
+			}
+			Expect(afterApiVersion).To(Equal(originalApiVersion),
+				"apiVersion should not have changed after rejected update")
+
+			By("Verifying pods were not restarted (same UIDs and container count)")
+			currentPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
+				context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(currentPods.Items)).To(Equal(len(ptpPods.Items)),
+				"Number of pods should remain the same")
+
+			for _, pod := range currentPods.Items {
+				originalUID, exists := originalPodUIDs[pod.Name]
+				Expect(exists).To(BeTrue(),
+					fmt.Sprintf("Pod %s should still exist", pod.Name))
+				Expect(string(pod.UID)).To(Equal(originalUID),
+					fmt.Sprintf("Pod %s should have same UID (no restart)", pod.Name))
+				Expect(len(pod.Spec.Containers)).To(Equal(originalContainerCounts[pod.Name]),
+					fmt.Sprintf("Pod %s should have same number of containers", pod.Name))
+				logrus.Infof("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+			}
+		},
+		Entry("v1 (deprecated/EOL)", "1.0", "v1 is no longer supported"),
+		Entry("invalid version 'boo'", "boo", "is not a valid version"),
+	)
+})
+
+	Context("Running with event enabled, v1 regression", func() {
 			BeforeEach(func() {
 				if !event.IsV1EventRegressionNeeded() {
 					Skip("Skipping, test PTP events v1 regression is for 4.16 and 4.17 only")
