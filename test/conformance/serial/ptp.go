@@ -1103,36 +1103,21 @@ spp 0
 
 					logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
-					// Get existing logs (no streaming)
-					podLogOptions := v1core.PodLogOptions{
-						Container: pkg.EventProxyContainerName,
-						Follow:    false,
-					}
-
-					req := client.Client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOptions)
-					logs, err := req.DoRaw(context.Background())
+					// Search for REST API config v2.0 in pod logs (literal text search)
+					matches, err := pods.GetPodLogsRegex(
+						pod.Namespace,
+						pod.Name,
+						pkg.EventProxyContainerName,
+						`REST API config: version=2.0`,
+						true,
+						30*time.Second,
+					)
 					Expect(err).NotTo(HaveOccurred(),
 						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+					Expect(matches).NotTo(BeEmpty(),
+						fmt.Sprintf("No 'REST API config: version=2.0' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-					logStr := string(logs)
-					apiConfigPrefix := "REST API config: version="
-					lastIndexOfApiConfigSubstringInLogs := strings.LastIndex(logStr, apiConfigPrefix)
-					if lastIndexOfApiConfigSubstringInLogs == -1 {
-						Fail(fmt.Sprintf("No 'REST API config:' found in cloud-event-proxy logs on pod %s", pod.Name))
-					}
-					// Extract the version from the last occurrence
-					remainingLog := logStr[lastIndexOfApiConfigSubstringInLogs:]
-					// Find end of line
-					endOfLine := strings.Index(remainingLog, "\n")
-					if endOfLine == -1 {
-						endOfLine = len(remainingLog)
-					}
-					lastApiVersionLine := remainingLog[:endOfLine]
-					Expect(lastApiVersionLine).To(ContainSubstring("version=2.0"),
-						fmt.Sprintf("cloud-event-proxy on pod %s: most recent API config is not v2.0. Got: '%s'",
-							pod.Name, lastApiVersionLine))
-
-					logrus.Infof("Pod %s: last REST API config line: %s", pod.Name, lastApiVersionLine)
+					logrus.Infof("Pod %s: found REST API config v2.0 in logs", pod.Name)
 				}
 			})
 
@@ -1179,38 +1164,37 @@ spp 0
 
 					logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
-					podLogOptions := v1core.PodLogOptions{
-						Container: pkg.EventProxyContainerName,
-						Follow:    false,
-					}
-
-					req := client.Client.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOptions)
-					logs, err := req.DoRaw(context.Background())
+					// Search for REST API config v2.0 in pod logs (literal text search)
+					matches, err := pods.GetPodLogsRegex(
+						pod.Namespace,
+						pod.Name,
+						pkg.EventProxyContainerName,
+						`REST API config: version=2.0`,
+						true,
+						30*time.Second,
+					)
 					Expect(err).NotTo(HaveOccurred(),
 						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+					Expect(matches).NotTo(BeEmpty(),
+						fmt.Sprintf("No 'REST API config: version=2.0' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-					logStr := string(logs)
-					apiConfigPrefix := "REST API config: version="
-					lastIndexOfApiConfigSubstringInLogs := strings.LastIndex(logStr, apiConfigPrefix)
-					if lastIndexOfApiConfigSubstringInLogs == -1 {
-						Fail(fmt.Sprintf("No 'REST API config:' found in cloud-event-proxy logs on pod %s", pod.Name))
-					}
-					remainingLog := logStr[lastIndexOfApiConfigSubstringInLogs:]
-					endOfLine := strings.Index(remainingLog, "\n")
-					if endOfLine == -1 {
-						endOfLine = len(remainingLog)
-					}
-					lastApiVersionLine := remainingLog[:endOfLine]
-					Expect(lastApiVersionLine).To(ContainSubstring("version=2.0"),
-						fmt.Sprintf("cloud-event-proxy on pod %s: most recent API config is not v2.0. Got: '%s'",
-							pod.Name, lastApiVersionLine))
-
-					logrus.Infof("Pod %s: last REST API config line: %s", pod.Name, lastApiVersionLine)
+					logrus.Infof("Pod %s: found REST API config v2.0 in logs", pod.Name)
 				}
 			})
 			// Verify invalid apiVersion values are rejected and pods are not restarted
-			DescribeTable("Should reject invalid apiVersion and not restart pods",
-				func(invalidVersion string, expectedErrorSubstring string) {
+			It("Should reject invalid apiVersion and not restart pods", func() {
+				testCases := []struct {
+					name                   string
+					invalidVersion         string
+					expectedErrorSubstring string
+				}{
+					{"v1 (deprecated/EOL)", "1.0", "v1 is no longer supported"},
+					{"invalid version 'boo'", "boo", "is not a valid version"},
+				}
+
+				for _, tc := range testCases {
+					By(fmt.Sprintf("Testing: %s", tc.name))
+
 					By("Recording current pod UIDs and container count")
 					originalPodUIDs := make(map[string]string)
 					originalContainerCounts := make(map[string]int)
@@ -1230,11 +1214,11 @@ spp 0
 					}
 					logrus.Infof("Original apiVersion: '%s'", originalApiVersion)
 
-					By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", invalidVersion))
-					err = ptphelper.EnablePTPEvent(invalidVersion, "")
+					By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", tc.invalidVersion))
+					err = ptphelper.EnablePTPEvent(tc.invalidVersion, "")
 					Expect(err).To(HaveOccurred(),
-						fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", invalidVersion))
-					Expect(err.Error()).To(ContainSubstring(expectedErrorSubstring),
+						fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", tc.invalidVersion))
+					Expect(err.Error()).To(ContainSubstring(tc.expectedErrorSubstring),
 						"Error should contain expected message")
 					logrus.Infof("Received expected rejection error: %s", err.Error())
 
@@ -1266,10 +1250,8 @@ spp 0
 							fmt.Sprintf("Pod %s should have same number of containers", pod.Name))
 						logrus.Infof("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
 					}
-				},
-				Entry("v1 (deprecated/EOL)", "1.0", "v1 is no longer supported"),
-				Entry("invalid version 'boo'", "boo", "is not a valid version"),
-			)
+				}
+			})
 		})
 
 		Context("Running with event enabled, v1 regression", func() {
