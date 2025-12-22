@@ -107,3 +107,6 @@ test/conformance/parallel/linuxptp-daemon-*
 .env
 catalog/*
 catalog.Dockerfile
+# Backup files created during build
+*.bak
+config/manager/env.yaml.bak
