@@ -76,7 +76,7 @@ spec:
                                   items:
                                     description: |-
                                       DesiredState defines the desired configuration that is applied when a condition is triggered.
-                                      It supports either DPLL pin configurations OR sysFS-based Ethernet subsystem configurations.
+                                      It supports DPLL pin configurations and standardized PTP pin/period configurations.
                                     properties:
                                       dpll:
                                         description: DPLL defines DPLL pin configurations
@@ -125,21 +125,89 @@ spec:
                                               Identifies which subsystem to configure.
                                             type: string
                                         type: object
-                                      sysfs:
-                                        description: |-
-                                          SysFS defines a sysFS-based configuration for the Ethernet part of the subsystem.
-                                          This configuration is applied by writing a value to a sysFS path, often including interface names
-                                          that can be obtained from PTP sources' ptpTimeReceivers field.
+                                      ptpPeriod:
+                                        description: PTPPeriod defines a standardized
+                                          PTP periodic output configuration.
                                         properties:
                                           description:
                                             description: Description provides optional
-                                              context about this sysFS configuration
+                                              context about this PTP period configuration
                                             type: string
-                                          path:
+                                          index:
+                                            description: Index is the period index
+                                            format: int64
+                                            type: integer
+                                          period:
                                             description: |-
-                                              Path is the sysFS path where the value should be written.
-                                              It supports templating with interface names using the format: /sys/class/net/{interface}/...
-                                              The {interface} placeholder will be replaced with actual interface names from PTP sources.
+                                              Period defines the period duration.
+                                              If omitted, defaults to {sec: 0, nsec: 0}.
+                                            properties:
+                                              nsec:
+                                                description: Nsec is the nanoseconds
+                                                  component of the time specification
+                                                  (0-999999999)
+                                                format: int64
+                                                type: integer
+                                              sec:
+                                                description: Sec is the seconds component
+                                                  of the time specification
+                                                format: int64
+                                                type: integer
+                                            required:
+                                            - nsec
+                                            - sec
+                                            type: object
+                                          sourceName:
+                                            description: |-
+                                              SourceName specifies which source to use for obtaining interface names.
+                                              If specified, the interface names will be taken from the PTP source's ptpTimeReceivers field.
+                                              If not specified, all available PTP sources will be considered for interface name resolution.
+                                            type: string
+                                          start:
+                                            description: |-
+                                              Start defines the start time for the periodic output.
+                                              If omitted, defaults to {sec: 0, nsec: 0} (start immediately).
+                                            properties:
+                                              nsec:
+                                                description: Nsec is the nanoseconds
+                                                  component of the time specification
+                                                  (0-999999999)
+                                                format: int64
+                                                type: integer
+                                              sec:
+                                                description: Sec is the seconds component
+                                                  of the time specification
+                                                format: int64
+                                                type: integer
+                                            required:
+                                            - nsec
+                                            - sec
+                                            type: object
+                                        required:
+                                        - index
+                                        type: object
+                                      ptpPin:
+                                        description: PTPPin defines a standardized
+                                          PTP pin configuration.
+                                        properties:
+                                          chan:
+                                            description: Chan is the pin channel number
+                                            format: int64
+                                            type: integer
+                                          description:
+                                            description: Description provides optional
+                                              context about this PTP pin configuration
+                                            type: string
+                                          func:
+                                            description: 'Func is the pin function.
+                                              Valid values: "Disabled", "RX", "TX",
+                                              "Sync"'
+                                            format: int64
+                                            type: integer
+                                          name:
+                                            description: |-
+                                              Name is the pin name as appears under /sys/class/net/{interface}/device/ptp/ptp*/pins/
+                                              (e.g., SMA1, SMA2, SDP0, SDP2, U.FL1, U.FL2)
                                             type: string
                                           sourceName:
                                             description: |-
@@ -147,13 +215,10 @@ spec:
                                               If specified, the interface names will be taken from the PTP source's ptpTimeReceivers field.
                                               If not specified, all available PTP sources will be considered for interface name resolution.
                                             type: string
-                                          value:
-                                            description: Value is the value to write
-                                              to the sysFS path
-                                            type: string
                                         required:
-                                        - path
-                                        - value
+                                        - chan
+                                        - func
+                                        - name
                                         type: object
                                     type: object
                                   type: array
@@ -349,24 +414,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -406,24 +455,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -494,24 +527,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -551,24 +568,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
