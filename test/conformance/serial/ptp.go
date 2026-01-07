@@ -1199,7 +1199,7 @@ spp 0
 							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
 							pluginLog, true, pkg.TimeoutIn3Minutes)
 						if err != nil {
-							logrus.Errorf(fmt.Sprintf("Reference plugin not loaded, err=%s", err))
+							logrus.Errorf("Reference plugin not loaded, err=%s", err)
 							continue
 						}
 						foundMatch = true
@@ -1246,7 +1246,7 @@ spp 0
 							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
 							pluginLog, true, pkg.TimeoutIn3Minutes)
 						if err != nil {
-							logrus.Errorf(fmt.Sprintf("Reference plugin not running OnPTPConfigChangeGeneric, err=%s", err))
+							logrus.Errorf("Reference plugin not running OnPTPConfigChangeGeneric, err=%s", err)
 							continue
 						}
 						foundMatch = true
@@ -1300,14 +1300,14 @@ spp 0
 							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
 							profileName, true, pkg.TimeoutIn3Minutes)
 						if err != nil {
-							logrus.Errorf(fmt.Sprintf("error getting profile=%s, err=%s ", name, err))
+							logrus.Errorf("error getting profile=%s, err=%s ", name, err)
 							continue
 						}
 						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
 							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
 							ptp4lLog, true, pkg.TimeoutIn3Minutes)
 						if err != nil {
-							logrus.Errorf(fmt.Sprintf("error getting ptp4l chrt line=%s, err=%s ", ptp4lLog, err))
+							logrus.Errorf("error getting ptp4l chrt line=%s, err=%s ", ptp4lLog, err)
 							continue
 						}
 						delete(fifoPriorities, name)
