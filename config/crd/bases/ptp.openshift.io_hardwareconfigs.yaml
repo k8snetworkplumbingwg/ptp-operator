@@ -349,24 +349,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -406,24 +390,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -494,24 +462,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
@@ -551,24 +503,8 @@ spec:
                                       phaseAdjustment:
                                         description: PhaseAdjustment is optional phase
                                           adjustment in picoseconds
-                                        properties:
-                                          description:
-                                            description: Description is an optional
-                                              description for this phase adjustment
-                                            type: string
-                                          external:
-                                            description: |-
-                                              External is the external phase adjustment in picoseconds.
-                                              Compensates for delays introduced by external cables.
-                                            type: integer
-                                          internal:
-                                            description: |-
-                                              Internal is the internal phase adjustment in picoseconds (required).
-                                              Usually compensates for the board hardware delays and should not be changed by the user.
-                                            type: integer
-                                        required:
-                                        - internal
-                                        type: object
+                                        format: int64
+                                        type: integer
                                       referenceSync:
                                         description: |-
                                           ReferenceSync applies to frequency pins that can be paired to a phase pin by board label
