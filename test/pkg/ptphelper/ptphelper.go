@@ -383,12 +383,12 @@ func ReplaceTestPod(pod *v1core.Pod, timeout time.Duration) (v1core.Pod, error) 
 }
 
 func RestartPTPDaemon() {
-	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).DeleteCollection(
+		context.Background(),
+		metav1.DeleteOptions{GracePeriodSeconds: pointer.Int64Ptr(0)},
+		metav1.ListOptions{LabelSelector: pkg.PtpLinuxDaemonPodsLabel},
+	)
 	Expect(err).ToNot(HaveOccurred())
-	for podIndex := range ptpPods.Items {
-		err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), ptpPods.Items[podIndex].Name, metav1.DeleteOptions{GracePeriodSeconds: pointer.Int64Ptr(0)})
-		Expect(err).ToNot(HaveOccurred())
-	}
 
 	WaitForPtpDaemonToExist()
 }
