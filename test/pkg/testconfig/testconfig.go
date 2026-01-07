@@ -600,7 +600,8 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 6, 3, solver.Negative}, // downstream slaves and grandmaster must be on different nics
 			{int(solver.StepSameNic), 2, 2, 4, solver.Negative}, // dual nic BC uses 2 different NICs
 			{int(solver.StepSameLan2), 2, 4, 6, solver.Negative},
-			{int(solver.StepSameLan2), 2, 0, 6, solver.Negative}}, // Downstream slaves use different nics to not share same clock
+			{int(solver.StepSameLan2), 2, 0, 6, solver.Negative}, // Downstream slaves use different lans to not share same clock
+			{int(solver.StepSameNic), 2, 0, 6, solver.Negative}}, // OC slave ports must be on different nics
 
 	}
 	data.problems[AlgoOCExtGMString] = &[][][]int{
@@ -640,7 +641,8 @@ func initAndSolveProblems() {
 		{{int(solver.StepSameLan2), 2, 5, 6}, // step6
 			{int(solver.StepSameNic), 2, 0, 3, solver.Negative},  // downstream slaves and grandmaster must be on different nics
 			{int(solver.StepSameNic), 2, 6, 3, solver.Negative}}, // downstream slaves and grandmaster must be on different nics
-		{{int(solver.StepSameNic), 2, 2, 4, solver.Negative}}, // step 7 dual nic BC uses 2 different NICs
+		{{int(solver.StepSameNic), 2, 2, 4, solver.Negative}, // step 7 dual nic BC uses 2 different NICs
+			{int(solver.StepSameNic), 2, 0, 6, solver.Negative}}, // OC slave ports must be on different nics
 	}
 	// Initializing Solution decoding and mapping
 	// allocating all slices
