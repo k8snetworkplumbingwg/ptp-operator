@@ -561,27 +561,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// Delete if already exists
 					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
 						context.Background(),
-						"ptp-security-mismatch",
+						testconfig.MismatchSecretName,
 						metav1.DeleteOptions{},
 					)
 					time.Sleep(2 * time.Second)
 
-					// Create secret with spp 0 but DIFFERENT KEYS than ptp-security-conf
-					// GM signs with these keys, BC has different keys for spp 0 → signature mismatch
-					mismatchSecret := &v1core.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "ptp-security-mismatch",
-							Namespace: pkg.PtpLinuxDaemonNamespace,
-						},
-						StringData: map[string]string{
-							"ptp-security.conf": `[security_association]
-spp 0
-1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
-2 SHA256-128 HEX:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-`,
-						},
-					}
-
+					mismatchSecret := testconfig.CreateMismatchSecret(pkg.PtpLinuxDaemonNamespace)
 					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
 						context.Background(),
 						mismatchSecret,
@@ -607,8 +592,8 @@ spp 0
 					// Also change interface spp from 1 to 0
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
 					modifiedConf := strings.Replace(ptp4lConf,
-						"sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf",
-						"sa_file /etc/ptp-secret-mount/ptp-security-mismatch/ptp-security.conf", 1)
+						pkg.SaFileSecurityConf,
+						pkg.SaFileMismatchConf, 1)
 					modifiedConf = strings.Replace(modifiedConf, "spp 1", "spp 0", 1) // Change first spp 1 to spp 0
 					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
 
@@ -687,7 +672,7 @@ spp 0
 					// Delete mismatch secret
 					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
 						context.Background(),
-						"ptp-security-mismatch",
+						testconfig.MismatchSecretName,
 						metav1.DeleteOptions{},
 					)
 
@@ -703,6 +688,90 @@ spp 0
 
 					// Additional wait for clock sync to complete in multi-hop topologies (GM → BC → Slave)
 					time.Sleep(30 * time.Second)
+				})
+			})
+
+			It("PTP rejects MITM attack with same Key ID but different secret", func() {
+				// Simulates MITM: attacker uses same Key ID but different secret
+				// The ICV will be invalid, and ptp4l should reject the packets
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("MITM test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping - slave interface not available with WPC-GM")
+				}
+
+				slavePod := fullConfig.DiscoveredClockUnderTestPod
+				Expect(slavePod).NotTo(BeNil())
+				slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+				slaveNodeName := slavePod.Spec.NodeName
+
+				By("Verifying baseline sync", func() {
+					err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &slaveNodeName)
+					Expect(err).NotTo(HaveOccurred(), "Slave should be LOCKED before attack")
+				})
+
+				// Create attacker secret: same Key ID (1, 2) but DIFFERENT secret values
+				By("Creating attacker secret with same Key ID but different secret", func() {
+					_ = client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(), testconfig.MITMAttackerSecretName, metav1.DeleteOptions{})
+					time.Sleep(pkg.TimeoutInterval2Seconds)
+
+					mitmSecret := testconfig.CreateMITMAttackerSecret(pkg.PtpLinuxDaemonNamespace)
+					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
+						context.Background(), mitmSecret, metav1.CreateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				var originalGMConfig *ptpv1.PtpConfig
+				By("Switching GM to attacker secret (simulates MITM)", func() {
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
+					Expect(err).NotTo(HaveOccurred())
+					originalGMConfig = ptpConfig.DeepCopy()
+
+					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					modifiedConf := strings.Replace(ptp4lConf,
+						pkg.SaFileSecurityConf,
+						pkg.SaFileMITMAttackerConf, 1)
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(), ptpConfig, metav1.UpdateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+					time.Sleep(pkg.TimeoutIn1Minute)
+				})
+
+				By("Verifying slave rejects packets (fails to sync for 2 min)", func() {
+					failedToSync := false
+					for i := 0; i < 12; i++ {
+						err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &slaveNodeName)
+						if err != nil {
+							failedToSync = true
+						} else {
+							Fail("Slave should NOT sync with mismatched secret (MITM detected)")
+						}
+						time.Sleep(pkg.Timeout10Seconds)
+					}
+					Expect(failedToSync).To(BeTrue(), "ICV mismatch should prevent sync")
+					fmt.Fprintf(GinkgoWriter, "✓ MITM attack rejected: slave did not sync with wrong secret\n")
+				})
+
+				By("Restoring original GM config", func() {
+					Expect(originalGMConfig).NotTo(BeNil())
+					originalGMConfig.SetResourceVersion("")
+					_ = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.DeleteOptions{})
+					time.Sleep(pkg.Timeout10Seconds)
+					_, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+						context.Background(), originalGMConfig, metav1.CreateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+					_ = client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+						context.Background(), testconfig.MITMAttackerSecretName, metav1.DeleteOptions{})
+					time.Sleep(pkg.TimeoutIn1Minute)
+					ptphelper.WaitForPtpDaemonToExist()
 				})
 			})
 

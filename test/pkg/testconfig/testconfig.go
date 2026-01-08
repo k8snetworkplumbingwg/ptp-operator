@@ -1813,3 +1813,46 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 	logrus.Infof("List of pods running ptp4l: %v", podNames)
 	return podList, nil
 }
+
+// MITMAttackerSecretName is the name of the secret used to simulate a MITM attacker
+const MITMAttackerSecretName = "ptp-mitm-attacker-secret"
+
+// MismatchSecretName is the name of the secret with mismatched keys for spp 0 testing
+const MismatchSecretName = "ptp-security-mismatch"
+
+// CreateMITMAttackerSecret creates a secret with the same Key IDs (1, 2) but different
+// secret values than the legitimate PTP security secret. This simulates a Man-in-the-Middle
+// attacker who knows the Key ID structure but not the actual secret values.
+func CreateMITMAttackerSecret(namespace string) *v1core.Secret {
+	return &v1core.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      MITMAttackerSecretName,
+			Namespace: namespace,
+		},
+		StringData: map[string]string{
+			"ptp-security.conf": `[security_association]
+spp 1
+1 AES128 HEX:DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF
+2 SHA256-128 HEX:CAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE
+`,
+		},
+	}
+}
+
+// CreateMismatchSecret creates a secret with spp 0 but DIFFERENT KEYS than ptp-security-conf.
+// GM signs with these keys, BC has different keys for spp 0 → signature mismatch.
+func CreateMismatchSecret(namespace string) *v1core.Secret {
+	return &v1core.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      MismatchSecretName,
+			Namespace: namespace,
+		},
+		StringData: map[string]string{
+			"ptp-security.conf": `[security_association]
+spp 0
+1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
+2 SHA256-128 HEX:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+`,
+		},
+	}
+}

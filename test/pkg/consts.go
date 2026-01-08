@@ -63,6 +63,11 @@ const (
 	RecoveryNetworkOutageDaemonSetNamespace     = "ptp-network-outage-recovery"
 	RecoveryNetworkOutageDaemonSetName          = "ptp-network-outage-recovery"
 	RecoveryNetworkOutageDaemonSetContainerName = "container-00"
+
+	// PTP Security sa_file paths for ptp4l configuration
+	SaFileSecurityConf     = "sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf"
+	SaFileMismatchConf     = "sa_file /etc/ptp-secret-mount/ptp-security-mismatch/ptp-security.conf"
+	SaFileMITMAttackerConf = "sa_file /etc/ptp-secret-mount/ptp-mitm-attacker-secret/ptp-security.conf"
 )
 
 const (
