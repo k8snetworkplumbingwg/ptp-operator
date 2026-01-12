@@ -2241,6 +2241,156 @@ spp 0
 
 			})
 		})
+
+		It("Should properly cleanup volumeMounts when secrets are deleted and remount when recreated", func() {
+			var testNode string
+			var testInterface string
+			var testPtpConfig *ptpv1.PtpConfig
+			var testSecret *v1core.Secret
+
+			By("Getting discovered config with PTP interfaces", func() {
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+				if fullConfig.Status != testconfig.DiscoverySuccessStatus {
+					Skip("Failed to find a valid ptp configuration")
+				}
+
+				// Get interfaces from L2 config
+				ptpInterfaces := fullConfig.L2Config.GetPtpIfList()
+				Expect(len(ptpInterfaces)).To(BeNumerically(">", 0), "No PTP interfaces found")
+
+				testInterface = ptpInterfaces[0].IfName
+				testNode = ptpInterfaces[0].NodeName
+				fmt.Fprintf(GinkgoWriter, "Using test node: %s, interface: %s\n", testNode, testInterface)
+			})
+
+			By("Creating test secret", func() {
+				testSecret = testconfig.CreateTestSecretForVolumeMountTest(pkg.PtpLinuxDaemonNamespace)
+				_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
+					context.Background(),
+					testSecret,
+					metav1.CreateOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "Created test secret: %s\n", testSecret.Name)
+			})
+
+			By("Creating PtpConfig with sa_file referencing the test secret", func() {
+				testPtpConfig = testconfig.CreatePtpConfigForVolumeMountTest(testNode, testInterface)
+				_, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					context.Background(),
+					testPtpConfig,
+					metav1.CreateOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "Created test PtpConfig: %s\n", testPtpConfig.Name)
+
+				// Wait for reconciliation to complete
+				time.Sleep(10 * time.Second)
+			})
+
+			By("Verifying secret volume is mounted in DaemonSet", func() {
+				ds, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(),
+					"linuxptp-daemon",
+					metav1.GetOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Check for volume with -tlv-auth suffix
+				volumeName := "ptp-test-volume-secret-tlv-auth"
+				volumeFound := false
+				for _, vol := range ds.Spec.Template.Spec.Volumes {
+					if vol.Name == volumeName {
+						volumeFound = true
+						Expect(vol.Secret).NotTo(BeNil())
+						Expect(vol.Secret.SecretName).To(Equal("ptp-test-volume-secret"))
+						fmt.Fprintf(GinkgoWriter, "Found volume: %s referencing secret: %s\n", vol.Name, vol.Secret.SecretName)
+						break
+					}
+				}
+				Expect(volumeFound).To(BeTrue(), "Volume for test secret not found in DaemonSet")
+
+				// Check for volumeMount in linuxptp-daemon-container
+				mountFound := false
+				for _, container := range ds.Spec.Template.Spec.Containers {
+					if container.Name == "linuxptp-daemon-container" {
+						for _, mount := range container.VolumeMounts {
+							if mount.Name == volumeName {
+								mountFound = true
+								Expect(mount.MountPath).To(Equal("/etc/ptp-secret-mount/ptp-test-volume-secret"))
+								Expect(mount.ReadOnly).To(BeTrue())
+								fmt.Fprintf(GinkgoWriter, "Found volumeMount: %s at path: %s\n", mount.Name, mount.MountPath)
+								break
+							}
+						}
+						break
+					}
+				}
+				Expect(mountFound).To(BeTrue(), "VolumeMount for test secret not found in DaemonSet container")
+			})
+
+			By("Deleting the test secret", func() {
+				err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(),
+					testSecret.Name,
+					metav1.DeleteOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "Deleted test secret: %s\n", testSecret.Name)
+
+				// Wait for reconciliation to process the deletion
+				time.Sleep(15 * time.Second)
+			})
+
+			By("Verifying secret volume is removed from DaemonSet", func() {
+				ds, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(),
+					"linuxptp-daemon",
+					metav1.GetOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Check that volume is removed
+				volumeName := "ptp-test-volume-secret-tlv-auth"
+				volumeFound := false
+				for _, vol := range ds.Spec.Template.Spec.Volumes {
+					if vol.Name == volumeName {
+						volumeFound = true
+						break
+					}
+				}
+				Expect(volumeFound).To(BeFalse(), "Volume for test secret still found in DaemonSet after deletion")
+
+				// Check that volumeMount is removed
+				mountFound := false
+				for _, container := range ds.Spec.Template.Spec.Containers {
+					if container.Name == "linuxptp-daemon-container" {
+						for _, mount := range container.VolumeMounts {
+							if mount.Name == volumeName {
+								mountFound = true
+								break
+							}
+						}
+						break
+					}
+				}
+				Expect(mountFound).To(BeFalse(), "VolumeMount for test secret still found in DaemonSet after deletion")
+				fmt.Fprintf(GinkgoWriter, "Verified: Volume and VolumeMount removed after secret deletion\n")
+			})
+
+			By("Cleaning up test PtpConfig", func() {
+				err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(),
+					testPtpConfig.Name,
+					metav1.DeleteOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "Deleted test PtpConfig: %s\n", testPtpConfig.Name)
+
+				// Wait for cleanup
+				time.Sleep(5 * time.Second)
+			})
+		})
 	})
 })
 
