@@ -36,6 +36,9 @@ spec:
         - name: cloud-event-proxy
           image: {{ .SideCar }}
           imagePullPolicy: {{ .ImagePullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           args:
             - "--metrics-addr=127.0.0.1:9091"
             - "--store-path=/store"
@@ -69,6 +72,9 @@ spec:
         - name: kube-rbac-proxy
           image: {{.KubeRbacProxy}}
           imagePullPolicy: {{.ImagePullPolicy}}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           args:
             - --logtostderr
             - --secure-listen-address=:8443
@@ -92,6 +98,7 @@ spec:
         - name: linuxptp-daemon-container
           securityContext:
             privileged: true
+            readOnlyRootFilesystem: true
           image: {{.Image}}
           imagePullPolicy: {{.ImagePullPolicy}}
           command: [ "/bin/bash", "-c", "--" ]
