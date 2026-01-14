@@ -1173,21 +1173,21 @@ spp 0
 
 					logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
-					// Search for REST API config v2.0 in pod logs (literal text search)
+					// Search for "starting v2 rest api server at port" in pod logs (literal text search)
 					matches, err := pods.GetPodLogsRegex(
 						pod.Namespace,
 						pod.Name,
 						pkg.EventProxyContainerName,
-						`REST API config: version=2.0`,
+						`starting v2 rest api server at port`,
 						true,
 						30*time.Second,
 					)
 					Expect(err).NotTo(HaveOccurred(),
 						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
 					Expect(matches).NotTo(BeEmpty(),
-						fmt.Sprintf("No 'REST API config: version=2.0' found in cloud-event-proxy logs on pod %s", pod.Name))
+						fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-					logrus.Infof("Pod %s: found REST API config v2.0 in logs", pod.Name)
+					logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 				}
 			})
 
@@ -1239,16 +1239,16 @@ spp 0
 						pod.Namespace,
 						pod.Name,
 						pkg.EventProxyContainerName,
-						`REST API config: version=2.0`,
+						`starting v2 rest api server at port`,
 						true,
 						30*time.Second,
 					)
 					Expect(err).NotTo(HaveOccurred(),
 						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
 					Expect(matches).NotTo(BeEmpty(),
-						fmt.Sprintf("No 'REST API config: version=2.0' found in cloud-event-proxy logs on pod %s", pod.Name))
+						fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-					logrus.Infof("Pod %s: found REST API config v2.0 in logs", pod.Name)
+					logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 				}
 			})
 			// Verify invalid apiVersion values are rejected and pods are not restarted

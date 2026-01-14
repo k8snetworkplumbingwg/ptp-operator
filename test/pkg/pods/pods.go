@@ -189,7 +189,10 @@ func GetPodLogsRegexSince(namespace string, podName string, containerName, regex
 
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
 
-	stream, err := podLogRequest.Stream(context.TODO())
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
 		return matches, fmt.Errorf("failed to open log streamn for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
 	}
@@ -221,7 +224,10 @@ func GetPodLogsRegex(namespace string, podName string, containerName, regex stri
 
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
 
-	stream, err := podLogRequest.Stream(context.TODO())
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
 		return matches, fmt.Errorf("failed to open log streamn for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
 	}
