@@ -14,7 +14,50 @@ resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
 # run the collection of resources using must-gather
 for resource in ${resources[@]}; do
-  /usr/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  /usr/local/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
+
+# --- NEW: Capture PTP Announce messages from time-receiver interfaces ---
+
+PTP_CAPTURE_DIR="must-gather/ptp-captures"
+mkdir -p "${PTP_CAPTURE_DIR}"
+
+# Get time-receiver profiles with their interface and matched node
+# Output format: nodeName interface
+/usr/local/bin/oc get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
+  jq -r '.items[] |
+    # Get profiles that are time-receivers (have -s flag)
+    (.spec.profile[]? | select(
+      (.ptp4lOpts // "" | test("(^|\\s)-s(\\s|$)")) or 
+      (.ptp4lConf // "" | test("slaveOnly\\s+1"; "i"))
+    )) as $profile |
+    # Get matched nodes for this profile from status
+    (.status.matchList[]? | select(.profile == $profile.name)) as $match |
+    "\($match.nodeName) \($profile.interface)"
+  ' 2>/dev/null | while read -r NODE_NAME INTERFACE; do
+
+  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] && continue
+  
+  echo "Node: $NODE_NAME, Interface: $INTERFACE"
+  
+  # Find the linuxptp-daemon pod on this node
+  POD=$(/usr/local/bin/oc get pods -n openshift-ptp -l app=linuxptp-daemon \
+    --field-selector spec.nodeName="$NODE_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  
+  [ -z "$POD" ] && echo "  No pod found on node $NODE_NAME" && continue
+  
+  echo "  Capturing from pod: $POD"
+  
+  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${POD}_${INTERFACE}_announce.txt"
+  
+  /usr/local/bin/oc exec -n openshift-ptp "$POD" -c linuxptp-daemon-container -- \
+    timeout 5 tshark -i "$INTERFACE" -c 1 -f 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' -V 2>/dev/null \
+    > "$OUTPUT_FILE" 2>&1 || echo "No Announce packet captured within timeout" > "$OUTPUT_FILE"
+  
+  echo "  Saved to: $OUTPUT_FILE"
+done
+
+echo "PTP time-receiver capture collection complete"
+# --- END NEW ---
 
 exit 0
