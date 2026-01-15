@@ -1813,3 +1813,70 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 	logrus.Infof("List of pods running ptp4l: %v", podNames)
 	return podList, nil
 }
+
+// CreateTestSecretForVolumeMountTest creates a test secret for volume mount cleanup testing
+func CreateTestSecretForVolumeMountTest(namespace string) *v1core.Secret {
+	return &v1core.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ptp-test-volume-secret",
+			Namespace: namespace,
+		},
+		StringData: map[string]string{
+			"test-key.conf": `[security_association]
+spp 1
+seqid_window 20
+1 AES128 HEX:FAF48EBA01E7C5966A76CB787AED4E7B
+2 SHA256-128 HEX:F8ADC6B8B8E9AA709106BA42481EC9E29607334DE2C3C737A11A12931DB27F8C
+`,
+		},
+	}
+}
+
+// CreatePtpConfigForVolumeMountTest creates a PtpConfig for volume mount cleanup testing
+func CreatePtpConfigForVolumeMountTest(nodeName string, interfaceName string) *ptpv1.PtpConfig {
+	name := pkg.PtpVolumeMountCleanPolicyName
+	priority := int64(10)
+	ptp4lOpts := "-2"
+	phc2sysOpts := fmt.Sprintf("-a -r -r -n 24 -N 8 -R 16 -s %s -m", interfaceName)
+
+	ptp4lConf := fmt.Sprintf(`[global]
+sa_file /etc/ptp-secret-mount/ptp-test-volume-secret/test-key.conf
+spp -1
+logging_level 6
+summary_interval 0
+
+[%s]
+masterOnly 0
+spp 1
+active_key_id 1
+`, interfaceName)
+
+	return &ptpv1.PtpConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: PtpLinuxDaemonNamespace,
+		},
+		Spec: ptpv1.PtpConfigSpec{
+			Profile: []ptpv1.PtpProfile{
+				{
+					Name:        &name,
+					Interface:   &interfaceName,
+					Ptp4lOpts:   &ptp4lOpts,
+					Phc2sysOpts: &phc2sysOpts,
+					Ptp4lConf:   &ptp4lConf,
+				},
+			},
+			Recommend: []ptpv1.PtpRecommend{
+				{
+					Profile:  &name,
+					Priority: &priority,
+					Match: []ptpv1.MatchRule{
+						{
+							NodeName: &nodeName,
+						},
+					},
+				},
+			},
+		},
+	}
+}
