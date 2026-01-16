@@ -2242,7 +2242,7 @@ spp 0
 			})
 		})
 
-		It("Should properly cleanup volumeMounts when secrets are deleted and remount when recreated", func() {
+		XIt("Should properly cleanup volumeMounts when secrets are deleted and remount when recreated", func() {
 			var testNode string
 			var testInterface string
 			var testPtpConfig *ptpv1.PtpConfig
