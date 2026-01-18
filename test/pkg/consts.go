@@ -36,6 +36,11 @@ const (
 	PtpTempPolicyName             = "temp"
 	PtpUnderscoreTestPolicyName   = "test-underscore-profile"
 	PtpVolumeMountCleanPolicyName = "test-volume-mount-cleanup"
+
+	// test secret names
+	PtpTestVolumeSecretName       = "ptp-test-volume-secret"
+	PtpSecurityMismatchSecretName = "ptp-security-mismatch"
+
 	// node labels
 	PtpGrandmasterNodeLabel    = "ptp/test-grandmaster"
 	PtpClockUnderTestNodeLabel = "ptp/clock-under-test"
