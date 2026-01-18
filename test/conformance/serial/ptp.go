@@ -1146,181 +1146,189 @@ spp 0
 					"Threshold metrics are not detected")
 			})
 
-			// Verify cloud-event-proxy defaults to v2 when apiVersion is not set
-			It("Should default to event API v2 when apiVersion is not explicitly set in PtpOperatorConfig", func() {
-				By("Verifying apiVersion is not explicitly set in PtpOperatorConfig")
-				ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
-					context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
-				Expect(err).NotTo(HaveOccurred())
-
-				// Skip if apiVersion is explicitly set - this test is for default behavior
-				if ptpOperatorConfig.Spec.EventConfig != nil && ptpOperatorConfig.Spec.EventConfig.ApiVersion != "" {
-					Skip(fmt.Sprintf("apiVersion is explicitly set to '%s', skipping default test",
-						ptpOperatorConfig.Spec.EventConfig.ApiVersion))
-				}
-
-				By("Checking cloud-event-proxy logs for v2 API config on all pods")
-				for _, pod := range ptpPods.Items {
-					// Verify cloud-event-proxy container exists
-					cloudProxyFound := false
-					for _, c := range pod.Spec.Containers {
-						if c.Name == pkg.EventProxyContainerName {
-							cloudProxyFound = true
-						}
+			Context("Event API version validation", func() {
+				BeforeEach(func() {
+					if !ptphelper.IsOCPVersionAtLeast("4.19") {
+						Skip("Skipping: these tests require OCP version 4.19 or higher")
 					}
-					Expect(cloudProxyFound).ToNot(BeFalse(),
-						fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+				})
 
-					logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+				// Verify cloud-event-proxy defaults to v2 when apiVersion is not set
+				It("Should default to event API v2 when apiVersion is not explicitly set in PtpOperatorConfig", func() {
+					By("Verifying apiVersion is not explicitly set in PtpOperatorConfig")
+					ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+					Expect(err).NotTo(HaveOccurred())
 
-					// Search for "starting v2 rest api server at port" in pod logs (literal text search)
-					matches, err := pods.GetPodLogsRegex(
-						pod.Namespace,
-						pod.Name,
-						pkg.EventProxyContainerName,
-						`starting v2 rest api server at port`,
-						true,
-						30*time.Second,
-					)
-					Expect(err).NotTo(HaveOccurred(),
-						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
-					Expect(matches).NotTo(BeEmpty(),
-						fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
-
-					logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
-				}
-			})
-
-			// Verify cloud-event-proxy runs v2 when apiVersion is explicitly set to "2.0"
-			It("Should run event API v2 when apiVersion is explicitly set to 2.0 in PtpOperatorConfig", func() {
-				By("Setting apiVersion to 2.0 in PtpOperatorConfig")
-				err := ptphelper.EnablePTPEvent("2.0", "")
-				Expect(err).NotTo(HaveOccurred(), "Failed to set apiVersion to 2.0")
-
-				By("Verifying apiVersion is set to 2.0 in PtpOperatorConfig")
-				ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
-					context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(ptpOperatorConfig.Spec.EventConfig).NotTo(BeNil(), "EventConfig should not be nil")
-				Expect(ptpOperatorConfig.Spec.EventConfig.ApiVersion).To(Equal("2.0"),
-					"apiVersion should be explicitly set to 2.0")
-
-				// Wait for operator to process config change
-				time.Sleep(5 * time.Second)
-
-				By("Waiting for daemonset to be ready and refreshing pods list")
-				ptphelper.WaitForPtpDaemonToExist()
-				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-				Expect(err).NotTo(HaveOccurred())
-				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
-
-				ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
-					context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
-
-				By("Checking cloud-event-proxy logs for v2 API config on all pods")
-				for _, pod := range ptpPods.Items {
-					// Verify cloud-event-proxy container exists
-					cloudProxyFound := false
-					for _, c := range pod.Spec.Containers {
-						if c.Name == pkg.EventProxyContainerName {
-							cloudProxyFound = true
-						}
+					// Skip if apiVersion is explicitly set - this test is for default behavior
+					if ptpOperatorConfig.Spec.EventConfig != nil && ptpOperatorConfig.Spec.EventConfig.ApiVersion != "" {
+						Skip(fmt.Sprintf("apiVersion is explicitly set to '%s', skipping default test",
+							ptpOperatorConfig.Spec.EventConfig.ApiVersion))
 					}
-					Expect(cloudProxyFound).ToNot(BeFalse(),
-						fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-					logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
-
-					// Search for REST API config v2.0 in pod logs (literal text search)
-					matches, err := pods.GetPodLogsRegex(
-						pod.Namespace,
-						pod.Name,
-						pkg.EventProxyContainerName,
-						`starting v2 rest api server at port`,
-						true,
-						30*time.Second,
-					)
-					Expect(err).NotTo(HaveOccurred(),
-						fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
-					Expect(matches).NotTo(BeEmpty(),
-						fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
-
-					logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
-				}
-			})
-			// Verify invalid apiVersion values are rejected and pods are not restarted
-			It("Should reject invalid apiVersion and not restart pods", func() {
-				testCases := []struct {
-					name                   string
-					invalidVersion         string
-					expectedErrorSubstring string
-				}{
-					{"v1 (deprecated/EOL)", "1.0", "v1 is no longer supported"},
-					{"invalid version 'boo'", "boo", "is not a valid version"},
-				}
-
-				for _, tc := range testCases {
-					By(fmt.Sprintf("Testing: %s", tc.name))
-
-					By("Recording current pod UIDs and container count")
-					originalPodUIDs := make(map[string]string)
-					originalContainerCounts := make(map[string]int)
+					By("Checking cloud-event-proxy logs for v2 API config on all pods")
 					for _, pod := range ptpPods.Items {
-						originalPodUIDs[pod.Name] = string(pod.UID)
-						originalContainerCounts[pod.Name] = len(pod.Spec.Containers)
-						logrus.Infof("Pod %s: UID=%s, containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
-					}
+						// Verify cloud-event-proxy container exists
+						cloudProxyFound := false
+						for _, c := range pod.Spec.Containers {
+							if c.Name == pkg.EventProxyContainerName {
+								cloudProxyFound = true
+							}
+						}
+						Expect(cloudProxyFound).ToNot(BeFalse(),
+							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-					By("Recording current apiVersion in PtpOperatorConfig")
-					ptpOperatorConfigBefore, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+
+						// Search for "starting v2 rest api server at port" in pod logs (literal text search)
+						matches, err := pods.GetPodLogsRegex(
+							pod.Namespace,
+							pod.Name,
+							pkg.EventProxyContainerName,
+							`starting v2 rest api server at port`,
+							true,
+							30*time.Second,
+						)
+						Expect(err).NotTo(HaveOccurred(),
+							fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+						Expect(matches).NotTo(BeEmpty(),
+							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
+
+						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
+					}
+				})
+
+				// Verify cloud-event-proxy runs v2 when apiVersion is explicitly set to "2.0"
+				It("Should run event API v2 when apiVersion is explicitly set to 2.0 in PtpOperatorConfig", func() {
+					By("Setting apiVersion to 2.0 in PtpOperatorConfig")
+					err := ptphelper.EnablePTPEvent("2.0", "")
+					Expect(err).NotTo(HaveOccurred(), "Failed to set apiVersion to 2.0")
+
+					By("Verifying apiVersion is set to 2.0 in PtpOperatorConfig")
+					ptpOperatorConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
 						context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
-					originalApiVersion := ""
-					if ptpOperatorConfigBefore.Spec.EventConfig != nil {
-						originalApiVersion = ptpOperatorConfigBefore.Spec.EventConfig.ApiVersion
-					}
-					logrus.Infof("Original apiVersion: '%s'", originalApiVersion)
+					Expect(ptpOperatorConfig.Spec.EventConfig).NotTo(BeNil(), "EventConfig should not be nil")
+					Expect(ptpOperatorConfig.Spec.EventConfig.ApiVersion).To(Equal("2.0"),
+						"apiVersion should be explicitly set to 2.0")
 
-					By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", tc.invalidVersion))
-					err = ptphelper.EnablePTPEvent(tc.invalidVersion, "")
-					Expect(err).To(HaveOccurred(),
-						fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", tc.invalidVersion))
-					Expect(err.Error()).To(ContainSubstring(tc.expectedErrorSubstring),
-						"Error should contain expected message")
-					logrus.Infof("Received expected rejection error: %s", err.Error())
+					// Wait for operator to process config change
+					time.Sleep(5 * time.Second)
 
-					By("Verifying PtpOperatorConfig was not changed")
-					ptpOperatorConfigAfter, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
-						context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+					By("Waiting for daemonset to be ready and refreshing pods list")
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
 					Expect(err).NotTo(HaveOccurred())
-					afterApiVersion := ""
-					if ptpOperatorConfigAfter.Spec.EventConfig != nil {
-						afterApiVersion = ptpOperatorConfigAfter.Spec.EventConfig.ApiVersion
-					}
-					Expect(afterApiVersion).To(Equal(originalApiVersion),
-						"apiVersion should not have changed after rejected update")
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 
-					By("Verifying pods were not restarted (same UIDs and container count)")
-					currentPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
+					ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
 						context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 					Expect(err).NotTo(HaveOccurred())
-					Expect(len(currentPods.Items)).To(Equal(len(ptpPods.Items)),
-						"Number of pods should remain the same")
+					Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
 
-					for _, pod := range currentPods.Items {
-						originalUID, exists := originalPodUIDs[pod.Name]
-						Expect(exists).To(BeTrue(),
-							fmt.Sprintf("Pod %s should still exist", pod.Name))
-						Expect(string(pod.UID)).To(Equal(originalUID),
-							fmt.Sprintf("Pod %s should have same UID (no restart)", pod.Name))
-						Expect(len(pod.Spec.Containers)).To(Equal(originalContainerCounts[pod.Name]),
-							fmt.Sprintf("Pod %s should have same number of containers", pod.Name))
-						logrus.Infof("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+					By("Checking cloud-event-proxy logs for v2 API config on all pods")
+					for _, pod := range ptpPods.Items {
+						// Verify cloud-event-proxy container exists
+						cloudProxyFound := false
+						for _, c := range pod.Spec.Containers {
+							if c.Name == pkg.EventProxyContainerName {
+								cloudProxyFound = true
+							}
+						}
+						Expect(cloudProxyFound).ToNot(BeFalse(),
+							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+
+						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+
+						// Search for REST API config v2.0 in pod logs (literal text search)
+						matches, err := pods.GetPodLogsRegex(
+							pod.Namespace,
+							pod.Name,
+							pkg.EventProxyContainerName,
+							`starting v2 rest api server at port`,
+							true,
+							30*time.Second,
+						)
+						Expect(err).NotTo(HaveOccurred(),
+							fmt.Sprintf("Failed to get logs from pod %s", pod.Name))
+						Expect(matches).NotTo(BeEmpty(),
+							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
+
+						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 					}
-				}
+				})
+				// Verify invalid apiVersion values are rejected and pods are not restarted
+				It("Should reject invalid apiVersion and not restart pods", func() {
+					testCases := []struct {
+						name                   string
+						invalidVersion         string
+						expectedErrorSubstring string
+					}{
+						{"v1 (deprecated/EOL)", "1.0", "v1 is no longer supported"},
+						{"invalid version 'boo'", "boo", "is not a valid version"},
+					}
+
+					for _, tc := range testCases {
+						By(fmt.Sprintf("Testing: %s", tc.name))
+
+						By("Recording current pod UIDs and container count")
+						originalPodUIDs := make(map[string]string)
+						originalContainerCounts := make(map[string]int)
+						for _, pod := range ptpPods.Items {
+							originalPodUIDs[pod.Name] = string(pod.UID)
+							originalContainerCounts[pod.Name] = len(pod.Spec.Containers)
+							logrus.Infof("Pod %s: UID=%s, containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+						}
+
+						By("Recording current apiVersion in PtpOperatorConfig")
+						ptpOperatorConfigBefore, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+							context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+						Expect(err).NotTo(HaveOccurred())
+						originalApiVersion := ""
+						if ptpOperatorConfigBefore.Spec.EventConfig != nil {
+							originalApiVersion = ptpOperatorConfigBefore.Spec.EventConfig.ApiVersion
+						}
+						logrus.Infof("Original apiVersion: '%s'", originalApiVersion)
+
+						By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", tc.invalidVersion))
+						err = ptphelper.EnablePTPEvent(tc.invalidVersion, "")
+						Expect(err).To(HaveOccurred(),
+							fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", tc.invalidVersion))
+						Expect(err.Error()).To(ContainSubstring(tc.expectedErrorSubstring),
+							"Error should contain expected message")
+						logrus.Infof("Received expected rejection error: %s", err.Error())
+
+						By("Verifying PtpOperatorConfig was not changed")
+						ptpOperatorConfigAfter, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+							context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+						Expect(err).NotTo(HaveOccurred())
+						afterApiVersion := ""
+						if ptpOperatorConfigAfter.Spec.EventConfig != nil {
+							afterApiVersion = ptpOperatorConfigAfter.Spec.EventConfig.ApiVersion
+						}
+						Expect(afterApiVersion).To(Equal(originalApiVersion),
+							"apiVersion should not have changed after rejected update")
+
+						By("Verifying pods were not restarted (same UIDs and container count)")
+						currentPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
+							context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(len(currentPods.Items)).To(Equal(len(ptpPods.Items)),
+							"Number of pods should remain the same")
+
+						for _, pod := range currentPods.Items {
+							originalUID, exists := originalPodUIDs[pod.Name]
+							Expect(exists).To(BeTrue(),
+								fmt.Sprintf("Pod %s should still exist", pod.Name))
+							Expect(string(pod.UID)).To(Equal(originalUID),
+								fmt.Sprintf("Pod %s should have same UID (no restart)", pod.Name))
+							Expect(len(pod.Spec.Containers)).To(Equal(originalContainerCounts[pod.Name]),
+								fmt.Sprintf("Pod %s should have same number of containers", pod.Name))
+							logrus.Infof("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+						}
+					}
+				})
 			})
 		})
 
