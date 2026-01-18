@@ -1,63 +1,53 @@
 #!/bin/bash
 
+# Debug image for oc debug (uses cluster default if not specified)
+# To see what image is used, check: oc get node <node> -o jsonpath='{.status.nodeInfo.osImage}'
+echo "Starting PTP must-gather..."
+
 # resource list
 resources=()
-
-# ptp operator namespace
 resources+=(ns/openshift-ptp)
-
-# other ptp operator related namespaces
 resources+=(ns/openshift-marketplace)
-
-# sriovnetwork.openshift.io
 resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
-# run the collection of resources using must-gather
+# Collect resources
 for resource in ${resources[@]}; do
-  /usr/local/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  /usr/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
 
-# --- NEW: Capture PTP Announce messages from time-receiver interfaces ---
+# --- Capture PTP Announce packets from time-receiver interfaces ---
 
 PTP_CAPTURE_DIR="must-gather/ptp-captures"
 mkdir -p "${PTP_CAPTURE_DIR}"
 
-# Get time-receiver profiles with their interface and matched node
-# Output format: nodeName interface
-/usr/local/bin/oc get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
+# Get time-receiver node/interface pairs and capture
+/usr/bin/oc get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
   jq -r '.items[] |
-    # Get profiles that are time-receivers (have -s flag)
     (.spec.profile[]? | select(
       (.ptp4lOpts // "" | test("(^|\\s)-s(\\s|$)")) or 
       (.ptp4lConf // "" | test("slaveOnly\\s+1"; "i"))
     )) as $profile |
-    # Get matched nodes for this profile from status
     (.status.matchList[]? | select(.profile == $profile.name)) as $match |
-    "\($match.nodeName) \($profile.interface)"
-  ' 2>/dev/null | while read -r NODE_NAME INTERFACE; do
+    (
+      if $profile.interface then [$profile.interface]
+      else [$profile.ptp4lConf | scan("\\[([a-zA-Z][a-zA-Z0-9_]+)\\]") | .[0] | select(. != "global")]
+      end
+    ) | .[] as $iface |
+    "\($match.nodeName) \($iface)"
+  ' 2>/dev/null | sort -u | while read -r NODE_NAME INTERFACE; do
 
-  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] && continue
+  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] || [ "$INTERFACE" = "null" ] && continue
   
-  echo "Node: $NODE_NAME, Interface: $INTERFACE"
+  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_announce.pcap"
   
-  # Find the linuxptp-daemon pod on this node
-  POD=$(/usr/local/bin/oc get pods -n openshift-ptp -l app=linuxptp-daemon \
-    --field-selector spec.nodeName="$NODE_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  echo "Capturing PTP announce packets: node=${NODE_NAME}, interface=${INTERFACE}"
   
-  [ -z "$POD" ] && echo "  No pod found on node $NODE_NAME" && continue
-  
-  echo "  Capturing from pod: $POD"
-  
-  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${POD}_${INTERFACE}_announce.txt"
-  
-  /usr/local/bin/oc exec -n openshift-ptp "$POD" -c linuxptp-daemon-container -- \
-    timeout 5 tshark -i "$INTERFACE" -c 1 -f 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' -V 2>/dev/null \
-    > "$OUTPUT_FILE" 2>&1 || echo "No Announce packet captured within timeout" > "$OUTPUT_FILE"
-  
-  echo "  Saved to: $OUTPUT_FILE"
+  # Capture packets, then base64 encode for safe transport
+  # Note: oc debug without --image uses the node's default debug image
+  /usr/bin/oc debug node/"$NODE_NAME" --quiet --image=docker.io/nicolaka/netshoot -- \
+    sh -c "tcpdump -i ${INTERFACE} -c 1 -w /tmp/capture.pcap 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' 2>/dev/null && base64 /tmp/capture.pcap" \
+    2>/dev/null | base64 -d > "$OUTPUT_FILE"
+
 done
-
-echo "PTP time-receiver capture collection complete"
-# --- END NEW ---
 
 exit 0
