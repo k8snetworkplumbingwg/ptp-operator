@@ -983,3 +983,27 @@ func GetOCPVersion() (ocpVersion string, err error) {
 	}
 	return ocpVersion, err
 }
+
+// IsOCPVersionAtLeast checks if the OCP version is >= the specified minimum version
+// Returns true if version cannot be determined (to allow tests to run)
+func IsOCPVersionAtLeast(minVersion string) bool {
+	ocpVersion, err := GetOCPVersion()
+	if err != nil {
+		logrus.Infof("Could not get OCP version, assuming version check passes: %v", err)
+		return true
+	}
+
+	ver, err := semver.NewVersion(ocpVersion)
+	if err != nil {
+		logrus.Infof("Could not parse OCP version %s, assuming version check passes: %v", ocpVersion, err)
+		return true
+	}
+
+	minVer, err := semver.NewVersion(minVersion)
+	if err != nil {
+		logrus.Infof("Could not parse min version %s, assuming version check passes: %v", minVersion, err)
+		return true
+	}
+
+	return !ver.LessThan(minVer)
+}
