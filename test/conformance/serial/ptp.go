@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Masterminds/semver"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -561,26 +562,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// Delete if already exists
 					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
 						context.Background(),
-						"ptp-security-mismatch",
+						pkg.PtpSecurityMismatchSecretName,
 						metav1.DeleteOptions{},
 					)
 					time.Sleep(2 * time.Second)
 
 					// Create secret with spp 0 but DIFFERENT KEYS than ptp-security-conf
 					// GM signs with these keys, BC has different keys for spp 0 → signature mismatch
-					mismatchSecret := &v1core.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "ptp-security-mismatch",
-							Namespace: pkg.PtpLinuxDaemonNamespace,
-						},
-						StringData: map[string]string{
-							"ptp-security.conf": `[security_association]
-spp 0
-1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
-2 SHA256-128 HEX:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-`,
-						},
-					}
+					mismatchSecret := testconfig.CreateSecurityMismatchSecret(pkg.PtpLinuxDaemonNamespace)
 
 					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
 						context.Background(),
@@ -687,7 +676,7 @@ spp 0
 					// Delete mismatch secret
 					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
 						context.Background(),
-						"ptp-security-mismatch",
+						pkg.PtpSecurityMismatchSecretName,
 						metav1.DeleteOptions{},
 					)
 
@@ -2250,7 +2239,15 @@ spp 0
 			})
 		})
 
-		XIt("Should properly cleanup volumeMounts when secrets are deleted and remount when recreated", func() {
+		It("Should properly cleanup volumeMounts when secrets are deleted and remount when recreated", func() {
+			ptpOperatorVersion, err := ptphelper.GetPtpOperatorVersion()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ptpOperatorVersion).ShouldNot(BeEmpty())
+			operatorVersion, _ := semver.NewVersion(ptpOperatorVersion)
+			haVersion, _ := semver.NewVersion("4.22")
+			if operatorVersion.LessThan(haVersion) {
+				Skip("Skipping volumeMount cleanup test - requires OCP 4.22+")
+			}
 			var testNode string
 			var testInterface string
 			var testPtpConfig *ptpv1.PtpConfig

@@ -1814,11 +1814,29 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 	return podList, nil
 }
 
+// CreateSecurityMismatchSecret creates a secret with mismatched keys for authentication negative testing.
+// When GM uses this secret (spp 0) and slaves use ptp-security-conf (spp 1), authentication will fail.
+func CreateSecurityMismatchSecret(namespace string) *v1core.Secret {
+	return &v1core.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pkg.PtpSecurityMismatchSecretName,
+			Namespace: namespace,
+		},
+		StringData: map[string]string{
+			"ptp-security.conf": `[security_association]
+spp 0
+1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
+2 SHA256-128 HEX:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+`,
+		},
+	}
+}
+
 // CreateTestSecretForVolumeMountTest creates a test secret for volume mount cleanup testing
 func CreateTestSecretForVolumeMountTest(namespace string) *v1core.Secret {
 	return &v1core.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ptp-test-volume-secret",
+			Name:      pkg.PtpTestVolumeSecretName,
 			Namespace: namespace,
 		},
 		StringData: map[string]string{
@@ -1840,7 +1858,7 @@ func CreatePtpConfigForVolumeMountTest(nodeName string, interfaceName string) *p
 	phc2sysOpts := fmt.Sprintf("-a -r -r -n 24 -N 8 -R 16 -s %s -m", interfaceName)
 
 	ptp4lConf := fmt.Sprintf(`[global]
-sa_file /etc/ptp-secret-mount/ptp-test-volume-secret/test-key.conf
+sa_file /etc/ptp-secret-mount/%s/test-key.conf
 spp -1
 logging_level 6
 summary_interval 0
@@ -1849,7 +1867,7 @@ summary_interval 0
 masterOnly 0
 spp 1
 active_key_id 1
-`, interfaceName)
+`, pkg.PtpTestVolumeSecretName, interfaceName)
 
 	return &ptpv1.PtpConfig{
 		ObjectMeta: metav1.ObjectMeta{
