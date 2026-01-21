@@ -2,11 +2,15 @@ reviewers:
   - aneeshkp
   - josephdrichard
   - jzding
+  - lack
+  - nocturnalastro
   - vitus133
 approvers:
   - aneeshkp
   - josephdrichard
   - jzding
+  - lack
+  - nocturnalastro
   - vitus133
 
 component: "Networking"
