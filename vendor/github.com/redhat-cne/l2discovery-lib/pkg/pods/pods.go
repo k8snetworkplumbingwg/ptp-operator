@@ -16,7 +16,9 @@ func GetLog(p *corev1.Pod, containerName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer log.Close()
+	defer func() {
+		_ = log.Close()
+	}()
 
 	buf := new(bytes.Buffer)
 	_, err = io.Copy(buf, log)

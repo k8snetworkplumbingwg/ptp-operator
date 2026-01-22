@@ -1,4 +1,4 @@
-GOLANGCI_VERSION=v1.64.5
+GOLANGCI_VERSION=v2.8.0
 GO_PACKAGES=$(shell go list ./... | grep -v vendor)
 
 .PHONY: all clean test build build-l2discovery lint install-lint vet fmt image launch
@@ -14,9 +14,9 @@ fmt:
 lint:
 	golangci-lint run
 
-# Install golangci-lint	
+# Install golangci-lint v2
 install-lint:
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin ${GOLANGCI_VERSION}
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_VERSION}
 
 vet:
 	go vet ${GO_PACKAGES}

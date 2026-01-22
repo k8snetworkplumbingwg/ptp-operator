@@ -57,6 +57,8 @@ const (
 	L2ContainerMemReq              = "100M"
 	// ptpIfIndent defines the indentation level for PtpIf detailed output
 	ptpIfIndent = 6
+	// L2DiscoveryRetries is the number of retries for getL2Disc
+	L2DiscoveryRetries = 3
 )
 
 type L2DaemonsetMode int64
@@ -270,9 +272,20 @@ func (config *L2DiscoveryConfig) DiscoverL2Connectivity(ptpInterfacesOnly, allIF
 	if err != nil {
 		return fmt.Errorf("could not get l2 discovery pods, err=%s", err)
 	}
-	err = config.getL2Disc(ptpInterfacesOnly)
+	// Retry getL2Disc up to L2DiscoveryRetries times
+	for attempt := 1; attempt <= L2DiscoveryRetries; attempt++ {
+		err = config.getL2Disc(ptpInterfacesOnly)
+		if err == nil {
+			break
+		}
+		logrus.Warnf("attempt %d/%d: error getting l2 discovery data, err=%s", attempt, L2DiscoveryRetries, err)
+		if attempt < L2DiscoveryRetries {
+			logrus.Infof("waiting %v before retry...", L2DiscoveryDuration)
+			time.Sleep(L2DiscoveryDuration)
+		}
+	}
 	if err != nil {
-		logrus.Errorf("error getting l2 discovery data, err=%s", err)
+		logrus.Errorf("failed to get l2 discovery data after %d attempts, err=%s", L2DiscoveryRetries, err)
 	}
 	// Delete L2 discovery daemonset
 	if config.L2DsMode == Managed {
@@ -317,8 +330,14 @@ func (config *L2DiscoveryConfig) getL2Disc(ptpInterfacesOnly bool) error {
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		podLogs, _ := pods.GetLog(config.L2DiscoveryPods[k], config.L2DiscoveryPods[k].Spec.Containers[0].Name)
+		podLogs, err := pods.GetLog(config.L2DiscoveryPods[k], config.L2DiscoveryPods[k].Spec.Containers[0].Name)
+		if err != nil {
+			return fmt.Errorf("failed to get logs for pod %s on node %s: %w", config.L2DiscoveryPods[k].Name, config.L2DiscoveryPods[k].Spec.NodeName, err)
+		}
 		indexReport := strings.LastIndex(podLogs, "JSON_REPORT")
+		if indexReport == -1 {
+			return fmt.Errorf("no JSON_REPORT found in pod logs for pod %s on node %s", config.L2DiscoveryPods[k].Name, config.L2DiscoveryPods[k].Spec.NodeName)
+		}
 		report := strings.Split(strings.Split(podLogs[indexReport:], `\n`)[0], "JSON_REPORT")[1]
 		var discDataPerNode map[string]map[string]*exports.Neighbors
 		if err := json.Unmarshal([]byte(report), &discDataPerNode); err != nil {
@@ -399,7 +418,7 @@ func (config *L2DiscoveryConfig) getInterfacesReceivingPTP(ptpInterfacesOnly boo
 			aPortGettingPTP := &exports.PtpIf{}
 			aPortGettingPTP.Iface = ifaceMap.Local
 			aPortGettingPTP.NodeName = config.L2DiscoveryPods[k].Spec.NodeName
-			aPortGettingPTP.InterfaceName = aPortGettingPTP.Iface.IfName
+			aPortGettingPTP.InterfaceName = aPortGettingPTP.IfName
 
 			if ptpInterfacesOnly &&
 				(strings.Contains(aPortGettingPTP.IfPci.Description, "Virtual") ||
