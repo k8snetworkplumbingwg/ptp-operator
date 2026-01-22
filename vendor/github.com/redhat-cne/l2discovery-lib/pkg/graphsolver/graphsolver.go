@@ -302,7 +302,7 @@ func SameLan2Wrapper(config exports.L2Info, if1, if2 int) bool {
 
 // Determines if 2 interfaces (ports) belong to the same NIC
 func SameNic(ifaceName1, ifaceName2 *exports.PtpIf) bool {
-	if ifaceName1.IfClusterIndex.NodeName != ifaceName2.IfClusterIndex.NodeName {
+	if ifaceName1.NodeName != ifaceName2.NodeName {
 		return false
 	}
 	return ifaceName1.IfPci.Device != "" && ifaceName1.IfPci.Device == ifaceName2.IfPci.Device
@@ -373,6 +373,7 @@ func applyStep(config exports.L2Info, step [][]int, combinations []int) bool {
 			negate = test[negationIdx] == Negative
 		}
 
+		//nolint:gosec // G602: slice indices are controlled by step definition and param count in test[1]
 		switch test[1] {
 		case int(NoParam):
 			stepResult = AlgoCode0[test[0]]()
