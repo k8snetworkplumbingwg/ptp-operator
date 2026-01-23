@@ -40,7 +40,7 @@ metadata:
   name: ptp-operator-catalog
   namespace: openshift-marketplace
 spec:
-  sourceType: image
+  sourceType: grpc
   displayName: Custom PTP Operator catalog
   publisher: Red Hat (dev)
   image: ${CATALOG_IMG}
