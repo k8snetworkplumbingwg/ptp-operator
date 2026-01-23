@@ -9,7 +9,7 @@ endif
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 4.21
+VERSION ?= 4.22
 
 # CHANNELS define the bundle channels used in the bundle. 
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "preview,fast,stable")
@@ -330,11 +330,13 @@ channel: $(CATALOG_DEFAULT_CHANNEL)
 name: $(CATALOG_DEFAULT_CHANNEL)
 entries:
   - name: ptp-operator.v$(BUNDLE_VERSION)
-    replaces: ptp-operator.v4.20.0
+    skipRange: ">=4.3.0-0 <$(BUNDLE_VERSION)"
 endef
 
 .PHONY: catalog/channel.yaml
 catalog/channel.yaml:
+	$(eval BUNDLE_VERSION := $(shell yq <catalog/operator.yaml '.properties | map(select(.type == "olm.package"))[0].value.version'))
+	@echo "Detected bundle version $(BUNDLE_VERSION) from catalog/operator.yaml; Setting channel to match"
 	$(file > $@,$(CHANNEL_TEMPLATE))
 
 .PHONY: catalog.Dockerfile
