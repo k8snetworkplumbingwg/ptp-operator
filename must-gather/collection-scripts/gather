@@ -34,7 +34,7 @@ mkdir -p "$PTP_CAPTURE_DIR"
 # Get time-receiver node/interface pairs and capture packets
 # Handles: OC, BC, Dual Follower, DualNIC BC, T-BC
 # Excludes: T-GM (grandmaster) - they provide time, not receive it
-$OC_CMD get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
+$OC_CMD get ptpconfigs -n openshift-ptp -o json 2>&1 | \
   jq -r '
     def get_all_interfaces:
       [scan("\\[([a-zA-Z][a-zA-Z0-9_-]+)\\]") | .[0]] |
@@ -94,7 +94,7 @@ $OC_CMD get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
 
     select($iface != null and $iface != "") |
     "\($match.nodeName) \($iface)"
-  ' 2>/dev/null | sort -u | while read -r NODE_NAME INTERFACE; do
+  ' 2>&1 | sort -u | while read -r NODE_NAME INTERFACE; do
 
   [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] || [ "$INTERFACE" = "null" ] && continue
   
@@ -114,6 +114,11 @@ $OC_CMD get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
   
   if [ -s "$RAW_FILE" ]; then
     cat "$RAW_FILE" | awk '
+      function print_fields(pattern, fields, n) {
+        for (i = 1; i <= n; i++) {
+          if (fields[i] ~ pattern) print fields[i]
+        }
+      }
       /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
         print "=== PTP Announce Packet ==="
         print "Node: "node
@@ -126,22 +131,13 @@ $OC_CMD get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
         n = split($0, fields, "\n")
         print ""
         print "--- Message Info ---"
-        for (i = 1; i <= n; i++) {
-          f = fields[i]
-          if (f ~ /msg type|length|domain|Flags|control|log message/) print f
-        }
+        print_fields(/msg type|length|domain|Flags|control|log message/, fields, n)
         print ""
         print "--- Clock Identity ---"
-        for (i = 1; i <= n; i++) {
-          f = fields[i]
-          if (f ~ /clock identity|port id|seq id/) print f
-        }
+        print_fields(/clock identity|port id|seq id/, fields, n)
         print ""
         print "--- Grandmaster Info ---"
-        for (i = 1; i <= n; i++) {
-          f = fields[i]
-          if (f ~ /gm priority|gm clock|steps removed|time source/) print f
-        }
+        print_fields(/gm priority|gm clock|steps removed|time source/, fields, n)
         print ""
         next
       }
