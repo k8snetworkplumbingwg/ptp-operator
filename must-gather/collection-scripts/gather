@@ -1,52 +1,160 @@
 #!/bin/bash
 
-# Debug image for oc debug (uses cluster default if not specified)
-# To see what image is used, check: oc get node <node> -o jsonpath='{.status.nodeInfo.osImage}'
-echo "Starting PTP must-gather..."
+# find oc binary
+OC_CMD=$(command -v oc 2>/dev/null || which oc 2>/dev/null)
+if [ -z "$OC_CMD" ]; then
+  echo "Error: 'oc' command not found in PATH"
+  exit 1
+fi
 
 # resource list
 resources=()
+
+# ptp operator namespace
 resources+=(ns/openshift-ptp)
+
+# other ptp operator related namespaces
 resources+=(ns/openshift-marketplace)
+
+# ptp.openshift.io
 resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
-# Collect resources
+# run the collection of resources using must-gather
 for resource in ${resources[@]}; do
-  /usr/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  $OC_CMD adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
 
-# --- Capture PTP Announce packets from time-receiver interfaces ---
+# ------------------------------------------------------------------------------
+# PTP Announce Packet Capture
+# ------------------------------------------------------------------------------
 
 PTP_CAPTURE_DIR="must-gather/ptp-captures"
-mkdir -p "${PTP_CAPTURE_DIR}"
+mkdir -p "$PTP_CAPTURE_DIR"
 
-# Get time-receiver node/interface pairs and capture
-/usr/bin/oc get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
-  jq -r '.items[] |
-    (.spec.profile[]? | select(
-      (.ptp4lOpts // "" | test("(^|\\s)-s(\\s|$)")) or 
-      (.ptp4lConf // "" | test("slaveOnly\\s+1"; "i"))
-    )) as $profile |
-    (.status.matchList[]? | select(.profile == $profile.name)) as $match |
+# Get time-receiver node/interface pairs and capture packets
+# Handles: OC, BC, Dual Follower, DualNIC BC, T-BC
+# Excludes: T-GM (grandmaster) - they provide time, not receive it
+$OC_CMD get ptpconfigs -n openshift-ptp -o json 2>/dev/null | \
+  jq -r '
+    def get_all_interfaces:
+      [scan("\\[([a-zA-Z][a-zA-Z0-9_-]+)\\]") | .[0]] |
+      map(select(. != "global" and . != null)) |
+      unique;
+
+    # T-GM has ts2phc but NO upstreamPort (pure time source)
+    # T-BC has ts2phc AND upstreamPort (receives time upstream)
+    def is_grandmaster:
+      (((.ts2phcOpts // "") != "") or ((.ts2phcConf // "") != "")) and
+      ((.ptpSettings.upstreamPort // null) == null);
+
+    .items[] |
+    .status.matchList[]? as $match |
+    (.spec.profile[]? | select(.name == $match.profile)) as $profile |
+
+    select($profile | is_grandmaster | not) |
+
+    # Detect time-receiver interfaces based on configuration type
     (
-      if $profile.interface then [$profile.interface]
-      else [$profile.ptp4lConf | scan("\\[([a-zA-Z][a-zA-Z0-9_]+)\\]") | .[0] | select(. != "global")]
+      # T-BC: Telecom Boundary Clock with explicit upstream port
+      if ($profile.ptpSettings.upstreamPort // null) != null then
+        [$profile.ptpSettings.upstreamPort]
+
+      # OC: Ordinary Clock with -s (slave) flag in ptp4lOpts
+      elif ($profile.ptp4lOpts // "" | test("(^|\\s)-s(\\s|$)")) then
+        if $profile.interface then [$profile.interface]
+        else ($profile.ptp4lConf // "" | get_all_interfaces)
+        end
+
+      # OC/Dual Follower: slaveOnly mode - all interfaces are time receivers
+      elif ($profile.ptp4lConf // "" | test("slaveOnly[ \\t]+(1|yes|on)"; "i")) then
+        if $profile.interface then [$profile.interface]
+        else ($profile.ptp4lConf // "" | get_all_interfaces)
+        end
+
+      # BC/Dual NIC BC: Boundary Clock - only interfaces with masterOnly 0 are receivers
+      elif ($profile.ptp4lConf // "" | test("masterOnly[ \\t]+(0|no|off)"; "i")) then
+        [($profile.ptp4lConf // "") | 
+         splits("(?=\\[)") | 
+         select(test("^\\[[a-zA-Z]") and test("masterOnly[ \\t]+(0|no|off)"; "i")) |
+         capture("^\\[(?<iface>[a-zA-Z][a-zA-Z0-9_-]+)\\]") |
+         .iface] |
+        map(select(. != "global" and . != null)) |
+        unique
+
+      # Fallback: simple interface field (if no masterOnly in config)
+      elif $profile.interface then
+        if ($profile.ptp4lConf // "" | test("masterOnly")) then []
+        else [$profile.interface]
+        end
+
+      else
+        []
       end
     ) | .[] as $iface |
+
+    select($iface != null and $iface != "") |
     "\($match.nodeName) \($iface)"
   ' 2>/dev/null | sort -u | while read -r NODE_NAME INTERFACE; do
 
   [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] || [ "$INTERFACE" = "null" ] && continue
   
-  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_announce.pcap"
+  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_announce.txt"
+  RAW_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_raw.txt"
   
-  echo "Capturing PTP announce packets: node=${NODE_NAME}, interface=${INTERFACE}"
+  echo "Capturing PTP announce packet: node=${NODE_NAME}, interface=${INTERFACE}"
   
-  # Capture packets, then base64 encode for safe transport
-  # Note: oc debug without --image uses the node's default debug image
-  /usr/bin/oc debug node/"$NODE_NAME" --quiet --image=docker.io/nicolaka/netshoot -- \
-    sh -c "tcpdump -i ${INTERFACE} -c 1 -w /tmp/capture.pcap 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' 2>/dev/null && base64 /tmp/capture.pcap" \
-    2>/dev/null | base64 -d > "$OUTPUT_FILE"
+  if ! $OC_CMD debug node/"$NODE_NAME" -- \
+    tcpdump -i "${INTERFACE}" -n -c 1 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
+    > "$RAW_FILE" 2>&1; then
+    echo "Warning: Failed to capture PTP packet on node=${NODE_NAME}, interface=${INTERFACE}" >&2
+    echo "  This may occur if the debug image is not accessible (e.g., disconnected environment)" >&2
+    rm -f "$RAW_FILE"
+    continue
+  fi
+  
+  if [ -s "$RAW_FILE" ]; then
+    cat "$RAW_FILE" | awk '
+      /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
+        print "=== PTP Announce Packet ==="
+        print "Node: "node
+        print "Interface: "iface
+        print ""
+        match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+/)
+        print "Timestamp: " substr($0, RSTART, RLENGTH)
+        gsub(/, /, "\n", $0)
+        gsub(/ : /, ": ", $0)
+        n = split($0, fields, "\n")
+        print ""
+        print "--- Message Info ---"
+        for (i = 1; i <= n; i++) {
+          f = fields[i]
+          if (f ~ /msg type|length|domain|Flags|control|log message/) print f
+        }
+        print ""
+        print "--- Clock Identity ---"
+        for (i = 1; i <= n; i++) {
+          f = fields[i]
+          if (f ~ /clock identity|port id|seq id/) print f
+        }
+        print ""
+        print "--- Grandmaster Info ---"
+        for (i = 1; i <= n; i++) {
+          f = fields[i]
+          if (f ~ /gm priority|gm clock|steps removed|time source/) print f
+        }
+        print ""
+        next
+      }
+      /^dropped privs|^tcpdump:|^listening on|packet.*captured|packet.*received|packet.*dropped/ { next }
+      /^Starting pod|^To use host|^Removing debug|^Pod IP:/ { next }
+      { print }
+    ' node="$NODE_NAME" iface="$INTERFACE" > "$OUTPUT_FILE"
+    
+    rm -f "$RAW_FILE"
+    [ ! -s "$OUTPUT_FILE" ] && rm -f "$OUTPUT_FILE"
+  else
+    rm -f "$RAW_FILE"
+  fi
 
 done
 
