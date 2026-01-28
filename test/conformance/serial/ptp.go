@@ -542,6 +542,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
 				}
+				if fullConfig.PtpModeDiscovered == testconfig.OrdinaryClock {
+					// In 4.21+, OC correctly reports its local clock class (255/SlaveOnly).
+					// Before 4.21, OC was incorrectly detected as GM and reported upstream GM's class (6).
+					expectedClockClass := fbprotocol.ClockClass6
+					if ptphelper.IsOCPVersionAtLeast("4.21") {
+						expectedClockClass = fbprotocol.ClockClassSlaveOnly
+					}
+					By(fmt.Sprintf("Verifying OC clock_class is %d", expectedClockClass))
+					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)))
+				}
 			})
 
 			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
