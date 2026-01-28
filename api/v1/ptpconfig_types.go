@@ -38,6 +38,8 @@ type PtpConfigStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	MatchList []NodeMatchList `json:"matchList,omitempty"`
+	// Conditions contains the conditions for the PtpConfig
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 //+kubebuilder:object:root=true
