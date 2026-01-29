@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# find oc binary
-OC_CMD=$(command -v oc 2>/dev/null || which oc 2>/dev/null)
-if [ -z "$OC_CMD" ]; then
-  echo "Error: 'oc' command not found in PATH"
-  exit 1
-fi
-
 # resource list
 resources=()
 
@@ -21,102 +14,41 @@ resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
 # run the collection of resources using must-gather
 for resource in ${resources[@]}; do
-  $OC_CMD adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
 
-# ------------------------------------------------------------------------------
-# PTP Announce Packet Capture
-# ------------------------------------------------------------------------------
-
 PTP_CAPTURE_DIR="must-gather/ptp-captures"
-mkdir -p "$PTP_CAPTURE_DIR"
+CAPTURE_TIMEOUT=3
 
-# Get time-receiver node/interface pairs and capture packets
-# Handles: OC, BC, Dual Follower, DualNIC BC, T-BC
-# Excludes: T-GM (grandmaster) - they provide time, not receive it
-$OC_CMD get ptpconfigs -n openshift-ptp -o json 2>&1 | \
-  jq -r '
-    def get_all_interfaces:
-      [scan("\\[([a-zA-Z][a-zA-Z0-9_-]+)\\]") | .[0]] |
-      map(select(. != "global" and . != null)) |
-      unique;
+mkdir -p "$PTP_CAPTURE_DIR/time-receivers"
+mkdir -p "$PTP_CAPTURE_DIR/no-announcement-traffic"
 
-    # T-GM has ts2phc but NO upstreamPort (pure time source)
-    # T-BC has ts2phc AND upstreamPort (receives time upstream)
-    def is_grandmaster:
-      (((.ts2phcOpts // "") != "") or ((.ts2phcConf // "") != "")) and
-      ((.ptpSettings.upstreamPort // null) == null);
-
-    .items[] |
-    .status.matchList[]? as $match |
-    (.spec.profile[]? | select(.name == $match.profile)) as $profile |
-
-    select($profile | is_grandmaster | not) |
-
-    # Detect time-receiver interfaces based on configuration type
-    (
-      # T-BC: Telecom Boundary Clock with explicit upstream port
-      if ($profile.ptpSettings.upstreamPort // null) != null then
-        [$profile.ptpSettings.upstreamPort]
-
-      # OC: Ordinary Clock with -s (slave) flag in ptp4lOpts
-      elif ($profile.ptp4lOpts // "" | test("(^|\\s)-s(\\s|$)")) then
-        if $profile.interface then [$profile.interface]
-        else ($profile.ptp4lConf // "" | get_all_interfaces)
-        end
-
-      # OC/Dual Follower: slaveOnly mode - all interfaces are time receivers
-      elif ($profile.ptp4lConf // "" | test("slaveOnly[ \\t]+(1|yes|on)"; "i")) then
-        if $profile.interface then [$profile.interface]
-        else ($profile.ptp4lConf // "" | get_all_interfaces)
-        end
-
-      # BC/Dual NIC BC: Boundary Clock - only interfaces with masterOnly 0 are receivers
-      elif ($profile.ptp4lConf // "" | test("masterOnly[ \\t]+(0|no|off)"; "i")) then
-        [($profile.ptp4lConf // "") | 
-         splits("(?=\\[)") | 
-         select(test("^\\[[a-zA-Z]") and test("masterOnly[ \\t]+(0|no|off)"; "i")) |
-         capture("^\\[(?<iface>[a-zA-Z][a-zA-Z0-9_-]+)\\]") |
-         .iface] |
-        map(select(. != "global" and . != null)) |
-        unique
-
-      # Fallback: simple interface field (if no masterOnly in config)
-      elif $profile.interface then
-        if ($profile.ptp4lConf // "" | test("masterOnly")) then []
-        else [$profile.interface]
-        end
-
-      else
-        []
-      end
-    ) | .[] as $iface |
-
-    select($iface != null and $iface != "") |
-    "\($match.nodeName) \($iface)"
-  ' 2>&1 | sort -u | while read -r NODE_NAME INTERFACE; do
-
-  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] || [ "$INTERFACE" = "null" ] && continue
+# Capture function - runs tcpdump with timeout and processes output
+capture_ptp_announce() {
+  local NODE_NAME="$1"
+  local INTERFACE="$2"
+  local RAW_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_raw.txt"
+  local OUTPUT_FILE
+  local TIMEOUT_EXIT_CODE
   
-  OUTPUT_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_announce.txt"
-  RAW_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_raw.txt"
+  echo "Capturing PTP announce: node=${NODE_NAME}, interface=${INTERFACE}"
   
-  echo "Capturing PTP announce packet: node=${NODE_NAME}, interface=${INTERFACE}"
+  # Run tcpdump with timeout - capture one announce packet
+  timeout "${CAPTURE_TIMEOUT}s" oc debug node/"$NODE_NAME" -- \
+    tcpdump -i "$INTERFACE" -n -c 1 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
+    > "$RAW_FILE" 2>&1
+  TIMEOUT_EXIT_CODE=$?
   
-  if ! $OC_CMD debug node/"$NODE_NAME" -- \
-    tcpdump -i "${INTERFACE}" -n -c 1 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
-    > "$RAW_FILE" 2>&1; then
-    echo "Warning: Failed to capture PTP packet on node=${NODE_NAME}, interface=${INTERFACE}" >&2
-    echo "  This may occur if the debug image is not accessible (e.g., disconnected environment)" >&2
-    rm -f "$RAW_FILE"
-    continue
-  fi
-  
-  if [ -s "$RAW_FILE" ]; then
-    cat "$RAW_FILE" | awk '
+  # Check if we captured PTP data
+  if [ -s "$RAW_FILE" ] && grep -q "PTPv2" "$RAW_FILE"; then
+    echo "Capture SUCCESS: node=${NODE_NAME}, interface=${INTERFACE} (time-receiver)"
+    OUTPUT_FILE="${PTP_CAPTURE_DIR}/time-receivers/${NODE_NAME}_${INTERFACE}_announce.txt"
+    
+    # Process raw tcpdump output into readable format
+    awk '
       function print_fields(pattern, fields, n) {
         for (i = 1; i <= n; i++) {
-          if (fields[i] ~ pattern) print fields[i]
+          if (match(fields[i], pattern)) print fields[i]
         }
       }
       /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
@@ -131,27 +63,64 @@ $OC_CMD get ptpconfigs -n openshift-ptp -o json 2>&1 | \
         n = split($0, fields, "\n")
         print ""
         print "--- Message Info ---"
-        print_fields(/msg type|length|domain|Flags|control|log message/, fields, n)
+        print_fields("msg type|length|domain|Flags|control|log message", fields, n)
         print ""
         print "--- Clock Identity ---"
-        print_fields(/clock identity|port id|seq id/, fields, n)
+        print_fields("clock identity|port id|seq id", fields, n)
         print ""
         print "--- Grandmaster Info ---"
-        print_fields(/gm priority|gm clock|steps removed|time source/, fields, n)
+        print_fields("gm priority|gm clock|steps removed|time source", fields, n)
         print ""
         next
       }
       /^dropped privs|^tcpdump:|^listening on|packet.*captured|packet.*received|packet.*dropped/ { next }
       /^Starting pod|^To use host|^Removing debug|^Pod IP:/ { next }
       { print }
-    ' node="$NODE_NAME" iface="$INTERFACE" > "$OUTPUT_FILE"
+    ' node="$NODE_NAME" iface="$INTERFACE" "$RAW_FILE" > "$OUTPUT_FILE"
     
     rm -f "$RAW_FILE"
     [ ! -s "$OUTPUT_FILE" ] && rm -f "$OUTPUT_FILE"
   else
+    # No PTP traffic - likely TT or not configured
+    local RESULT_FILE="${PTP_CAPTURE_DIR}/no-announcement-traffic/${NODE_NAME}_${INTERFACE}.txt"
+    if [ "$TIMEOUT_EXIT_CODE" -eq 124 ]; then
+      echo "Capture TIMEOUT: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# TIMEOUT: No PTP announce packets received within ${PTP_CAPTURE_TIMEOUT}s (likely TT or inactive)"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    else
+      echo "Capture NO-TRAFFIC: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# NO TRAFFIC: tcpdump completed but no PTP announce packets captured"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    fi
     rm -f "$RAW_FILE"
   fi
+}
 
-done
+# Get all PTP-capable interfaces from nodeptpdevices and capture in parallel
+pids=()
+
+while read -r NODE_NAME INTERFACE; do
+  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] && continue
+  
+  capture_ptp_announce "$NODE_NAME" "$INTERFACE" &
+  pids+=($!)
+  
+done < <(oc get nodeptpdevices -n openshift-ptp -o json 2>/dev/null | \
+  jq -r '.items[] | .metadata.name as $node | .status.devices[]?.name | "\($node) \(.)"' 2>/dev/null | \
+  sort -u)
+
+# Wait for all captures to complete
+if [ ${#pids[@]} -gt 0 ]; then
+  echo "Waiting for ${#pids[@]} PTP captures to complete..."
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+fi
+
+echo "PTP capture complete. Results in $PTP_CAPTURE_DIR"
 
 exit 0
