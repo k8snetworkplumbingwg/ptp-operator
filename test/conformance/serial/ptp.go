@@ -542,6 +542,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
 				}
+				if fullConfig.PtpModeDiscovered == testconfig.OrdinaryClock {
+					// In 4.21+, OC correctly reports its local clock class (255/SlaveOnly).
+					// Before 4.21, OC was incorrectly detected as GM and reported upstream GM's class (6).
+					expectedClockClass := fbprotocol.ClockClass6
+					if ptphelper.IsOCPVersionAtLeast("4.21") {
+						expectedClockClass = fbprotocol.ClockClassSlaveOnly
+					}
+					By(fmt.Sprintf("Verifying OC clock_class is %d", expectedClockClass))
+					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)))
+				}
 			})
 
 			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
@@ -1318,6 +1328,48 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						}
 					}
 				})
+			})
+			It("Should receive events after linuxptp-daemon pod restart", func() {
+				if ptphelper.PtpEventEnabled() != 2 {
+					Skip("Skipping: test applies to event API v2 only")
+				}
+
+				By("Deploying consumer app for event API v2")
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+				Expect(nodeName).ToNot(BeEmpty(), "clock-under-test pod node is empty")
+				err := event.CreateConsumerApp(nodeName)
+				if err != nil {
+					Skip(fmt.Sprintf("Consumer app setup failed: %v", err))
+				}
+				DeferCleanup(func() {
+					_ = event.DeleteConsumerNamespace()
+					if event.PubSub != nil {
+						event.PubSub.Close()
+					}
+				})
+				time.Sleep(10 * time.Second)
+				event.InitPubSub()
+				term, monErr := event.MonitorPodLogsRegex()
+				Expect(monErr).ToNot(HaveOccurred(), "could not start listening to events")
+				DeferCleanup(func() { stopMonitor(term) })
+
+				By("Restarting linuxptp-daemon pod on the clock-under-test node")
+				originalPod := *fullConfig.DiscoveredClockUnderTestPod
+				newPod, err := ptphelper.ReplaceTestPod(&originalPod, pkg.TimeoutIn5Minutes)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Waiting for linuxptp-daemon to become ready after restart")
+				ptphelper.WaitForPtpDaemonToExist()
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
+				fullConfig.DiscoveredClockUnderTestPod = &newPod
+
+				By("Checking consumer app getCurrentState log for SyncStateChange")
+				err = event.PushInitialEvent(string(ptpEvent.SyncStateChange), 2*time.Minute)
+				Expect(err).NotTo(HaveOccurred(), "getCurrentState did not return SyncStateChange")
 			})
 		})
 
