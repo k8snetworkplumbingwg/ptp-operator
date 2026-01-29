@@ -249,6 +249,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		// Webhook validation test for underscore profile names
 		It("Should accept underscores in ptp-config profile names for HA profiles", func() {
+			if DesiredMode != testconfig.DualNICBoundaryClockHA {
+				Skip("Skipping as the test is only applicable for Dual NIC BC in HA mode (dualnicbcha)")
+			}
+
 			By("Creating a PtpConfig with underscore profile names in haProfiles")
 			err := testconfig.CreatePtpConfigWithUnderscoreProfileNames()
 			Expect(err).ToNot(HaveOccurred(), "webhook should accept underscores in profile names")
