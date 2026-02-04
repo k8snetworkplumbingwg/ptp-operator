@@ -550,7 +550,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// In 4.21+, OC correctly reports its local clock class (255/SlaveOnly).
 					// Before 4.21, OC was incorrectly detected as GM and reported upstream GM's class (6).
 					expectedClockClass := fbprotocol.ClockClass6
-					if ptphelper.IsOCPVersionAtLeast("4.21") {
+					if ptphelper.IsPTPOperatorVersionAtLeast("4.21") {
 						expectedClockClass = fbprotocol.ClockClassSlaveOnly
 					}
 					By(fmt.Sprintf("Verifying OC clock_class is %d", expectedClockClass))
@@ -1151,8 +1151,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			Context("Event API version validation", func() {
 				BeforeEach(func() {
-					if !ptphelper.IsOCPVersionAtLeast("4.19") {
-						Skip("Skipping: these tests require OCP version 4.19 or higher")
+					if !ptphelper.IsPTPOperatorVersionAtLeast("4.19") {
+						Skip("Skipping: these tests require PTP Operator version 4.19 or higher")
 					}
 				})
 
