@@ -9,12 +9,118 @@ resources+=(ns/openshift-ptp)
 # other ptp operator related namespaces
 resources+=(ns/openshift-marketplace)
 
-# sriovnetwork.openshift.io
+# ptp.openshift.io
 resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
 # run the collection of resources using must-gather
 for resource in ${resources[@]}; do
-  /usr/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
+
+PTP_CAPTURE_DIR="must-gather/ptp-captures"
+CAPTURE_TIMEOUT=3
+
+mkdir -p "$PTP_CAPTURE_DIR/time-receivers"
+mkdir -p "$PTP_CAPTURE_DIR/no-announcement-traffic"
+
+# Capture function - runs tcpdump with timeout and processes output
+capture_ptp_announce() {
+  local NODE_NAME="$1"
+  local INTERFACE="$2"
+  local RAW_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_raw.txt"
+  local OUTPUT_FILE
+  local TIMEOUT_EXIT_CODE
+  
+  echo "Capturing PTP announce: node=${NODE_NAME}, interface=${INTERFACE}"
+  
+  # Run tcpdump with timeout - capture one announce packet
+  timeout "${CAPTURE_TIMEOUT}s" oc debug node/"$NODE_NAME" -- \
+    tcpdump -i "$INTERFACE" -n -c 1 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
+    > "$RAW_FILE" 2>&1
+  TIMEOUT_EXIT_CODE=$?
+  
+  # Check if we captured PTP data
+  if [ -s "$RAW_FILE" ] && grep -q "PTPv2" "$RAW_FILE"; then
+    echo "Capture SUCCESS: node=${NODE_NAME}, interface=${INTERFACE} (time-receiver)"
+    OUTPUT_FILE="${PTP_CAPTURE_DIR}/time-receivers/${NODE_NAME}_${INTERFACE}_announce.txt"
+    
+    # Process raw tcpdump output into readable format
+    awk '
+      function print_fields(pattern, fields, n) {
+        for (i = 1; i <= n; i++) {
+          if (match(fields[i], pattern)) print fields[i]
+        }
+      }
+      /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
+        print "=== PTP Announce Packet ==="
+        print "Node: "node
+        print "Interface: "iface
+        print ""
+        match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+/)
+        print "Timestamp: " substr($0, RSTART, RLENGTH)
+        gsub(/, /, "\n", $0)
+        gsub(/ : /, ": ", $0)
+        n = split($0, fields, "\n")
+        print ""
+        print "--- Message Info ---"
+        print_fields("msg type|length|domain|Flags|control|log message", fields, n)
+        print ""
+        print "--- Clock Identity ---"
+        print_fields("clock identity|port id|seq id", fields, n)
+        print ""
+        print "--- Grandmaster Info ---"
+        print_fields("gm priority|gm clock|steps removed|time source", fields, n)
+        print ""
+        next
+      }
+      /^dropped privs|^tcpdump:|^listening on|packet.*captured|packet.*received|packet.*dropped/ { next }
+      /^Starting pod|^To use host|^Removing debug|^Pod IP:/ { next }
+      { print }
+    ' node="$NODE_NAME" iface="$INTERFACE" "$RAW_FILE" > "$OUTPUT_FILE"
+    
+    rm -f "$RAW_FILE"
+    [ ! -s "$OUTPUT_FILE" ] && rm -f "$OUTPUT_FILE"
+  else
+    # No PTP traffic - likely TT or not configured
+    local RESULT_FILE="${PTP_CAPTURE_DIR}/no-announcement-traffic/${NODE_NAME}_${INTERFACE}.txt"
+    if [ "$TIMEOUT_EXIT_CODE" -eq 124 ]; then
+      echo "Capture TIMEOUT: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# TIMEOUT: No PTP announce packets received within ${PTP_CAPTURE_TIMEOUT}s (likely TT or inactive)"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    else
+      echo "Capture NO-TRAFFIC: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# NO TRAFFIC: tcpdump completed but no PTP announce packets captured"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    fi
+    rm -f "$RAW_FILE"
+  fi
+}
+
+# Get all PTP-capable interfaces from nodeptpdevices and capture in parallel
+pids=()
+
+while read -r NODE_NAME INTERFACE; do
+  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] && continue
+  
+  capture_ptp_announce "$NODE_NAME" "$INTERFACE" &
+  pids+=($!)
+  
+done < <(oc get nodeptpdevices -n openshift-ptp -o json 2>/dev/null | \
+  jq -r '.items[] | .metadata.name as $node | .status.devices[]?.name | "\($node) \(.)"' 2>/dev/null | \
+  sort -u)
+
+# Wait for all captures to complete
+if [ ${#pids[@]} -gt 0 ]; then
+  echo "Waiting for ${#pids[@]} PTP captures to complete..."
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+fi
+
+echo "PTP capture complete. Results in $PTP_CAPTURE_DIR"
 
 exit 0
