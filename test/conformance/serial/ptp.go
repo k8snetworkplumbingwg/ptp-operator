@@ -1149,6 +1149,71 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"Threshold metrics are not detected")
 			})
 
+			It("Should maintain clockClass 6 after cloud-event-proxy process killed", func() {
+				if ptphelper.PtpEventEnabled() != 2 {
+					Skip("Skipping: test applies to event API v2 only")
+				}
+				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA {
+					Skip("Skipping: test applies to boundary clock configurations only")
+				}
+
+				By("Deploying consumer app for event API v2")
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+				Expect(nodeName).ToNot(BeEmpty(), "clock-under-test pod node is empty")
+				err := event.CreateConsumerApp(nodeName)
+				if err != nil {
+					Skip(fmt.Sprintf("Consumer app setup failed: %v", err))
+				}
+				DeferCleanup(func() {
+					_ = event.DeleteConsumerNamespace()
+					if event.PubSub != nil {
+						event.PubSub.Close()
+					}
+				})
+				time.Sleep(10 * time.Second)
+
+				By("Verifying initial clockClass is 6 via metrics API")
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+
+				By("Verifying initial clockClass is 6 via Event Fast Notification API")
+				event.InitPubSub()
+				term, monErr := event.MonitorPodLogsRegex()
+				Expect(monErr).ToNot(HaveOccurred(), "could not start listening to events")
+				DeferCleanup(func() { stopMonitor(term) })
+				verifyClockClassViaEventAPI(int(fbprotocol.ClockClass6), 60*time.Second)
+
+				By("Killing cloud-event-proxy process in sidecar container (not conmon)")
+				_, _, killErr := pods.ExecCommand(
+					client.Client,
+					true,
+					fullConfig.DiscoveredClockUnderTestPod,
+					pkg.EventProxyContainerName,
+					[]string{"sh", "-c", "kill -9 $(pgrep -f ^./cloud-event-proxy) || true"},
+				)
+				Expect(killErr).To(BeNil(), "failed to kill cloud-event-proxy process")
+
+				By("Waiting for cloud-event-proxy to restart")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(
+						client.Client,
+						true,
+						fullConfig.DiscoveredClockUnderTestPod,
+						pkg.EventProxyContainerName,
+						[]string{"sh", "-c", "pgrep -f ^./cloud-event-proxy"},
+					)
+					return strings.TrimSpace(buf.String()) != ""
+				}, 3*time.Minute, 1*time.Second).Should(BeTrue(),
+					"cloud-event-proxy process did not restart within 3 minutes timeout")
+
+				By("Verifying clockClass remains 6 via metrics API after cloud-event-proxy killed")
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+
+				By("Verifying clockClass is 6 via Event Fast Notification API after cloud-event-proxy killed")
+				verifyClockClassViaEventAPI(int(fbprotocol.ClockClass6), 90*time.Second)
+			})
+
 			Context("Event API version validation", func() {
 				BeforeEach(func() {
 					if !ptphelper.IsPTPOperatorVersionAtLeast("4.19") {
@@ -3296,6 +3361,31 @@ func waitForStateAndCC(subs event.Subscriptions, state ptpEvent.SyncState, cc in
 			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
 				if v, ok2 := res.Values["metric"].(float64); ok2 && int(v) == cc {
 					ccSeen = true
+				}
+			}
+		}
+	}
+}
+
+// verifyClockClassViaEventAPI verifies clock class via Event Fast Notification API getCurrentState
+func verifyClockClassViaEventAPI(expectedClockClass int, timeout time.Duration) {
+	const incomingEventsBuffer = 100
+	subs, cleanup := event.SubscribeToGMChangeEvents(incomingEventsBuffer, true, timeout)
+	defer cleanup()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API", expectedClockClass))
+			return
+		case ev := <-subs.CLOCKCLASS:
+			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
+				if v, ok2 := res.Values["metric"].(float64); ok2 && int(v) == expectedClockClass {
+					fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+					return
 				}
 			}
 		}
