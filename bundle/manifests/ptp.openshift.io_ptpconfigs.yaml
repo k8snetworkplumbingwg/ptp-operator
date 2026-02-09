@@ -84,42 +84,49 @@ spec:
                             each process
                           properties:
                             chronyd:
+                              default: 5
                               description: Acceptable downtime for chronyd process
                                 in seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             gpsd:
+                              default: 1
                               description: Acceptable downtime for gpsd process in
                                 seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             gpspipe:
+                              default: 1
                               description: Acceptable downtime for gpspipe process
                                 in seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             phc2sys:
+                              default: 5
                               description: Acceptable downtime for phc2sys process
                                 in seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             ptp4l:
+                              default: 5
                               description: Acceptable downtime for ptp4l process in
                                 seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             synce4l:
+                              default: 5
                               description: Acceptable downtime for synce4l process
                                 in seconds (max 1 day)
                               maximum: 86400
                               minimum: 0
                               type: integer
                             ts2phc:
+                              default: 5
                               description: Acceptable downtime for ts2phc process
                                 in seconds (max 1 day)
                               maximum: 86400

@@ -103,30 +103,37 @@ type PtpClockThreshold struct {
 type ProcessDowntimeThresholds struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=5
 	// Acceptable downtime for ptp4l process in seconds (max 1 day)
 	Ptp4l *int `json:"ptp4l,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=5
 	// Acceptable downtime for phc2sys process in seconds (max 1 day)
 	Phc2sys *int `json:"phc2sys,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=5
 	// Acceptable downtime for ts2phc process in seconds (max 1 day)
 	Ts2phc *int `json:"ts2phc,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=5
 	// Acceptable downtime for synce4l process in seconds (max 1 day)
 	Synce4l *int `json:"synce4l,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=5
 	// Acceptable downtime for chronyd process in seconds (max 1 day)
 	Chronyd *int `json:"chronyd,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=1
 	// Acceptable downtime for gpsd process in seconds (max 1 day)
 	Gpsd *int `json:"gpsd,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=86400
+	// +kubebuilder:default=1
 	// Acceptable downtime for gpspipe process in seconds (max 1 day)
 	Gpspipe *int `json:"gpspipe,omitempty"`
 }
