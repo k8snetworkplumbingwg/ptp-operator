@@ -18,7 +18,7 @@ for resource in ${resources[@]}; do
 done
 
 PTP_CAPTURE_DIR="must-gather/ptp-captures"
-CAPTURE_TIMEOUT=3
+CAPTURE_TIMEOUT=10
 
 mkdir -p "$PTP_CAPTURE_DIR/time-receivers"
 mkdir -p "$PTP_CAPTURE_DIR/no-announcement-traffic"
@@ -33,9 +33,9 @@ capture_ptp_announce() {
   
   echo "Capturing PTP announce: node=${NODE_NAME}, interface=${INTERFACE}"
   
-  # Run tcpdump with timeout - capture one announce packet
+  # Run tcpdump with timeout - capture up to 5 announce packets
   timeout "${CAPTURE_TIMEOUT}s" oc debug node/"$NODE_NAME" -- \
-    tcpdump -i "$INTERFACE" -n -c 1 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
+    tcpdump -i "$INTERFACE" -n -c 5 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
     > "$RAW_FILE" 2>&1
   TIMEOUT_EXIT_CODE=$?
   
@@ -46,36 +46,66 @@ capture_ptp_announce() {
     
     # Process raw tcpdump output into readable format
     awk '
-      function print_fields(pattern, fields, n) {
+      function build_fingerprint(fields, n,    fp, i, f) {
+        fp = ""
         for (i = 1; i <= n; i++) {
-          if (match(fields[i], pattern)) print fields[i]
+          if (match(fields[i], /seq id/)) continue
+          f = fields[i]
+          # Strip leading timestamp from first field (e.g. "08:36:38.496040 PTPv2...")
+          if (i == 1) sub(/^[0-9]+:[0-9]+:[0-9]+\.[0-9]+ /, "", f)
+          fp = fp f "|"
         }
-      }
-      /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
-        print "=== PTP Announce Packet ==="
-        print "Node: "node
-        print "Interface: "iface
-        print ""
-        match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+/)
-        print "Timestamp: " substr($0, RSTART, RLENGTH)
-        gsub(/, /, "\n", $0)
-        gsub(/ : /, ": ", $0)
-        n = split($0, fields, "\n")
-        print ""
-        print "--- Message Info ---"
-        print_fields("msg type|length|domain|Flags|control|log message", fields, n)
-        print ""
-        print "--- Clock Identity ---"
-        print_fields("clock identity|port id|seq id", fields, n)
-        print ""
-        print "--- Grandmaster Info ---"
-        print_fields("gm priority|gm clock|steps removed|time source", fields, n)
-        print ""
-        next
+        return fp
       }
       /^dropped privs|^tcpdump:|^listening on|packet.*captured|packet.*received|packet.*dropped/ { next }
       /^Starting pod|^To use host|^Removing debug|^Pod IP:/ { next }
-      { print }
+      /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
+        gsub(/, /, "\n", $0)
+        gsub(/ : /, ": ", $0)
+        n = split($0, fields, "\n")
+        fp = build_fingerprint(fields, n)
+        seen[fp]++
+        if (seen[fp] > 1) next
+        order[++unique_count] = fp
+        for (i = 1; i <= n; i++) {
+          stored[fp, i] = fields[i]
+        }
+        stored[fp, "n"] = n
+        match(fields[1], /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+/)
+        stored[fp, "ts"] = substr(fields[1], RSTART, RLENGTH)
+        next
+      }
+      END {
+        for (u = 1; u <= unique_count; u++) {
+          fp = order[u]
+          n = stored[fp, "n"]
+          if (unique_count == 1) {
+            printf "=== PTP Announce Packet (seen %d times) ===\n", seen[fp]
+          } else {
+            printf "=== PTP Announce Packet %d of %d (seen %d times) ===\n", u, unique_count, seen[fp]
+          }
+          print "Node: " node
+          print "Interface: " iface
+          print ""
+          print "Timestamp (first): " stored[fp, "ts"]
+          print ""
+          print "--- Message Info ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /msg type|length|domain|Flags|control|log message/)) print stored[fp, i]
+          }
+          print ""
+          print "--- Clock Identity ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /clock identity|port id/)) print stored[fp, i]
+          }
+          print ""
+          print "--- Grandmaster Info ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /gm priority|gm clock|steps removed|time source/)) print stored[fp, i]
+          }
+          print ""
+        }
+      }
     ' node="$NODE_NAME" iface="$INTERFACE" "$RAW_FILE" > "$OUTPUT_FILE"
     
     rm -f "$RAW_FILE"
@@ -86,7 +116,7 @@ capture_ptp_announce() {
     if [ "$TIMEOUT_EXIT_CODE" -eq 124 ]; then
       echo "Capture TIMEOUT: node=${NODE_NAME}, interface=${INTERFACE}"
       {
-        echo "# TIMEOUT: No PTP announce packets received within ${PTP_CAPTURE_TIMEOUT}s (likely TT or inactive)"
+        echo "# TIMEOUT: No PTP announce packets received within ${CAPTURE_TIMEOUT}s (likely TT or inactive)"
         [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
       } > "$RESULT_FILE"
     else
