@@ -79,6 +79,53 @@ spec:
                           description: min offset in nano secs
                           format: int64
                           type: integer
+                        processDowntimeThresholds:
+                          description: Acceptable process downtime in seconds for
+                            each process
+                          properties:
+                            chronyd:
+                              description: Acceptable downtime for chronyd process
+                                in seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            gpsd:
+                              description: Acceptable downtime for gpsd process in
+                                seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            gpspipe:
+                              description: Acceptable downtime for gpspipe process
+                                in seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            phc2sys:
+                              description: Acceptable downtime for phc2sys process
+                                in seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            ptp4l:
+                              description: Acceptable downtime for ptp4l process in
+                                seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            synce4l:
+                              description: Acceptable downtime for synce4l process
+                                in seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                            ts2phc:
+                              description: Acceptable downtime for ts2phc process
+                                in seconds (max 1 day)
+                              maximum: 86400
+                              minimum: 0
+                              type: integer
+                          type: object
                       type: object
                     ptpSchedulingPolicy:
                       enum:
