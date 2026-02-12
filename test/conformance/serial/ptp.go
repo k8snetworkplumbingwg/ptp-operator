@@ -1156,11 +1156,25 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if ptphelper.PtpEventEnabled() != 2 {
 					Skip("Skipping: test applies to event API v2 only")
 				}
-				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
-					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
-					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA {
-					Skip("Skipping: test applies to boundary clock configurations only")
+
+				// Determine expected clock class based on PTP mode
+				var expectedClockClass fbprotocol.ClockClass
+				switch fullConfig.PtpModeDiscovered {
+				case testconfig.OrdinaryClock, testconfig.DualFollowerClock:
+					// In 4.21+, OC/DualFollower correctly reports its local clock class (255/SlaveOnly).
+					// Before 4.21, OC was incorrectly detected as GM and reported upstream GM's class (6).
+					expectedClockClass = fbprotocol.ClockClass6
+					if ptphelper.IsPTPOperatorVersionAtLeast("4.21") {
+						expectedClockClass = fbprotocol.ClockClassSlaveOnly
+					}
+				case testconfig.BoundaryClock, testconfig.DualNICBoundaryClock, testconfig.DualNICBoundaryClockHA,
+					testconfig.TelcoGrandMasterClock:
+					expectedClockClass = fbprotocol.ClockClass6
+				default:
+					Skip(fmt.Sprintf("Skipping: test does not apply to %s mode", fullConfig.PtpModeDiscovered))
 				}
+				expectedClockClassStr := strconv.Itoa(int(expectedClockClass))
+				logrus.Infof("PtpModeDiscovered: %s, expected clockClass: %s", fullConfig.PtpModeDiscovered, expectedClockClassStr)
 
 				By("Deploying consumer app for event API v2")
 				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
@@ -1177,18 +1191,20 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 				time.Sleep(10 * time.Second)
 
-				By("Verifying initial clockClass is 6 via metrics")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				By(fmt.Sprintf("Verifying initial clockClass is %s via metrics", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr)
 
-				By("Verifying initial clockClass is 6 via PMC")
+				// PMC gm.ClockClass always reports the upstream GM's class (6),
+				// regardless of whether this node is BC or OC.
+				By("Verifying initial gm.ClockClass is 6 via PMC")
 				checkClockClassViaPMC(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
-				By("Setting up event monitoring and verifying initial clockClass is 6 via Event API")
+				By(fmt.Sprintf("Setting up event monitoring and verifying initial clockClass is %s via Event API", expectedClockClassStr))
 				event.InitPubSub()
 				term, monErr := event.MonitorPodLogsRegex()
 				Expect(monErr).ToNot(HaveOccurred(), "could not start listening to events")
 				DeferCleanup(func() { stopMonitor(term) })
-				verifyClockClassViaEventAPI(int(fbprotocol.ClockClass6), 60*time.Second)
+				verifyClockClassViaEventAPI(int(expectedClockClass), 60*time.Second)
 
 				By("Killing cloud-event-proxy process in sidecar container")
 				_, _, killErr := pods.ExecCommand(
@@ -1226,14 +1242,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}, 2*time.Minute, 2*time.Second).Should(ContainSubstring("OK"),
 					"cloud-event-proxy health endpoint did not recover after restart")
 
-				By("Verifying clockClass remains 6 via metrics after cloud-event-proxy restart")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				By(fmt.Sprintf("Verifying clockClass remains %s via metrics after cloud-event-proxy restart", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr)
 
-				By("Verifying clockClass remains 6 via PMC after cloud-event-proxy restart")
+				By("Verifying gm.ClockClass remains 6 via PMC after cloud-event-proxy restart")
 				checkClockClassViaPMC(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
-				By("Verifying clockClass is 6 via Event API after cloud-event-proxy restart")
-				verifyClockClassViaEventAPI(int(fbprotocol.ClockClass6), 90*time.Second)
+				By(fmt.Sprintf("Verifying clockClass is %s via Event API after cloud-event-proxy restart", expectedClockClassStr))
+				verifyClockClassViaEventAPI(int(expectedClockClass), 90*time.Second)
 			})
 
 			Context("Event API version validation", func() {
