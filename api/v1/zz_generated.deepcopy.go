@@ -22,6 +22,7 @@ package v1
 
 import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -421,6 +422,13 @@ func (in *PtpConfigStatus) DeepCopyInto(out *PtpConfigStatus) {
 	if in.MatchList != nil {
 		in, out := &in.MatchList, &out.MatchList
 		*out = make([]NodeMatchList, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
