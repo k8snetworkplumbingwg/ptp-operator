@@ -9,12 +9,148 @@ resources+=(ns/openshift-ptp)
 # other ptp operator related namespaces
 resources+=(ns/openshift-marketplace)
 
-# sriovnetwork.openshift.io
+# ptp.openshift.io
 resources+=(nodeptpdevices ptpconfigs ptpoperatorconfigs)
 
 # run the collection of resources using must-gather
 for resource in ${resources[@]}; do
-  /usr/bin/oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
+  oc adm inspect --dest-dir must-gather --all-namespaces ${resource}
 done
+
+PTP_CAPTURE_DIR="must-gather/ptp-captures"
+CAPTURE_TIMEOUT=10
+
+mkdir -p "$PTP_CAPTURE_DIR/time-receivers"
+mkdir -p "$PTP_CAPTURE_DIR/no-announcement-traffic"
+
+# Capture function - runs tcpdump with timeout and processes output
+capture_ptp_announce() {
+  local NODE_NAME="$1"
+  local INTERFACE="$2"
+  local RAW_FILE="${PTP_CAPTURE_DIR}/${NODE_NAME}_${INTERFACE}_raw.txt"
+  local OUTPUT_FILE
+  local TIMEOUT_EXIT_CODE
+  
+  echo "Capturing PTP announce: node=${NODE_NAME}, interface=${INTERFACE}"
+  
+  # Run tcpdump with timeout - capture up to 5 announce packets
+  timeout "${CAPTURE_TIMEOUT}s" oc debug node/"$NODE_NAME" -- \
+    tcpdump -i "$INTERFACE" -n -c 5 'ether proto 0x88f7 and (ether[14] & 0x0f == 0x0b)' \
+    > "$RAW_FILE" 2>&1
+  TIMEOUT_EXIT_CODE=$?
+  
+  # Check if we captured PTP data
+  if [ -s "$RAW_FILE" ] && grep -q "PTPv2" "$RAW_FILE"; then
+    echo "Capture SUCCESS: node=${NODE_NAME}, interface=${INTERFACE} (time-receiver)"
+    OUTPUT_FILE="${PTP_CAPTURE_DIR}/time-receivers/${NODE_NAME}_${INTERFACE}_announce.txt"
+    
+    # Process raw tcpdump output into readable format
+    awk '
+      function build_fingerprint(fields, n,    fp, i, f) {
+        fp = ""
+        for (i = 1; i <= n; i++) {
+          if (match(fields[i], /seq id/)) continue
+          f = fields[i]
+          # Strip leading timestamp from first field (e.g. "08:36:38.496040 PTPv2...")
+          if (i == 1) sub(/^[0-9]+:[0-9]+:[0-9]+\.[0-9]+ /, "", f)
+          fp = fp f "|"
+        }
+        return fp
+      }
+      /^dropped privs|^tcpdump:|^listening on|packet.*captured|packet.*received|packet.*dropped/ { next }
+      /^Starting pod|^To use host|^Removing debug|^Pod IP:/ { next }
+      /^[0-9]+:[0-9]+:[0-9]+.*PTPv2/ {
+        gsub(/, /, "\n", $0)
+        gsub(/ : /, ": ", $0)
+        n = split($0, fields, "\n")
+        fp = build_fingerprint(fields, n)
+        seen[fp]++
+        if (seen[fp] > 1) next
+        order[++unique_count] = fp
+        for (i = 1; i <= n; i++) {
+          stored[fp, i] = fields[i]
+        }
+        stored[fp, "n"] = n
+        match(fields[1], /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+/)
+        stored[fp, "ts"] = substr(fields[1], RSTART, RLENGTH)
+        next
+      }
+      END {
+        for (u = 1; u <= unique_count; u++) {
+          fp = order[u]
+          n = stored[fp, "n"]
+          if (unique_count == 1) {
+            printf "=== PTP Announce Packet (seen %d times) ===\n", seen[fp]
+          } else {
+            printf "=== PTP Announce Packet %d of %d (seen %d times) ===\n", u, unique_count, seen[fp]
+          }
+          print "Node: " node
+          print "Interface: " iface
+          print ""
+          print "Timestamp (first): " stored[fp, "ts"]
+          print ""
+          print "--- Message Info ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /msg type|length|domain|Flags|control|log message/)) print stored[fp, i]
+          }
+          print ""
+          print "--- Clock Identity ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /clock identity|port id/)) print stored[fp, i]
+          }
+          print ""
+          print "--- Grandmaster Info ---"
+          for (i = 1; i <= n; i++) {
+            if (match(stored[fp, i], /gm priority|gm clock|steps removed|time source/)) print stored[fp, i]
+          }
+          print ""
+        }
+      }
+    ' node="$NODE_NAME" iface="$INTERFACE" "$RAW_FILE" > "$OUTPUT_FILE"
+    
+    rm -f "$RAW_FILE"
+    [ ! -s "$OUTPUT_FILE" ] && rm -f "$OUTPUT_FILE"
+  else
+    # No PTP traffic - likely TT or not configured
+    local RESULT_FILE="${PTP_CAPTURE_DIR}/no-announcement-traffic/${NODE_NAME}_${INTERFACE}.txt"
+    if [ "$TIMEOUT_EXIT_CODE" -eq 124 ]; then
+      echo "Capture TIMEOUT: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# TIMEOUT: No PTP announce packets received within ${CAPTURE_TIMEOUT}s (likely TT or inactive)"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    else
+      echo "Capture NO-TRAFFIC: node=${NODE_NAME}, interface=${INTERFACE}"
+      {
+        echo "# NO TRAFFIC: tcpdump completed but no PTP announce packets captured"
+        [ -f "$RAW_FILE" ] && cat "$RAW_FILE"
+      } > "$RESULT_FILE"
+    fi
+    rm -f "$RAW_FILE"
+  fi
+}
+
+# Get all PTP-capable interfaces from nodeptpdevices and capture in parallel
+pids=()
+
+while read -r NODE_NAME INTERFACE; do
+  [ -z "$NODE_NAME" ] || [ -z "$INTERFACE" ] && continue
+  
+  capture_ptp_announce "$NODE_NAME" "$INTERFACE" &
+  pids+=($!)
+  
+done < <(oc get nodeptpdevices -n openshift-ptp -o json 2>/dev/null | \
+  jq -r '.items[] | .metadata.name as $node | .status.devices[]?.name | "\($node) \(.)"' 2>/dev/null | \
+  sort -u)
+
+# Wait for all captures to complete
+if [ ${#pids[@]} -gt 0 ]; then
+  echo "Waiting for ${#pids[@]} PTP captures to complete..."
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+fi
+
+echo "PTP capture complete. Results in $PTP_CAPTURE_DIR"
 
 exit 0
