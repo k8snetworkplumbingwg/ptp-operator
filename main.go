@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
+	ptptls "github.com/k8snetworkplumbingwg/ptp-operator/pkg/tls"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -89,8 +90,10 @@ func main() {
 		c.NextProtos = []string{"http/1.1"}
 	}
 
+	applyTLSProfile := ptptls.NewTLSConfigApplicator(restConfig)
+
 	webhookServerOptions := webhook.Options{
-		TLSOpts: []func(config *tls.Config){disableHTTP2},
+		TLSOpts: []func(config *tls.Config){applyTLSProfile, disableHTTP2},
 		Port:    9443,
 	}
 
