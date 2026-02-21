@@ -3,12 +3,79 @@ package controllers
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/golang/glog"
 	corev1 "k8s.io/api/core/v1"
 
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 )
+
+// qualifyProfileName creates a node-unique profile name by prepending the PtpConfig CR name.
+// For example, CR "T-BC" with profile "maestro" becomes "T-BC/maestro".
+// This is used to ensure that the profile name is unique across all PtpConfig CRs.
+func qualifyProfileName(crName, profileName string) string {
+	return crName + "/" + profileName
+}
+
+// profileCRIndex maps each profile name to the list of CR names that define it.
+// Built once in getRecommendProfiles and used for O(1) lookups when qualifying
+// cross-profile references (controllingProfile, haProfiles).
+type profileCRIndex map[string][]string
+
+// buildProfileCRIndex scans all PtpConfig CRs and records which CR(s) define each profile name.
+func buildProfileCRIndex(ptpConfigList *ptpv1.PtpConfigList) profileCRIndex {
+	idx := make(profileCRIndex)
+	for _, cfg := range ptpConfigList.Items {
+		if cfg.Spec.Profile == nil {
+			continue
+		}
+		for _, p := range cfg.Spec.Profile {
+			if p.Name != nil {
+				idx[*p.Name] = append(idx[*p.Name], cfg.Name)
+			}
+		}
+	}
+	return idx
+}
+
+// resolveCR returns the CR name for a profile reference, preferring the current CR.
+// If the profile is defined in multiple CRs and none is the current CR, a warning is logged.
+func (idx profileCRIndex) resolveCR(profileName, currentCRName string) string {
+	crNames := idx[profileName]
+	if len(crNames) == 0 {
+		return ""
+	}
+	for _, name := range crNames {
+		if name == currentCRName {
+			return currentCRName
+		}
+	}
+	if len(crNames) > 1 {
+		glog.Warningf("Ambiguous cross-profile reference: profile '%s' is defined in multiple CRs %v, using '%s'", profileName, crNames, crNames[0])
+	}
+	return crNames[0]
+}
+
+// qualifyCrossProfileReferences updates controllingProfile and haProfiles settings
+// to use qualified names so cross-profile references remain valid after prefixing.
+func qualifyCrossProfileReferences(settings map[string]string, currentCRName string, idx profileCRIndex) {
+	if cp, ok := settings["controllingProfile"]; ok && cp != "" {
+		if crName := idx.resolveCR(cp, currentCRName); crName != "" {
+			settings["controllingProfile"] = qualifyProfileName(crName, cp)
+		}
+	}
+	if ha, ok := settings["haProfiles"]; ok && ha != "" {
+		parts := strings.Split(ha, ",")
+		for i, p := range parts {
+			p = strings.TrimSpace(p)
+			if crName := idx.resolveCR(p, currentCRName); crName != "" {
+				parts[i] = qualifyProfileName(crName, p)
+			}
+		}
+		settings["haProfiles"] = strings.Join(parts, ",")
+	}
+}
 
 func printWhenNotNil(p interface{}, description string) {
 	switch v := p.(type) {
@@ -55,19 +122,37 @@ func getRecommendProfiles(ptpConfigList *ptpv1.PtpConfigList, node corev1.Node) 
 
 	profilesNames := getRecommendProfilesNames(ptpConfigList, node)
 	glog.V(2).Infof("recommended ptp profiles names are %v for node: %s", returnMapKeys(profilesNames), node.Name)
+
+	idx := buildProfileCRIndex(ptpConfigList)
+
 	profiles := []ptpv1.PtpProfile{}
+	foundNames := make(map[string]bool)
 	for _, cfg := range ptpConfigList.Items {
-		if cfg.Spec.Profile != nil {
-			for _, profile := range cfg.Spec.Profile {
-				if _, exist := profilesNames[*profile.Name]; exist {
-					profiles = append(profiles, profile)
-				}
+		if cfg.Spec.Profile == nil {
+			continue
+		}
+		for _, profile := range cfg.Spec.Profile {
+			if profile.Name == nil {
+				continue
 			}
+			if _, exist := profilesNames[*profile.Name]; !exist {
+				continue
+			}
+			foundNames[*profile.Name] = true
+			profileCopy := profile.DeepCopy()
+			qualifiedName := qualifyProfileName(cfg.Name, *profile.Name)
+			profileCopy.Name = &qualifiedName
+
+			if profileCopy.PtpSettings != nil {
+				qualifyCrossProfileReferences(profileCopy.PtpSettings, cfg.Name, idx)
+			}
+
+			profiles = append(profiles, *profileCopy)
 		}
 	}
 
-	if len(profiles) != len(profilesNames) {
-		return nil, fmt.Errorf("failed to find all the profiles")
+	if len(foundNames) != len(profilesNames) {
+		return nil, fmt.Errorf("Failed to find all the recommended profiles")
 	}
 	// sort profiles by name
 	sort.SliceStable(profiles, func(i, j int) bool {
