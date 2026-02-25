@@ -33,6 +33,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/apply"
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/render"
+	ptptls "github.com/k8snetworkplumbingwg/ptp-operator/pkg/tls"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -65,7 +66,7 @@ const (
 // +kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpoperatorconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpoperatorconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpoperatorconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=config.openshift.io,resources=infrastructures,verbs=get;list;watch
+// +kubebuilder:rbac:groups=config.openshift.io,resources=apiservers;infrastructures,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *PtpOperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {
@@ -268,6 +269,15 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	if enabledPlugins != "" {
 		glog.Infof("ptp operator enabled plugins: %s", enabledPlugins)
 	}
+
+	tlsProfile, tlsErr := ptptls.GetAPIServerTLSProfile(ctrl.GetConfigOrDie())
+	if tlsErr != nil {
+		glog.Warningf("failed to fetch API Server TLS profile, using Intermediate defaults: %v", tlsErr)
+	}
+	tlsSpec := ptptls.ResolveTLSProfileSpec(tlsProfile)
+	ianaCiphers := ptptls.IANACipherSuites(tlsSpec.Ciphers)
+	data.Data["TLSCipherSuites"] = strings.Join(ianaCiphers, ",")
+	data.Data["TLSMinVersion"] = ptptls.MinTLSVersionString(tlsSpec.MinTLSVersion)
 
 	objs, err = render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/ptp-daemon.yaml"), &data)
 	if err != nil {

@@ -51,6 +51,9 @@ spec:
               mountPath: /cloud-native
             - name: socket-dir
               mountPath: /var/run
+            - name: linuxptp-certs
+              mountPath: /etc/metrics
+              readOnly: true
           ports:
             - name: metrics-port
               containerPort: 9091
@@ -65,6 +68,14 @@ spec:
                   fieldPath: spec.nodeName
             - name: NAME_SPACE
               value: openshift-ptp
+            - name: TLS_CERT_FILE
+              value: /etc/metrics/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/metrics/tls.key
+            - name: TLS_MIN_VERSION
+              value: "{{.TLSMinVersion}}"
+            - name: TLS_CIPHER_SUITES
+              value: "{{.TLSCipherSuites}}"
         {{ end }}
         - name: kube-rbac-proxy
           image: {{.KubeRbacProxy}}
@@ -72,7 +83,8 @@ spec:
           args:
             - --logtostderr
             - --secure-listen-address=:8443
-            - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_RSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+            - --tls-cipher-suites={{.TLSCipherSuites}}
+            - --tls-min-version={{.TLSMinVersion}}
             - --upstream=http://127.0.0.1:9091/
             - --tls-private-key-file=/etc/metrics/tls.key
             - --tls-cert-file=/etc/metrics/tls.crt
