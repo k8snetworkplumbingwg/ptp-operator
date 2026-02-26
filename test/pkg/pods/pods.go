@@ -229,10 +229,12 @@ func GetPodLogsRegex(namespace string, podName string, containerName, regex stri
 		Follow:    false,
 	}
 	noFollowReq := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &noFollowOpts)
-	snapCtx, snapCancel := context.WithTimeout(context.Background(), pkg.TimeoutIn3Minutes)
+	snapCtx, snapCancel := context.WithTimeout(context.Background(), pkg.TimeoutIn1Minute)
 	defer snapCancel()
 	snapStream, err := noFollowReq.Stream(snapCtx)
-	if err == nil {
+	if err != nil {
+		logrus.Warnf("failed to open log stream for initial snapshot for %s/%s container=%s: %s", namespace, podName, containerName, err)
+	} else {
 		logContent, readErr := io.ReadAll(snapStream)
 		snapStream.Close()
 		if readErr == nil && len(logContent) > 0 {
