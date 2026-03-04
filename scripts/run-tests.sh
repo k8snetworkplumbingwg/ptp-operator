@@ -149,6 +149,10 @@ run_ginkgo_suite() {
     ginkgo_args+=(--skip="${skip}")
   done
 
+  if [[ "${mode}" == "tgm-sim" ]]; then
+    ginkgo_args+=(--focus=".*Simulated T-GM.*")
+  fi
+
   if [[ "${suite_kind}" == "parallel" ]]; then
     PTP_TEST_MODE="${mode}" ginkgo -p "${ginkgo_args[@]}" "${SUITE}/parallel"
   else
