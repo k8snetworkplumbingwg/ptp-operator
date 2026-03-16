@@ -14,9 +14,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -53,8 +55,10 @@ func main() {
 
 	// Start HTTP API
 	api := NewAPIServer(state, dpllSim)
+	server := &http.Server{Addr: ":" + apiPort, Handler: api.mux}
 	go func() {
-		if err := api.ListenAndServe(":" + apiPort); err != nil {
+		log.Printf("API server listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("API server error: %v", err)
 		}
 	}()
@@ -67,6 +71,14 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Printf("received %v, shutting down", sig)
+
+	// Shutdown HTTP server gracefully
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("API server shutdown error: %v", err)
+	}
+
 	sim.Stop()
 	dpllSim.Stop()
 }

@@ -52,7 +52,9 @@ func (s *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := s.state.Snapshot()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(snap)
+	if err := json.NewEncoder(w).Encode(snap); err != nil {
+		log.Printf("failed to write status response: %v", err)
+	}
 }
 
 // GET /api/dpll — returns the current DPLL state machine status.

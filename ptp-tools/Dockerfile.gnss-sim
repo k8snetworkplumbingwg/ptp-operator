@@ -6,7 +6,7 @@ COPY ptp-tools/gnss-sim/ .
 RUN CGO_ENABLED=0 GOOS=linux go build -o gnss-sim .
 
 # Runtime stage: minimal image with socat for PTY pair creation
-FROM quay.io/fedora/fedora:latest
+FROM quay.io/fedora/fedora:40
 
 RUN dnf install -y socat && \
     dnf clean all && \
