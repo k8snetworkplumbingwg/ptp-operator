@@ -100,7 +100,7 @@ func GetPtpTestConfig() (*PtpTestConfig, error) {
 		return nil, err
 	}
 
-	logrus.Infof("PTP Test Config: %+v", ptpTestConfig)
+	logrus.Debugf("PTP Test Config: %+v", ptpTestConfig)
 	loaded = true
 	return &ptpTestConfig, nil
 }

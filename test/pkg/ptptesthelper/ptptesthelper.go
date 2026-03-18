@@ -31,14 +31,14 @@ import (
 func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpConfig, gmID *string,
 	expectedClockState metrics.MetricClockState, expectedClockRole metrics.MetricRole, isCheckOffset bool) error {
 	if gmID != nil {
-		logrus.Infof("expected master=%s", *gmID)
+		logrus.Debugf("expected master=%s", *gmID)
 	}
 	profileName, errProfile := ptphelper.GetProfileName(ptpConfig)
 
 	if fullConfig.PtpModeDesired == testconfig.Discovery {
 		// Only for ptp mode == discovery, if errProfile is not nil just log a info message
 		if errProfile != nil {
-			logrus.Infof("profile name not detected in log (probably because of log rollover)). Remote clock ID will not be printed")
+			logrus.Debugf("profile name not detected in log (probably because of log rollover)). Remote clock ID will not be printed")
 		}
 	} else if errProfile != nil {
 		// Otherwise, for other non-discovery modes, report an error
@@ -57,9 +57,9 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 	if errProfile == nil {
 		if fullConfig.PtpModeDesired == testconfig.Discovery {
 			if err != nil {
-				logrus.Infof("slave's Master not detected in log (probably because of log rollover))")
+				logrus.Debugf("slave's Master not detected in log (probably because of log rollover))")
 			} else {
-				logrus.Infof("slave's Master=%s", slaveMaster)
+				logrus.Debugf("slave's Master=%s", slaveMaster)
 			}
 		} else {
 			if err != nil {
@@ -68,12 +68,12 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 			if slaveMaster == "" {
 				return errors.Errorf("expects slaveMaster to not be empty, slaveMaster=%s", slaveMaster)
 			}
-			logrus.Infof("slave's Master=%s", slaveMaster)
+			logrus.Debugf("slave's Master=%s", slaveMaster)
 		}
 	}
 	if gmID != nil {
 		if !strings.HasPrefix(slaveMaster, *gmID) {
-			logrus.Infof("slaveMaster=%s does not match expected GM=%s, waiting for re-sync...", slaveMaster, *gmID)
+			logrus.Debugf("slaveMaster=%s does not match expected GM=%s, waiting for re-sync...", slaveMaster, *gmID)
 			if waitErr := ptphelper.WaitForClockIDForeign(profileName, label, nodeName, *gmID); waitErr != nil {
 				return errors.Errorf("Slave connected to another (incorrect) Master, slaveMaster=%s, gmID=%s, waitErr=%s", slaveMaster, *gmID, waitErr)
 			}
@@ -83,7 +83,7 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 	Eventually(func() error {
 		err = metrics.CheckClockRoleAndOffset(ptpConfig, label, nodeName, expectedClockState, expectedClockRole, isCheckOffset)
 		if err != nil {
-			logrus.Infof("CheckClockRoleAndOffset Failed because of err: %s", err)
+			logrus.Debugf("CheckClockRoleAndOffset Failed because of err: %s", err)
 		}
 		return err
 	}, pkg.TimeoutIn10Minutes, pkg.Timeout10Seconds).Should(BeNil(), fmt.Sprintf("Timeout to detect metrics for ptpconfig %s", ptpConfig.Name))
@@ -252,18 +252,18 @@ func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfa
 		}
 	}
 	Expect(isOutageRecoveryPodFound).To(BeTrue())
-	logrus.Infof("outage recovery pod name is %s", outageRecoveryDaemonsetPod.Name)
+	logrus.Debugf("outage recovery pod name is %s", outageRecoveryDaemonsetPod.Name)
 
 	// Get the list of network interfaces on the slave node
 	slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
-	logrus.Infof("Slave interfaces are %+q\n", slaveIf)
+	logrus.Debugf("Slave interfaces are %+q\n", slaveIf)
 	// Toggle the interfaces
 	for _, ptpNodeInterface := range slaveIf {
 		_, skip := skippedInterfaces[ptpNodeInterface]
 		if skip {
-			logrus.Infof("Skipping the interface %s", ptpNodeInterface)
+			logrus.Debugf("Skipping the interface %s", ptpNodeInterface)
 		} else {
-			logrus.Infof("Simulating PTP outage using interface %s", ptpNodeInterface)
+			logrus.Debugf("Simulating PTP outage using interface %s", ptpNodeInterface)
 			toggleNetworkInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName, fullConfig)
 		}
 	}
@@ -279,9 +279,9 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 	)
 	By("Setting interface down then wait")
 	downInterfaceCommand := fmt.Sprintf("ip link set dev %s down", interfaceName)
-	logrus.Infof("Setting the interface %s down", interfaceName)
+	logrus.Debugf("Setting the interface %s down", interfaceName)
 	pods.ExecutePtpInterfaceCommand(pod, interfaceName, downInterfaceCommand)
-	logrus.Infof("Interface %s is set down", interfaceName)
+	logrus.Debugf("Interface %s is set down", interfaceName)
 
 	By("Checking that the port role is FAULTY after wait")
 
@@ -293,7 +293,7 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 	By("Set the interface UP again and wait")
 	upInterfaceCommand := fmt.Sprintf("ip link set dev %s up", interfaceName)
 	pods.ExecutePtpInterfaceCommand(pod, interfaceName, upInterfaceCommand)
-	logrus.Infof("Interface %s is up", interfaceName)
+	logrus.Debugf("Interface %s is up", interfaceName)
 
 	By("Checking that the port role is SLAVE after wait and clock is in sync")
 	// Check if the port has changed back to slave
@@ -469,7 +469,7 @@ func (p *PortEngine) TurnPortDown(port string) error {
 	stdout, stderr, err := pods.ExecCommand(client.Client, true, p.ClockPod, pkg.RecoveryNetworkOutageDaemonSetContainerName,
 		[]string{"ip", "link", "set", port, "down"})
 
-	logrus.Infof("Turning interface: %s in pod %s down, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
+	logrus.Debugf("Turning interface: %s in pod %s down, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
 	return err
 }
 
@@ -477,7 +477,7 @@ func (p *PortEngine) TurnPortUp(port string) error {
 	stdout, stderr, err := pods.ExecCommand(client.Client, true, p.ClockPod, pkg.RecoveryNetworkOutageDaemonSetContainerName,
 		[]string{"ip", "link", "set", port, "up"})
 
-	logrus.Infof("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
+	logrus.Debugf("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
 	return err
 }
 
@@ -489,7 +489,7 @@ func (p *PortEngine) TurnAllPortsUp() error {
 			return err
 		}
 
-		logrus.Infof("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
+		logrus.Debugf("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
 	}
 	return nil
 }
@@ -501,10 +501,10 @@ func (p *PortEngine) SetInitialRoles() (err error) {
 	}
 
 	// Display initial roles per interface name
-	logrus.Infof("Setting up initial roles for interfaces on node %s:", p.ClockPod.Spec.NodeName)
+	logrus.Debugf("Setting up initial roles for interfaces on node %s:", p.ClockPod.Spec.NodeName)
 	for i, port := range p.Ports {
 		if i < len(p.InitialRoles) {
-			logrus.Infof("  Interface %s: %s", port, p.InitialRoles[i].String())
+			logrus.Debugf("  Interface %s: %s", port, p.InitialRoles[i].String())
 		}
 	}
 
@@ -532,7 +532,7 @@ func (p *PortEngine) Initialize(aClockPod *corev1.Pod, aPorts []string) {
 		}
 	}
 	Expect(isOutageRecoveryPodFound).To(BeTrue())
-	logrus.Infof("Test pod name is %s", p.ClockPod.Name)
+	logrus.Debugf("Test pod name is %s", p.ClockPod.Name)
 
 	// Retry until there is no error or we timeout
 	Eventually(func() error {

@@ -117,7 +117,7 @@ func StartLogCollection(suiteName string) error {
 	}
 
 	if collector != nil {
-		logrus.Info("Log collection already started")
+		logrus.Debug("Log collection already started")
 		return nil
 	}
 

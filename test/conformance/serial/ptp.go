@@ -132,7 +132,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		// Setup verification
 		It("Should check that all nodes are running at least one replica of linuxptp-daemon", func() {
 			By("Getting ptp operator config")
-
+			logrus.Debug("Getting ptp operator config")
 			ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			listOptions := metav1.ListOptions{}
@@ -176,7 +176,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(len(operatorPods.Items)).To(BeNumerically(">", 0), "no ptp-operator pods found")
 
 			originalPodName := operatorPods.Items[0].Name
-			logrus.Infof("Original ptp-operator pod: %s", originalPodName)
+			logrus.Debugf("Original ptp-operator pod: %s", originalPodName)
 
 			By("Getting the current lease")
 			lease, err := client.Client.CoordinationV1().Leases(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpOperatorLeaseID, metav1.GetOptions{})
@@ -186,15 +186,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			if lease.Spec.HolderIdentity != nil {
 				originalHolderIdentity = *lease.Spec.HolderIdentity
 			}
-			logrus.Infof("Original lease holder identity: %s", originalHolderIdentity)
+			logrus.Debugf("Original lease holder identity: %s", originalHolderIdentity)
 
 			By("Deleting the ptp-operator pod")
 			err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), originalPodName, metav1.DeleteOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			logrus.Infof("Deleted ptp-operator pod: %s", originalPodName)
-			logrus.Infof("attempting to acquire leader lease %s/%s...", pkg.PtpLinuxDaemonNamespace, pkg.PtpOperatorLeaseID)
+			logrus.Debugf("Deleted ptp-operator pod: %s", originalPodName)
+			logrus.Debugf("attempting to acquire leader lease %s/%s...", pkg.PtpLinuxDaemonNamespace, pkg.PtpOperatorLeaseID)
 
 			By("Waiting for a new pod to be Running and Ready, and lease to be acquired")
+			logrus.Debug("Waiting for a new pod to be Running and Ready, and lease to be acquired")
 			Eventually(func() error {
 				// Check for new pod
 				operatorPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{
@@ -253,7 +254,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return fmt.Errorf("lease has no renew time")
 				}
 
-				logrus.Infof("New pod %s is Running and Ready, lease held by: %s, renewTime: %v",
+				logrus.Debugf("New pod %s is Running and Ready, lease held by: %s, renewTime: %v",
 					newPod.Name, *lease.Spec.HolderIdentity, lease.Spec.RenewTime.Time)
 
 				return nil
@@ -265,7 +266,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(err).ToNot(HaveOccurred())
 			Expect(finalLease.Spec.HolderIdentity).ToNot(BeNil())
 			Expect(*finalLease.Spec.HolderIdentity).ToNot(BeEmpty())
-			logrus.Infof("successfully acquired lease %s/%s", pkg.PtpLinuxDaemonNamespace, pkg.PtpOperatorLeaseID)
+			logrus.Debugf("successfully acquired lease %s/%s", pkg.PtpLinuxDaemonNamespace, pkg.PtpOperatorLeaseID)
 		})
 
 		// Webhook validation test for underscore profile names
@@ -277,7 +278,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			By("Creating a PtpConfig with underscore profile names in haProfiles")
 			err := testconfig.CreatePtpConfigWithUnderscoreProfileNames()
 			Expect(err).ToNot(HaveOccurred(), "webhook should accept underscores in profile names")
-			logrus.Infof("Successfully created PtpConfig with underscore profile names: test_profile_bc1, test_profile_bc2")
+			logrus.Debugf("Successfully created PtpConfig with underscore profile names: test_profile_bc1, test_profile_bc2")
 
 			By("Verifying the PtpConfig was created with correct haProfiles")
 			ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpUnderscoreTestPolicyName, metav1.GetOptions{})
@@ -288,12 +289,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(exists).To(BeTrue(), "haProfiles setting should exist")
 			Expect(haProfiles).To(ContainSubstring("test_profile_bc1"), "haProfiles should contain underscore profile name")
 			Expect(haProfiles).To(ContainSubstring("test_profile_bc2"), "haProfiles should contain underscore profile name")
-			logrus.Infof("Verified haProfiles contains underscore names: %s", haProfiles)
+			logrus.Debugf("Verified haProfiles contains underscore names: %s", haProfiles)
 
 			// cleaning up the test PtpConfig
 			err = testconfig.DeletePtpConfigWithUnderscoreProfileNames()
 			Expect(err).ToNot(HaveOccurred(), "failed to delete test PtpConfig")
-			logrus.Infof("Successfully deleted test PtpConfig")
+			logrus.Debugf("Successfully deleted test PtpConfig")
 		})
 
 		// PtpOperatorConfig eventConfig test
@@ -307,7 +308,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			if ptpOperatorConfig.Spec.EventConfig != nil {
 				originalEnableEventPublisher = ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher
 			}
-			logrus.Infof("Original EnableEventPublisher value: %v", originalEnableEventPublisher)
+			logrus.Debugf("Original EnableEventPublisher value: %v", originalEnableEventPublisher)
 
 			By("Setting EnableEventPublisher to true")
 			if ptpOperatorConfig.Spec.EventConfig == nil {
@@ -322,7 +323,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ptpOperatorConfig.Spec.EventConfig).ToNot(BeNil(), "EventConfig should not be nil")
 			Expect(ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher).To(BeTrue(), "EnableEventPublisher should be true")
-			logrus.Infof("Verified EnableEventPublisher is set to true")
+			logrus.Debugf("Verified EnableEventPublisher is set to true")
 
 			By("Setting EnableEventPublisher to false")
 			ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher = false
@@ -333,13 +334,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			ptpOperatorConfig, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher).To(BeFalse(), "EnableEventPublisher should be false")
-			logrus.Infof("Verified EnableEventPublisher is set to false")
+			logrus.Debugf("Verified EnableEventPublisher is set to false")
 
 			By("Restoring original EnableEventPublisher value")
 			ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher = originalEnableEventPublisher
 			_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			logrus.Infof("Restored EnableEventPublisher to original value: %v", originalEnableEventPublisher)
+			logrus.Debugf("Restored EnableEventPublisher to original value: %v", originalEnableEventPublisher)
 		})
 
 	})
@@ -427,8 +428,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					lenPtpNodeIfacesFromPtpApi := len(ptpNodeIfacesFromPtpApi)
 					sort.Strings(ptpNodeIfacesDiscoveredByL2)
 					sort.Strings(ptpNodeIfacesFromPtpApi)
-					logrus.Infof("Interfaces supporting ptp for node        %s: %v", ptpPods.Items[podIndex].Spec.NodeName, ptpNodeIfacesDiscoveredByL2)
-					logrus.Infof("Interfaces discovered by ptp API for node %s: %v", ptpPods.Items[podIndex].Spec.NodeName, ptpNodeIfacesFromPtpApi)
+					logrus.Debugf("Interfaces supporting ptp for node        %s: %v", ptpPods.Items[podIndex].Spec.NodeName, ptpNodeIfacesDiscoveredByL2)
+					logrus.Debugf("Interfaces discovered by ptp API for node %s: %v", ptpPods.Items[podIndex].Spec.NodeName, ptpNodeIfacesFromPtpApi)
 
 					// The discovered PTP interfaces should match exactly the list of interfaces calculated by test
 					Expect(lenPtpNodeIfacesDiscoveredByL2).To(Equal(lenPtpNodeIfacesFromPtpApi))
@@ -443,9 +444,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				ocpVersion, err := ptphelper.GetOCPVersion()
 				if err != nil {
-					logrus.Infof("Kubernetes cluster under test is not Openshift, cannot get OCP version")
+					logrus.Debugf("Kubernetes cluster under test is not Openshift, cannot get OCP version")
 				} else {
-					logrus.Infof("Kubernetes cluster under test is Openshift, OCP version is %s", ocpVersion)
+					logrus.Debugf("Kubernetes cluster under test is Openshift, OCP version is %s", ocpVersion)
 				}
 
 				By("Getting the version of the PTP operator")
@@ -473,8 +474,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
 				slavePtpConfigStr := ptpConfig.DiscoveredClockUnderTestPtpConfig.String()
 
-				logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
-				logrus.Infof("Discovered slave ptp config %s", slavePtpConfigStr)
+				logrus.Debugf("Discovered master ptp config %s", masterPtpConfigStr)
+				logrus.Debugf("Discovered slave ptp config %s", slavePtpConfigStr)
 
 				AddReportEntry("master-ptp-config", masterPtpConfigStr)
 				AddReportEntry("slave-ptp-config", slavePtpConfigStr)
@@ -978,8 +979,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				secondaryPtpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig)
 				secondaryBCSlaveInterfaces := ptpv1.GetInterfaces(*secondaryPtpConfig, ptpv1.Slave)
 
-				logrus.Infof("Primary   BC slave interfaces: %v", primaryBCSlaveInterfaces)
-				logrus.Infof("Secondary BC slave interfaces: %v", secondaryBCSlaveInterfaces)
+				logrus.Debugf("Primary   BC slave interfaces: %v", primaryBCSlaveInterfaces)
+				logrus.Debugf("Secondary BC slave interfaces: %v", secondaryBCSlaveInterfaces)
 
 				// Get phc2sys logs to identify which interface it's using
 				const phc2sysLogPattern = `phc2sys(?m).*?:.* selecting (\w+) as out-of-domain source clock`
@@ -991,7 +992,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
 
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
+				logrus.Debugf("phc2sys log matching line: %v", logMatches[0][0])
 				selectedInterface = logMatches[0][1]
 
 				// Save it as primary interface
@@ -1029,7 +1030,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
 				// Get the most recent log entry
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
+				logrus.Debugf("phc2sys log matching line: %v", logMatches[0][0])
 				newSelectedInterface = logMatches[0][1]
 
 				// Verify that phc2sys switched to a different interface
@@ -1062,7 +1063,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
 				// Get the most recent log entry
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
+				logrus.Debugf("phc2sys log matching line: %v", logMatches[0][0])
 				selectedInterface = logMatches[0][1]
 
 				By("Verifying the selected interface " + selectedInterface + " is the original primary BC's slave interface " + primaryInterface)
@@ -1230,7 +1231,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(cloudProxyFound).ToNot(BeFalse(),
 							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Debugf("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						// Search for "starting v2 rest api server at port" in pod logs (literal text search)
 						matches, err := pods.GetPodLogsRegex(
@@ -1246,7 +1247,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(matches).NotTo(BeEmpty(),
 							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
+						logrus.Debugf("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 					}
 				})
 
@@ -1291,7 +1292,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(cloudProxyFound).ToNot(BeFalse(),
 							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Debugf("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						// Search for REST API config v2.0 in pod logs (literal text search)
 						matches, err := pods.GetPodLogsRegex(
@@ -1307,7 +1308,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(matches).NotTo(BeEmpty(),
 							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
+						logrus.Debugf("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 					}
 				})
 				// Verify invalid apiVersion values are rejected and pods are not restarted
@@ -1330,7 +1331,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						for _, pod := range ptpPods.Items {
 							originalPodUIDs[pod.Name] = string(pod.UID)
 							originalContainerCounts[pod.Name] = len(pod.Spec.Containers)
-							logrus.Infof("Pod %s: UID=%s, containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+							logrus.Debugf("Pod %s: UID=%s, containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
 						}
 
 						By("Recording current apiVersion in PtpOperatorConfig")
@@ -1341,7 +1342,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						if ptpOperatorConfigBefore.Spec.EventConfig != nil {
 							originalApiVersion = ptpOperatorConfigBefore.Spec.EventConfig.ApiVersion
 						}
-						logrus.Infof("Original apiVersion: '%s'", originalApiVersion)
+						logrus.Debugf("Original apiVersion: '%s'", originalApiVersion)
 
 						By(fmt.Sprintf("Attempting to set apiVersion to '%s' (should be rejected)", tc.invalidVersion))
 						err = ptphelper.EnablePTPEvent(tc.invalidVersion, "")
@@ -1349,7 +1350,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							fmt.Sprintf("Setting apiVersion to '%s' should have been rejected", tc.invalidVersion))
 						Expect(err.Error()).To(ContainSubstring(tc.expectedErrorSubstring),
 							"Error should contain expected message")
-						logrus.Infof("Received expected rejection error: %s", err.Error())
+						logrus.Debugf("Received expected rejection error: %s", err.Error())
 
 						By("Verifying PtpOperatorConfig was not changed")
 						ptpOperatorConfigAfter, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
@@ -1377,7 +1378,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 								fmt.Sprintf("Pod %s should have same UID (no restart)", pod.Name))
 							Expect(len(pod.Spec.Containers)).To(Equal(originalContainerCounts[pod.Name]),
 								fmt.Sprintf("Pod %s should have same number of containers", pod.Name))
-							logrus.Infof("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
+							logrus.Debugf("Pod %s: UID unchanged (%s), containers=%d", pod.Name, pod.UID, len(pod.Spec.Containers))
 						}
 					}
 				})
@@ -1734,7 +1735,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							MountPath: "/etc/ptp-secret-mount/ptp-security-conf",
 							ReadOnly:  true,
 						})
-						logrus.Infof("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
+						logrus.Debugf("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -1796,7 +1797,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							MountPath: "/etc/ptp-secret-mount/ptp-security-conf",
 							ReadOnly:  true,
 						})
-						logrus.Infof("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
+						logrus.Debugf("[PMC UDS Test] Auth enabled: mounting secret 'ptp-security-conf' to /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf in test pod")
 					}
 					pod, err := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), podDefinition, metav1.CreateOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -1886,7 +1887,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						for _, val := range separated {
 							skipInterfaces[val] = true
 						}
-						logrus.Info("skipINterfaces", skipInterfaces)
+						logrus.Debugf("skipInterfaces: %v", skipInterfaces)
 						ptptesthelper.RecoverySlaveNetworkOutage(fullConfig, skipInterfaces)
 					}
 				})

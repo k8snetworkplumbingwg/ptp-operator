@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
 
 	ce "github.com/cloudevents/sdk-go/v2/event"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
@@ -84,7 +85,7 @@ func GetConsumerImage() string {
 		consumerImage = "quay.io/redhat-cne/cloud-event-consumer:latest"
 		logrus.Warnf("CONSUMER_IMG is not set, use default value")
 	}
-	logrus.Infof("Use CONSUMER_IMG %s", consumerImage)
+	logrus.Debugf("Use CONSUMER_IMG %s", consumerImage)
 	return consumerImage
 }
 
@@ -171,7 +172,7 @@ func CreateConsumerAppWithSidecar(nodeNameFull string) (err error) {
 		if err != nil {
 			return err
 		}
-		logrus.Infof("namespace %s deleted", ConsumerNamespace)
+		logrus.Debugf("namespace %s deleted", ConsumerNamespace)
 	}
 
 	labels := map[string]string{
@@ -281,7 +282,7 @@ func CreateConsumerApp(nodeNameFull string) (err error) {
 		if err != nil {
 			return err
 		}
-		logrus.Infof("namespace %s deleted", ConsumerNamespace)
+		logrus.Debugf("namespace %s deleted", ConsumerNamespace)
 	}
 
 	labels := map[string]string{
@@ -481,7 +482,7 @@ func MonitorPodLogsRegex() (term chan bool, err error) {
 
 			select {
 			case <-term:
-				logrus.Infof("received term signal, exiting MonitorPodLogsRegex")
+				logrus.Debugf("received term signal, exiting MonitorPodLogsRegex")
 				return
 
 			default:
@@ -495,7 +496,7 @@ func MonitorPodLogsRegex() (term chan bool, err error) {
 					if err == nil {
 						PubSub.Publish(eType, aStoredEvent)
 					} else {
-						logrus.Infof("received error in  MonitorPodLogsRegex %s", err)
+						logrus.Debugf("received error in  MonitorPodLogsRegex %s", err)
 					}
 				}
 			}

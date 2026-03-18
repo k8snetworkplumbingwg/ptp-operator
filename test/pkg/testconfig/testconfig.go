@@ -440,7 +440,7 @@ func initFoundSolutions() {
 
 // Gets te desired configuration from the environment
 func GetDesiredConfig(forceUpdate bool) TestConfig {
-	defer logrus.Infof("Current PTP test config=%s", &GlobalConfig)
+	defer logrus.Debugf("Current PTP test config=%s", &GlobalConfig)
 	if GlobalConfig.Status == InitStatus && !forceUpdate {
 		return GlobalConfig
 	}
@@ -505,7 +505,7 @@ func CreatePtpConfigurations() error {
 	if GlobalConfig.PtpModeDesired != Discovery {
 		// initialize L2 config in solver
 		solver.GlobalConfig.SetL2Config(config)
-		logrus.Infof("Ports getting PTP frames=%+v", config.GetPortsGettingPTP())
+		logrus.Debugf("Ports getting PTP frames=%+v", config.GetPortsGettingPTP())
 		initAndSolveProblems()
 
 		if len(data.solutions) == 0 {
@@ -749,8 +749,8 @@ func initAndSolveProblems() {
 
 // Gets the discovered configuration
 func GetFullDiscoveredConfig(namespace string, forceUpdate bool) TestConfig {
-	logrus.Infof("Getting ptp configuration for namespace:%s", namespace)
-	defer logrus.Infof("Current PTP test config=%s", &GlobalConfig)
+	logrus.Debugf("Getting ptp configuration for namespace:%s", namespace)
+	defer logrus.Debugf("Current PTP test config=%s", &GlobalConfig)
 
 	if GlobalConfig.Status == DiscoveryFailureStatus ||
 		GlobalConfig.Status == DiscoverySuccessStatus && !forceUpdate {
@@ -1047,7 +1047,7 @@ func PtpConfigOC(isExtGM bool) error {
 			return fmt.Errorf("no solution found for OC configuration in Local GM mode")
 		}
 	}
-	logrus.Infof("Configuring best solution= %s", BestSolution)
+	logrus.Debugf("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoOCString:
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
@@ -1101,7 +1101,7 @@ func PtpConfigDualFollower(isExtGM bool) error {
 			return fmt.Errorf("no solution found for Dual Follower configuration in Local GM mode")
 		}
 	}
-	logrus.Infof("Configuring best solution= %s", BestSolution)
+	logrus.Debugf("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoDualFollowerString:
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
@@ -1168,7 +1168,7 @@ func PtpConfigBC(isExtGM bool) error {
 		}
 	}
 
-	logrus.Infof("Configuring best solution= %s", BestSolution)
+	logrus.Debugf("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoBCWithSlavesString:
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
@@ -1375,7 +1375,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 		}
 	}
 
-	logrus.Infof("Configuring best solution= %s", BestSolution)
+	logrus.Debugf("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
 	case AlgoDualNicBCWithSlavesString:
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
@@ -1519,7 +1519,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 
 	// Create the third HA-specific phc2sys config if HA is enabled
 	if phc2SysHaEnabled {
-		logrus.Infof("Creating HA ptpconfig")
+		logrus.Debugf("Creating HA ptpconfig")
 		// Determine the node for the HA config - use the same node as BC1
 		var haNodeName string
 		switch BestSolution {
@@ -1655,7 +1655,7 @@ func discoverPTPConfiguration(namespace string) {
 	if err != nil {
 		logrus.Errorf("error getting ptpconfig list, err=%s", err)
 	}
-	logrus.Infof("%d ptpconfig objects recovered", len(configList.Items))
+	logrus.Debugf("%d ptpconfig objects recovered", len(configList.Items))
 	resetConfig()
 	for profileIndex := range configList.Items {
 		for _, r := range configList.Items[profileIndex].Spec.Recommend {
@@ -1708,9 +1708,9 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 	numPhc2SysHa := 0
 	var allMasterIfs []string
 	var allFollowerIfs []string
-	logrus.Infof("Number of ptpconfigs under test: %d", len(ptpConfigClockUnderTest))
+	logrus.Debugf("Number of ptpconfigs under test: %d", len(ptpConfigClockUnderTest))
 	for _, ptpConfig := range ptpConfigClockUnderTest {
-		logrus.Infof("Analyzing ptpconfig: %s", ptpConfig.Name)
+		logrus.Debugf("Analyzing ptpconfig: %s", ptpConfig.Name)
 
 		masterIfStrings := ptpv1.GetInterfaces(*ptpConfig, ptpv1.Master)
 		masterIfCount := len(masterIfStrings)
@@ -1734,7 +1734,7 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			break
 		}
-		logrus.Infof("ptptConfig: %s, masterIfCount: %d, slaveIfCount: %d", ptpConfig.Name, masterIfCount, slaveIfCount)
+		logrus.Debugf("ptptConfig: %s, masterIfCount: %d, slaveIfCount: %d", ptpConfig.Name, masterIfCount, slaveIfCount)
 		// BC, Dual NIC BC and Dual NIC BC HA
 		if masterIfCount >= 1 && slaveIfCount >= 1 {
 			if numBc == 0 {
@@ -1759,7 +1759,7 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			GlobalConfig.DiscoveredGrandMasterPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 		}
 	}
-	logrus.Infof("BCs found: %d, SecondaryBCs found: %d, Phc2Sys HA configs found: %d", numBc, numSecondaryBC, numPhc2SysHa)
+	logrus.Debugf("BCs found: %d, SecondaryBCs found: %d, Phc2Sys HA configs found: %d", numBc, numSecondaryBC, numPhc2SysHa)
 	switch numBc {
 	case 1:
 		GlobalConfig.PtpModeDiscovered = BoundaryClock
@@ -1810,7 +1810,7 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 		podList = append(podList, aPod)
 		podNames = append(podNames, aPod.Name)
 	}
-	logrus.Infof("List of pods running ptp4l: %v", podNames)
+	logrus.Debugf("List of pods running ptp4l: %v", podNames)
 	return podList, nil
 }
 
