@@ -1,12 +1,12 @@
 # Build stage: compile the gnss-sim Go binary
-FROM golang:1.22 AS builder
+FROM docker.io/golang:1.25.7 AS builder
 
 WORKDIR /build
 COPY ptp-tools/gnss-sim/ .
 RUN CGO_ENABLED=0 GOOS=linux go build -o gnss-sim .
 
 # Runtime stage: minimal image with socat for PTY pair creation
-FROM quay.io/fedora/fedora:40
+FROM quay.io/centos/centos:stream9
 
 RUN dnf install -y socat && \
     dnf clean all && \
