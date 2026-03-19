@@ -879,6 +879,12 @@ func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []st
 }
 
 func getWPCEnabledIfaces(nodeName string) map[string]string {
+	if IsSimulatedTGM() {
+		iface1 := envOrDefault("GNSS_SIM_IFACE1", "ens1f0")
+		iface2 := envOrDefault("GNSS_SIM_IFACE2", "ens1f1")
+		logrus.Infof("Simulated T-GM: returning mock WPC interfaces [%s, %s]", iface1, iface2)
+		return map[string]string{iface1: iface1, iface2: iface2}
+	}
 	resMap := make(map[string]string)
 	cmd := []string{"/bin/sh", "-c", "grep 000e /sys/class/net/*/device/subsystem_device | awk -F '/' '{print $5}'"}
 	so, se, err := execPodCommand(nodeName, cmd)
@@ -898,6 +904,11 @@ func getWPCEnabledIfaces(nodeName string) map[string]string {
 }
 
 func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, bool) {
+	if IsSimulatedTGM() {
+		dev := envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
+		logrus.Infof("Simulated T-GM: returning mock GNSS device %s for interface %s", dev, IfaceName)
+		return dev, true
+	}
 	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss", IfaceName)}
 	logrus.Infof("cmd = %s ", cmd)
 	so, se, err := execPodCommand(nodeName, cmd)
@@ -1176,4 +1187,11 @@ func GNSSSimIsHealthy() bool {
 // IsSimulatedTGM returns true when PTP_TEST_MODE is set to "tgm-sim".
 func IsSimulatedTGM() bool {
 	return strings.ToLower(os.Getenv("PTP_TEST_MODE")) == "tgm-sim"
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

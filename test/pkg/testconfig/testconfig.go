@@ -921,7 +921,12 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	if err != nil {
 		logrus.Fatalf("error: %v", err)
 	}
-	plugins = result
+	if ptphelper.IsSimulatedTGM() {
+		logrus.Info("Simulated T-GM: skipping E810 plugin (no real Intel hardware)")
+		plugins = nil
+	} else {
+		plugins = result
+	}
 	return createConfigWithTs2PhcAndPlugins(policyName,
 		nil,
 		&ptp4lsysOpts,
@@ -1588,74 +1593,22 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 }
 
 // PtpConfigTelcoGMSim creates a T-GM configuration for simulated CI environments.
-// It bypasses L2 discovery and WPC NIC detection, using pre-known netdevsim
-// interfaces and the GNSS simulator's virtual serial port.
+// It bypasses L2 discovery (netdevsim can't pass StepIsWPCNic) but reuses
+// the real CreatePtpConfigWPCGrandMaster path — the detection functions in
+// ptphelper are mocked when IsSimulatedTGM() is true, so GetListOfWPCEnabledInterfaces
+// transparently returns the simulated interfaces and GNSS device.
 func PtpConfigTelcoGMSim() error {
 	nodeName, err := ptphelper.GetFirstWorkerNodeName()
 	if err != nil {
 		return fmt.Errorf("failed to find worker node for simulated T-GM: %v", err)
 	}
 
-	iface1 := envOrDefault("GNSS_SIM_IFACE1", "ens1f0")
-	iface2 := envOrDefault("GNSS_SIM_IFACE2", "ens1f1")
-	nmeaDevice := envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
-
-	logrus.Infof("Creating simulated T-GM config on node=%s ifaces=[%s,%s] nmea=/dev/%s",
-		nodeName, iface1, iface2, nmeaDevice)
-
-	return CreatePtpConfigSimGrandMaster(
-		pkg.PtpSimGrandMasterPolicyName,
-		nodeName,
-		[]string{iface1, iface2},
-		nmeaDevice,
-	)
-}
-
-// CreatePtpConfigSimGrandMaster creates a PtpConfig for simulated T-GM testing.
-// Unlike CreatePtpConfigWPCGrandMaster, this omits Intel E810 plugin configuration
-// and ubxtool commands, since there is no real WPC hardware in the CI environment.
-func CreatePtpConfigSimGrandMaster(policyName string, nodeName string, ifList []string, nmeaDevice string) error {
-	ptpSchedulingPolicy := SCHED_OTHER
-	configureFifo, err := strconv.ParseBool(os.Getenv("CONFIGURE_FIFO"))
-	if err == nil && configureFifo {
-		ptpSchedulingPolicy = SCHED_FIFO
+	IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(nodeName)
+	if len(IfList) == 0 {
+		return fmt.Errorf("simulated WPC NIC interfaces not found (check GNSS_SIM_IFACE1/IFACE2 env vars)")
 	}
-
-	time.Sleep(time.Second)
-	_, err = nodes.LabelNode(nodeName, pkg.PtpClockUnderTestNodeLabel, "")
-	_, err = nodes.LabelNode(nodeName, pkg.PtpGrandmasterNodeLabel, "")
-	if err != nil {
-		logrus.Errorf("Error setting simulated GM node role label: %s", err)
-	}
-
-	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  /dev/%s\n", nmeaDevice)
-	ts2phcConfig = fmt.Sprintf("%s\n[%s]\nts2phc.extts_polarity rising\nts2phc.extts_correction 0\n", ts2phcConfig, ifList[0])
-	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\n"
-	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[0], 1))
-	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[1], 1))
-	ptp4lsysOpts := ptp4lEthernet
-	ts2phcOpts := " "
-	ph2sysOpts := fmt.Sprintf("-r -u 0 -m -N 8 -R 16 -s %s -n 24", ifList[0])
-
-	return createConfigWithTs2PhcAndPlugins(policyName,
-		nil,
-		&ptp4lsysOpts,
-		ptp4lConfig,
-		ts2phcConfig,
-		&ph2sysOpts,
-		pkg.PtpClockUnderTestNodeLabel,
-		pointer.Int64Ptr(int5),
-		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65),
-		&ts2phcOpts,
-		nil)
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+	logrus.Infof("Simulated T-GM: calling CreatePtpConfigWPCGrandMaster with interfaces=%v device=%s", IfList, deviceID)
+	return CreatePtpConfigWPCGrandMaster(pkg.PtpSimGrandMasterPolicyName, nodeName, IfList, deviceID)
 }
 
 // helper function to add an interface to the ptp4l config
