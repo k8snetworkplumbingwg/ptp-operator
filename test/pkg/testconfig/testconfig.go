@@ -60,14 +60,14 @@ const (
 	DualNICBoundaryClockHAString = "DualNICBCHA"
 	// TelcoGrandMasterClockString matches the T-GM clock mode in Environement
 	TelcoGrandMasterClockString = "TGM"
-	ptp4lEthernet                  = "-2 --summary_interval -4"
-	ptp4lEthernetSlave             = "-2 -s --summary_interval -4"
-	phc2sysGM                      = "-a -r -r -n 24" // use phc2sys to sync phc to system clock
-	phc2sysSlave                   = "-a -r -n 24 -m -N 8 -R 16"
-	phc2sysDualNicBCHA             = "-a -r -m -l 7 -n 24 "
-	SCHED_OTHER                    = "SCHED_OTHER"
-	SCHED_FIFO                     = "SCHED_FIFO"
-	L2_DISCOVERY_IMAGE             = "quay.io/redhat-cne/l2discovery:v14"
+	ptp4lEthernet               = "-2 --summary_interval -4"
+	ptp4lEthernetSlave          = "-2 -s --summary_interval -4"
+	phc2sysGM                   = "-a -r -r -n 24" // use phc2sys to sync phc to system clock
+	phc2sysSlave                = "-a -r -n 24 -m -N 8 -R 16"
+	phc2sysDualNicBCHA          = "-a -r -m -l 7 -n 24 "
+	SCHED_OTHER                 = "SCHED_OTHER"
+	SCHED_FIFO                  = "SCHED_FIFO"
+	L2_DISCOVERY_IMAGE          = "quay.io/redhat-cne/l2discovery:v15"
 )
 
 type ConfigStatus int64
