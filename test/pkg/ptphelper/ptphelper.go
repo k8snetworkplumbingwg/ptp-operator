@@ -710,13 +710,20 @@ func IsPtpMaster(ptp4lOpts, phc2sysOpts *string) bool {
 
 // Checks for DualNIC BC
 func GetProfileName(config *ptpv1.PtpConfig) (string, error) {
+	if config == nil {
+		return "", fmt.Errorf("ptp config is nil")
+	}
 	for _, profile := range config.Spec.Profile {
-		if profile.Name != nil && *profile.Name == pkg.PtpGrandMasterPolicyName ||
-			*profile.Name == pkg.PtpBcMaster1PolicyName ||
-			*profile.Name == pkg.PtpBcMaster2PolicyName ||
-			*profile.Name == pkg.PtpSlave1PolicyName ||
-			*profile.Name == pkg.PtpSlave2PolicyName ||
-			*profile.Name == pkg.PtpTempPolicyName {
+		if profile.Name == nil {
+			continue
+		}
+		switch *profile.Name {
+		case pkg.PtpGrandMasterPolicyName,
+			pkg.PtpBcMaster1PolicyName,
+			pkg.PtpBcMaster2PolicyName,
+			pkg.PtpSlave1PolicyName,
+			pkg.PtpSlave2PolicyName,
+			pkg.PtpTempPolicyName:
 			return *profile.Name, nil
 		}
 	}
@@ -765,6 +772,9 @@ func GetPTPPodWithPTPConfig(ptpConfig *ptpv1.PtpConfig) (aPtpPod *v1core.Pod, er
 			aPtpPod = &pod
 			break
 		}
+	}
+	if aPtpPod == nil {
+		return nil, fmt.Errorf("no linuxptp-daemon pod found matching ptpconfig %s (label=%v, nodeName=%v)", ptpConfig.Name, label, nodeName)
 	}
 	return aPtpPod, nil
 }

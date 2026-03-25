@@ -1778,7 +1778,8 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 
 	pod, err := ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(GlobalConfig.DiscoveredClockUnderTestPtpConfig))
 	if err != nil {
-		logrus.Error("Could not determine ptp daemon pod selected by ptpconfig")
+		logrus.Errorf("Could not determine ptp daemon pod selected by ptpconfig: %s", err)
+		GlobalConfig.Status = DiscoveryFailureStatus
 	}
 	GlobalConfig.DiscoveredClockUnderTestPod = pod
 	GlobalConfig.DiscoveredFollowerInterfaces = allFollowerIfs
@@ -1805,6 +1806,9 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 		aPod, err = ptphelper.GetPTPPodWithPTPConfig(aPTPConfig)
 		if err != nil {
 			return podList, fmt.Errorf("could not determine pod managing this ptpconfig, err: %v", err)
+		}
+		if aPod == nil {
+			return podList, fmt.Errorf("could not determine pod managing this ptpconfig, err: pod not found")
 		}
 		podList = append(podList, aPod)
 		podNames = append(podNames, aPod.Name)
