@@ -35,115 +35,117 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (id string, err error) {
-	const logIDRegex = `(?m).*?Ptp4lConf: #profile: %s(.|\n)*?message_tag \[(.*)\]`
-	const logIDIndex = 2
+func GetPodWithLabel(label *string, nodeName *string) ([]*corev1.Pod, error) {
+	res := make([]*corev1.Pod, 0)
 	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 	if err != nil {
-		return id, err
+		return res, err
 	}
+	usePodSelector := label != nil && strings.Contains(*label, "=")
 	for _, pod := range ptpPods.Items {
-		isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
-		if err != nil {
-			return id, fmt.Errorf("could not check %s pod role, err: %s", *label, err)
-		}
+		if !usePodSelector {
+			isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
+			if err != nil {
+				return res, fmt.Errorf("could not check %s pod role, err: %s", *label, err)
+			}
 
-		if !isPodFound {
-			continue
+			if !isPodFound {
+				continue
+			}
 		}
+		res = append(res, &pod)
+	}
+	return res, nil
+}
 
-		renderedRegex := fmt.Sprintf(logIDRegex, ptpConfigName)
-		matches, err := pods.GetPodLogsRegex(pod.Namespace,
-			pod.Name, pkg.PtpContainerName,
-			renderedRegex, false, pkg.TimeoutIn3Minutes)
-		if err != nil {
-			return id, fmt.Errorf("could not get any profile line, err=%s", err)
-		}
-		return matches[len(matches)-1][logIDIndex], nil
+func findMatchingPod(label *string, nodeName *string) (*corev1.Pod, error) {
+	foundPods, err := GetPodWithLabel(label, nodeName)
+	if err != nil {
+		return nil, err
+	}
+	if len(foundPods) == 0 {
+		return nil, fmt.Errorf("no PTP pods found for label=%v node=%v", label, nodeName)
+	}
+	return foundPods[0], nil
+}
 
+func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (string, error) {
+	const logIDRegex = `(?m).*?Ptp4lConf: #profile: %s(.|\n)*?message_tag \[(.*)\]`
+	const logIDIndex = 2
+
+	pod, err := findMatchingPod(label, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("finding pod for %s: %w", ptpConfigName, err)
+	}
+
+	renderedRegex := fmt.Sprintf(logIDRegex, ptpConfigName)
+	matches, err := pods.GetPodLogsRegex(pod.Namespace,
+		pod.Name, pkg.PtpContainerName,
+		renderedRegex, false, pkg.TimeoutIn3Minutes)
+	if err != nil {
+		return "", fmt.Errorf("could not get any profile line, err=%s", err)
+	}
+	if len(matches) == 0 || len(matches[len(matches)-1]) <= logIDIndex {
+		return "", fmt.Errorf("profile log id not found for %s in pod %s/%s", ptpConfigName, pod.Namespace, pod.Name)
+	}
+	id := matches[len(matches)-1][logIDIndex]
+	if id == "" {
+		return "", fmt.Errorf("empty profile log id for %s in pod %s/%s", ptpConfigName, pod.Namespace, pod.Name)
 	}
 	return id, nil
 }
 
-func GetClockIDMaster(ptpConfigName string, label *string, nodeName *string, isGM bool) (id string, err error) {
+func GetClockIDMaster(ptpConfigName string, label *string, nodeName *string, isGM bool) (string, error) {
 	const clockIDGMRegex = `(?m)\[%s\] selected local clock (.*) as best master`
 	const clockIDBCRegex = `(?m)\[%s\] selected best master clock (.*)`
 	const clockIDIndex = 1
-	clockIDRegex := ""
+	clockIDRegex := clockIDBCRegex
 	if isGM {
 		clockIDRegex = clockIDGMRegex
-	} else {
-		clockIDRegex = clockIDBCRegex
 	}
 	logID, err := GetProfileLogID(ptpConfigName, label, nodeName)
 	if err != nil {
-		return id, err
+		return "", err
 	}
-	// 4.16+ has log levels in message_tag: [ptp4l.0.config:{level}]
 	if strings.Contains(logID, "level") {
 		logID = strings.Replace(logID, "{level}", "\\d+", 1)
 	}
-	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
-		return id, err
+		return "", err
 	}
-	for _, pod := range ptpPods.Items {
-		isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
-		if err != nil {
-			return id, fmt.Errorf("could not check %s pod role, err: %s", *label, err)
-		}
-
-		if !isPodFound {
-			continue
-		}
-		renderedRegex := fmt.Sprintf(clockIDRegex, logID)
-		matches, err := pods.GetPodLogsRegex(pod.Namespace,
-			pod.Name, pkg.PtpContainerName,
-			renderedRegex, false, pkg.TimeoutIn10Minutes)
-		if err != nil {
-			return id, fmt.Errorf("could not get any profile line, err=%s", err)
-		}
-		return matches[len(matches)-1][clockIDIndex], nil
+	renderedRegex := fmt.Sprintf(clockIDRegex, logID)
+	matches, err := pods.GetPodLogsRegex(pod.Namespace,
+		pod.Name, pkg.PtpContainerName,
+		renderedRegex, false, pkg.TimeoutIn10Minutes)
+	if err != nil {
+		return "", fmt.Errorf("could not get any profile line, err=%s", err)
 	}
-	return id, err
+	return matches[len(matches)-1][clockIDIndex], nil
 }
 
-func GetClockIDForeign(ptpConfigName string, label *string, nodeName *string) (id string, err error) {
+func GetClockIDForeign(ptpConfigName string, label *string, nodeName *string) (string, error) {
 	const clockIDForeignRegex = `(?m)\[%s\].* selected best master clock (.*)`
 	const clockIDForeignIndex = 1
 	logID, err := GetProfileLogID(ptpConfigName, label, nodeName)
 	if err != nil {
-		return id, err
+		return "", err
 	}
-	// 4.16+ has log levels in message_tag: [ptp4l.0.config:{level}]
 	if strings.Contains(logID, "level") {
 		logID = strings.Replace(logID, "{level}", "\\d+", 1)
 	}
-	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
-		return id, err
+		return "", err
 	}
-	for _, pod := range ptpPods.Items {
-
-		isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
-		if err != nil {
-			return id, fmt.Errorf("could not check %s pod role, err: %s", *label, err)
-		}
-
-		if !isPodFound {
-			continue
-		}
-
-		renderedRegex := fmt.Sprintf(clockIDForeignRegex, logID)
-		matches, err := pods.GetPodLogsRegex(pod.Namespace,
-			pod.Name, pkg.PtpContainerName,
-			renderedRegex, false, pkg.TimeoutIn10Minutes)
-		if err != nil {
-			return id, fmt.Errorf("could not get any profile line, err=%s", err)
-		}
-		return matches[len(matches)-1][clockIDForeignIndex], nil
+	renderedRegex := fmt.Sprintf(clockIDForeignRegex, logID)
+	matches, err := pods.GetPodLogsRegex(pod.Namespace,
+		pod.Name, pkg.PtpContainerName,
+		renderedRegex, false, pkg.TimeoutIn10Minutes)
+	if err != nil {
+		return "", fmt.Errorf("could not get any profile line, err=%s", err)
 	}
-	return id, err
+	return matches[len(matches)-1][clockIDForeignIndex], nil
 }
 
 // WaitForClockIDForeign searches the slave's log stream for a specific expected
@@ -158,28 +160,18 @@ func WaitForClockIDForeign(ptpConfigName string, label *string, nodeName *string
 	if strings.Contains(logID, "level") {
 		logID = strings.Replace(logID, "{level}", "\\d+", 1)
 	}
-	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
-		return fmt.Errorf("could not list ptp pods: %w", err)
+		return fmt.Errorf("no matching pod found for profile %s: %w", ptpConfigName, err)
 	}
-	for _, pod := range ptpPods.Items {
-		isPodFound, err := pods.HasPodLabelOrNodeName(&pod, label, nodeName)
-		if err != nil {
-			return fmt.Errorf("could not check pod role: %w", err)
-		}
-		if !isPodFound {
-			continue
-		}
-		expectedMasterRegex := fmt.Sprintf(`(?m)\[%s\].* selected best master clock %s`, logID, expectedGMID)
-		_, err = pods.GetPodLogsRegex(pod.Namespace, pod.Name, pkg.PtpContainerName,
-			expectedMasterRegex, false, pkg.TimeoutIn10Minutes)
-		if err != nil {
-			return fmt.Errorf("expected master %s not found in logs: %w", expectedGMID, err)
-		}
-		logrus.Infof("slave's Master=%s (matched expected GM)", expectedGMID)
-		return nil
+	expectedMasterRegex := fmt.Sprintf(`(?m)\[%s\].* selected best master clock %s`, logID, expectedGMID)
+	_, err = pods.GetPodLogsRegex(pod.Namespace, pod.Name, pkg.PtpContainerName,
+		expectedMasterRegex, false, pkg.TimeoutIn10Minutes)
+	if err != nil {
+		return fmt.Errorf("expected master %s not found in logs: %w", expectedGMID, err)
 	}
-	return fmt.Errorf("no matching pod found for profile %s", ptpConfigName)
+	logrus.Infof("slave's Master=%s (matched expected GM)", expectedGMID)
+	return nil
 }
 
 // returns true if the pod is running a grandmaster
