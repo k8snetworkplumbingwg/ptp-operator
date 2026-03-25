@@ -264,17 +264,23 @@ func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfa
 			logrus.Infof("Skipping the interface %s", ptpNodeInterface)
 		} else {
 			logrus.Infof("Simulating PTP outage using interface %s", ptpNodeInterface)
-			toggleNetworkInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName, fullConfig)
+			toggleNetworkInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName)
 		}
 	}
 	k8sPriviledgedDs.DeleteNamespaceIfPresent(pkg.RecoveryNetworkOutageDaemonSetNamespace)
 	logrus.Info("Recovery PTP outage ends ...........")
 }
 
-func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string, fullConfig testconfig.TestConfig) {
-
+func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string) {
 	const (
-		waitingPeriod      = 5 * time.Minute
+		waitingPeriod = 5 * time.Minute
+	)
+	restoreInterface := disableInterface(pod, interfaceName, slavePodNodeName, waitingPeriod)
+	restoreInterface()
+}
+
+func disableInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string, waitingPeriod time.Duration) func() {
+	const (
 		offsetRetryCounter = 5
 	)
 	By("Setting interface down then wait")
@@ -290,26 +296,27 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleFaulty}, []string{interfaceName}, &slavePodNodeName)
 	}, waitingPeriod, 10*time.Second).Should(BeNil())
 
-	By("Set the interface UP again and wait")
-	upInterfaceCommand := fmt.Sprintf("ip link set dev %s up", interfaceName)
-	pods.ExecutePtpInterfaceCommand(pod, interfaceName, upInterfaceCommand)
-	logrus.Infof("Interface %s is up", interfaceName)
+	return func() {
+		By("Set the interface UP again and wait")
+		upInterfaceCommand := fmt.Sprintf("ip link set dev %s up", interfaceName)
+		pods.ExecutePtpInterfaceCommand(pod, interfaceName, upInterfaceCommand)
+		logrus.Infof("Interface %s is up", interfaceName)
 
-	By("Checking that the port role is SLAVE after wait and clock is in sync")
-	// Check if the port has changed back to slave
-	Eventually(func() error {
-		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleSlave}, []string{interfaceName}, &slavePodNodeName)
-	}, waitingPeriod, 10*time.Second).Should(BeNil())
+		By("Checking that the port role is SLAVE after wait and clock is in sync")
+		// Check if the port has changed back to slave
+		Eventually(func() error {
+			return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleSlave}, []string{interfaceName}, &slavePodNodeName)
+		}, waitingPeriod, 10*time.Second).Should(BeNil())
 
-	var offsetWithinBound bool
-	for i := 0; i < offsetRetryCounter && !offsetWithinBound; i++ {
-		offsetVal, err := metrics.GetPtpOffeset(interfaceName, &slavePodNodeName)
-		Expect(err).NotTo(HaveOccurred())
-		offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+		var offsetWithinBound bool
+		for i := 0; i < offsetRetryCounter && !offsetWithinBound; i++ {
+			offsetVal, err := metrics.GetPtpOffeset(interfaceName, &slavePodNodeName)
+			Expect(err).NotTo(HaveOccurred())
+			offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+		}
+		Expect(offsetWithinBound).To(BeTrue())
+		logrus.Info("Successfully ended Slave clock sync with master")
 	}
-	Expect(offsetWithinBound).To(BeTrue())
-
-	logrus.Info("Successfully ended Slave clock sync with master")
 }
 
 func RebootSlaveNode(fullConfig testconfig.TestConfig) {
