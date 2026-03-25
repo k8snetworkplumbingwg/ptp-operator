@@ -23,7 +23,6 @@ import (
 	v1core "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 )
 
@@ -46,8 +45,8 @@ const (
 	// DiscoveryFailureStatusString Stringer value for the Discovery failure status
 	DiscoveryFailureStatusString = "discoveryFailure"
 	PtpLinuxDaemonNamespace      = "openshift-ptp"
-	int65                        = 65
-	int5                         = 5
+	defaultSchedulingPriority    = 65
+	defaultPriority              = 5
 	// OrdinaryClockString matches the OC clock mode in Environement
 	OrdinaryClockString = "OC"
 	// DualFollowerClocktring matches the DualFollower clock mode in Environement
@@ -784,9 +783,9 @@ func CreatePtpConfigGrandMaster(nodeName, ifName string) error {
 		gmConfig,
 		&phc2sysOpts,
 		pkg.PtpGrandmasterNodeLabel,
-		pointer.Int64Ptr(int5),
+		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65))
+		ptr.To(int64(defaultSchedulingPriority)))
 }
 
 func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string) error {
@@ -914,9 +913,9 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 		ts2phcConfig,
 		&ph2sysOpts,
 		pkg.PtpClockUnderTestNodeLabel,
-		pointer.Int64Ptr(int5),
+		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65),
+		ptr.To(int64(defaultSchedulingPriority)),
 		&ts2phcOpts,
 		plugins)
 }
@@ -952,9 +951,9 @@ func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, p
 		bcConfig,
 		phc2sysOpts,
 		pkg.PtpClockUnderTestNodeLabel,
-		pointer.Int64Ptr(int5),
+		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65))
+		ptr.To(int64(defaultSchedulingPriority)))
 }
 
 func CreatePtpConfigOC(profileName, nodeName, ifSlaveName string, phc2sys bool, label string) (err error) {
@@ -987,9 +986,9 @@ func CreatePtpConfigOC(profileName, nodeName, ifSlaveName string, phc2sys bool, 
 		slaveConfig,
 		phc2sysOpts,
 		label,
-		pointer.Int64Ptr(int5),
+		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65))
+		ptr.To(int64(defaultSchedulingPriority)))
 }
 
 func CreatePtpConfigDualFollower(profileName, nodeName, ifSlave1Name, ifSlave2Name string, phc2sys bool, label string) (err error) {
@@ -1023,9 +1022,9 @@ func CreatePtpConfigDualFollower(profileName, nodeName, ifSlave1Name, ifSlave2Na
 		ptp4lDualFollowerConfig,
 		phc2sysOpts,
 		label,
-		pointer.Int64Ptr(int5),
+		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
-		pointer.Int64Ptr(int65))
+		ptr.To(int64(defaultSchedulingPriority)))
 }
 
 func PtpConfigOC(isExtGM bool) error {
