@@ -21,6 +21,7 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/namespaces"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
@@ -3017,6 +3018,7 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		return
 	}
 
+	logging.WriteStep(fmt.Sprintf("Waiting for process status to become %s", state))
 	/*
 		# TYPE openshift_ptp_process_status gauge
 		openshift_ptp_process_status{config="ptp4l.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="phc2sys"} 1
@@ -3059,6 +3061,7 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 
 func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string) {
 	By(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
+	logging.WriteStep(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
 	Eventually(func() bool {
 		// Get the latest metrics output
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
