@@ -20,6 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	v1core "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 
@@ -398,7 +399,12 @@ func ReplaceTestPod(pod *v1core.Pod, timeout time.Duration) (v1core.Pod, error) 
 
 	err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{
 		GracePeriodSeconds: pointer.Int64Ptr(0)})
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil && !apierrors.IsNotFound(err) {
+		return newPod, fmt.Errorf("failed to delete pod %s: %w", pod.Name, err)
+	}
+	if apierrors.IsNotFound(err) {
+		logrus.Infof("Pod %s already gone (likely replaced by DaemonSet rolling update), waiting for new pod", pod.Name)
+	}
 
 	Eventually(func() error {
 		newPod, err = GetPtpPodOnNode(pod.Spec.NodeName)
@@ -448,15 +454,52 @@ func WaitForPtpDaemonToExist() int {
 		daemonset, err = client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		return daemonset.Status.NumberReady
-	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(expectedNumber))
+	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(expectedNumber),
+		daemonsetNotReadyMessage(expectedNumber))
 
 	Eventually(func() int {
 		ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 		Expect(err).ToNot(HaveOccurred())
 		return len(ptpPods.Items)
-	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(int(expectedNumber)))
+	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(int(expectedNumber)),
+		fmt.Sprintf("expected %d linuxptp-daemon pods, check DaemonSet status", expectedNumber))
 
 	return 0
+}
+
+func daemonsetNotReadyMessage(expectedNumber int32) string {
+	pods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
+		context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	if err != nil {
+		return fmt.Sprintf("linuxptp-daemon NumberReady != %d (failed to list pods: %v)", expectedNumber, err)
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("linuxptp-daemon DaemonSet: expected %d ready pods, found %d pods total", expectedNumber, len(pods.Items)))
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		phase := string(pod.Status.Phase)
+		var containerIssues []string
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Ready {
+				continue
+			}
+			issue := fmt.Sprintf("%s: ready=false", cs.Name)
+			if cs.State.Waiting != nil {
+				issue += fmt.Sprintf(" (%s: %s)", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+			}
+			if cs.State.Terminated != nil {
+				issue += fmt.Sprintf(" (terminated: %s exit=%d)", cs.State.Terminated.Reason, cs.State.Terminated.ExitCode)
+			}
+			containerIssues = append(containerIssues, issue)
+		}
+		detail := fmt.Sprintf("  pod %s on %s: phase=%s", pod.Name, pod.Spec.NodeName, phase)
+		if len(containerIssues) > 0 {
+			detail += " | " + strings.Join(containerIssues, "; ")
+		}
+		lines = append(lines, detail)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func WaitForPtpDaemonToBeReady(podList []*v1core.Pod) int {
@@ -713,13 +756,20 @@ func IsPtpMaster(ptp4lOpts, phc2sysOpts *string) bool {
 
 // Checks for DualNIC BC
 func GetProfileName(config *ptpv1.PtpConfig) (string, error) {
+	if config == nil {
+		return "", fmt.Errorf("ptp config is nil")
+	}
 	for _, profile := range config.Spec.Profile {
-		if profile.Name != nil && *profile.Name == pkg.PtpGrandMasterPolicyName ||
-			*profile.Name == pkg.PtpBcMaster1PolicyName ||
-			*profile.Name == pkg.PtpBcMaster2PolicyName ||
-			*profile.Name == pkg.PtpSlave1PolicyName ||
-			*profile.Name == pkg.PtpSlave2PolicyName ||
-			*profile.Name == pkg.PtpTempPolicyName {
+		if profile.Name == nil {
+			continue
+		}
+		switch *profile.Name {
+		case pkg.PtpGrandMasterPolicyName,
+			pkg.PtpBcMaster1PolicyName,
+			pkg.PtpBcMaster2PolicyName,
+			pkg.PtpSlave1PolicyName,
+			pkg.PtpSlave2PolicyName,
+			pkg.PtpTempPolicyName:
 			return *profile.Name, nil
 		}
 	}
@@ -768,6 +818,9 @@ func GetPTPPodWithPTPConfig(ptpConfig *ptpv1.PtpConfig) (aPtpPod *v1core.Pod, er
 			aPtpPod = &pod
 			break
 		}
+	}
+	if aPtpPod == nil {
+		return nil, fmt.Errorf("no linuxptp-daemon pod found matching ptpconfig %s (label=%v, nodeName=%v)", ptpConfig.Name, label, nodeName)
 	}
 	return aPtpPod, nil
 }
