@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/openshift/library-go/pkg/config/clusterstatus"
 	"github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	v1core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -81,7 +85,11 @@ func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (str
 		pod.Name, pkg.PtpContainerName,
 		renderedRegex, false, pkg.TimeoutIn3Minutes)
 	if err != nil {
-		return "", fmt.Errorf("could not get any profile line, err=%s", err)
+		configPath, fallbackErr := GetConfigForProfileFromVarRun(ptpConfigName, pod, pkg.PtpContainerName)
+		if fallbackErr != nil {
+			return "", fmt.Errorf("pod %s/%s: log regex failed: %v, fallback failed: %v", pod.Namespace, pod.Name, err, fallbackErr)
+		}
+		return filepath.Base(configPath), nil
 	}
 	if len(matches) == 0 || len(matches[len(matches)-1]) <= logIDIndex {
 		return "", fmt.Errorf("profile log id not found for %s in pod %s/%s", ptpConfigName, pod.Namespace, pod.Name)
@@ -421,6 +429,217 @@ func MutateProfile(profile *ptpv1.PtpConfig, profileName, nodeName string) *ptpv
 	mutatedConfig.Spec.Recommend[0].Match[0].NodeName = &nodeName
 	mutatedConfig.Spec.Recommend[0].Profile = &profileName
 	return mutatedConfig
+}
+
+// ApplyE810PluginMutation fetches the latest PtpConfig, mutates the e810 plugin
+// holdover settings, applies the update, and restarts the daemon pod. It returns
+// a cleanup function that restores the original spec.
+func ApplyE810PluginMutation(
+	pod *v1core.Pod,
+	ptpConfig *ptpv1.PtpConfig,
+	profileName, nodeName string,
+	localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset int,
+) (cleanup func(), err error) {
+	originalSpec := ptpConfig.Spec.DeepCopy()
+
+	latest, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+		context.Background(), ptpConfig.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("fetching latest PtpConfig: %w", err)
+	}
+
+	mutateE810PluginSettings(latest, profileName, nodeName,
+		localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset)
+
+	_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+		context.Background(), latest, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("updating PtpConfig: %w", err)
+	}
+
+	newPod, err := ReplaceTestPod(pod, 5*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("restarting daemon pod: %w", err)
+	}
+	*pod = newPod
+
+	cleanup = func() {
+		cur, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), ptpConfig.Name, metav1.GetOptions{})
+		if err != nil {
+			logrus.Errorf("Failed to get latest PtpConfig for restore: %v", err)
+			return
+		}
+		cur.Spec = *originalSpec
+		_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+			context.Background(), cur, metav1.UpdateOptions{})
+		if err != nil {
+			logrus.Errorf("Failed to restore original PtpConfig: %v", err)
+		}
+	}
+	return cleanup, nil
+}
+
+func mutateE810PluginSettings(config *ptpv1.PtpConfig, profileName, nodeName string, localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset int) {
+	index := 0
+	for i, p := range config.Spec.Profile {
+		if p.Name != nil && *p.Name == profileName {
+			index = i
+			break
+		}
+	}
+
+	if config.Spec.Profile[index].Plugins == nil {
+		return
+	}
+
+	var pluginData map[string]interface{}
+	rawPlugin := config.Spec.Profile[index].Plugins["e810"]
+	if rawPlugin != nil && len(rawPlugin.Raw) > 0 {
+		if err := json.Unmarshal(rawPlugin.Raw, &pluginData); err != nil {
+			if err := yaml.Unmarshal(rawPlugin.Raw, &pluginData); err != nil {
+				logrus.Warnf("Failed to parse e810 plugin config, err=%v", err)
+				pluginData = map[string]interface{}{}
+			}
+		}
+	}
+	if pluginData == nil {
+		pluginData = map[string]interface{}{}
+	}
+
+	settings, ok := pluginData["settings"].(map[string]interface{})
+	if !ok || settings == nil {
+		settings = map[string]interface{}{}
+	}
+	settings["LocalMaxHoldoverOffSet"] = localMaxHoldoverOffset
+	settings["LocalHoldoverTimeout"] = localHoldoverTimeout
+	settings["MaxInSpecOffset"] = maxInSpecOffset
+	pluginData["settings"] = settings
+
+	if _, hasPins := pluginData["pins"]; !hasPins {
+		ifaceMaster := ""
+		ifList, _ := GetWPCEnabledInterfaces(nodeName)
+		if len(ifList) > 0 {
+			ifaceMaster = ifList[0]
+		} else if config.Spec.Profile[0].Interface != nil {
+			ifaceMaster = *config.Spec.Profile[0].Interface
+		} else {
+			masterIfs := ptpv1.GetInterfaces(*config, ptpv1.Master)
+			if len(masterIfs) > 0 {
+				ifaceMaster = masterIfs[0]
+			} else {
+				slaveIfs := ptpv1.GetInterfaces(*config, ptpv1.Slave)
+				if len(slaveIfs) > 0 {
+					ifaceMaster = slaveIfs[0]
+				}
+			}
+		}
+
+		if ifaceMaster != "" {
+			pluginData["pins"] = map[string]interface{}{
+				ifaceMaster: map[string]interface{}{
+					"U.FL2": "0 2",
+					"U.FL1": "0 1",
+					"SMA2":  "2 2",
+					"SMA1":  "0 1",
+				},
+			}
+		} else {
+			logrus.Warn("No interface found for e810 pins; leaving pins unset")
+		}
+	}
+
+	jsonData, err := json.Marshal(pluginData)
+	if err != nil {
+		logrus.Warnf("Failed to marshal e810 plugin config, err=%v", err)
+		return
+	}
+	rawJSON := apiextensions.JSON{Raw: jsonData}
+	config.Spec.Profile[index].Plugins["e810"] = &rawJSON
+}
+
+// GetConfigForProfile returns the config file path for a given profile name and label
+func GetConfigForProfile(profileName, label string) (string, error) {
+	deadline := time.Now().Add(pkg.TimeoutIn3Minutes)
+	var lastErr error
+	for {
+		runId, err := GetProfileLogID(profileName, &label, nil)
+		if err == nil && runId != "" {
+			// Normalize message_tag runId like "ptp4l.0.config:{level}"
+			runId = strings.TrimSpace(runId)
+			runId = strings.TrimPrefix(runId, "ptp4l.")
+			if idx := strings.Index(runId, ".config"); idx >= 0 {
+				runId = runId[:idx]
+			}
+			runId = strings.ReplaceAll(runId, "{level}", "")
+			runId = strings.Trim(runId, ":")
+			if runId == "" {
+				return "", fmt.Errorf("empty normalized profile log id for %s", profileName)
+			}
+			return fmt.Sprintf("/var/run/ptp4l.%s.config", runId), nil
+		}
+		if err != nil {
+			lastErr = err
+			pod, podErr := findMatchingPod(&label, nil)
+			if podErr != nil {
+				return "", podErr
+			}
+			configName, fallbackErr := GetConfigForProfileFromVarRun(fmt.Sprintf(`#profile:\s*%s`, profileName), pod, pkg.PtpContainerName)
+			if fallbackErr == nil {
+				return configName, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", lastErr
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// GetConfigForProfileFromVarRun scans /var/run for ptp4l.*.config files and
+// returns the first config path that contains a matching "#profile: <regex>" line.
+// This is intended as an opt-in fallback when log parsing fails.
+func GetConfigForProfileFromVarRun(profileRegex string, pod *v1core.Pod, containerName string) (string, error) {
+	if pod == nil {
+		return "", fmt.Errorf("pod is nil")
+	}
+	if containerName == "" {
+		containerName = pkg.PtpContainerName
+	}
+
+	stdout, _, err := pods.ExecCommand(client.Client, true, pod, containerName, []string{"ls", "-1", "/var/run"})
+	if err != nil {
+		return "", fmt.Errorf("listing /var/run failed: %w", err)
+	}
+
+	configPattern := regexp.MustCompile(`^ptp4l\..*\.config$`)
+	profilePattern, err := regexp.Compile(fmt.Sprintf(`#profile:\s*%s`, profileRegex))
+	if err != nil {
+		return "", fmt.Errorf("invalid profile regex %q: %w", profileRegex, err)
+	}
+
+	var scanned []string
+	for _, entry := range strings.Split(stdout.String(), "\n") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || !configPattern.MatchString(entry) {
+			continue
+		}
+		path := "/var/run/" + entry
+		scanned = append(scanned, path)
+
+		cfgOut, _, cfgErr := pods.ExecCommand(client.Client, true, pod, containerName, []string{"cat", path})
+		if cfgErr != nil {
+			continue
+		}
+		if profilePattern.MatchString(cfgOut.String()) {
+			return path, nil
+		}
+	}
+
+	if len(scanned) == 0 {
+		return "", fmt.Errorf("no ptp4l config files found under /var/run")
+	}
+	return "", fmt.Errorf("profile regex %q not found in configs: %s", profileRegex, strings.Join(scanned, ", "))
 }
 
 func ReplaceTestPod(pod *v1core.Pod, timeout time.Duration) (v1core.Pod, error) {
@@ -809,7 +1028,7 @@ func IsPtpMaster(ptp4lOpts, phc2sysOpts *string) bool {
 }
 
 // Checks for DualNIC BC
-func GetProfileName(config *ptpv1.PtpConfig) (string, error) {
+func GetProfileName(config *ptpv1.PtpConfig, receiverOnly bool) (string, error) {
 	if config == nil {
 		return "", fmt.Errorf("ptp config is nil")
 	}
@@ -823,7 +1042,14 @@ func GetProfileName(config *ptpv1.PtpConfig) (string, error) {
 			pkg.PtpBcMaster2PolicyName,
 			pkg.PtpSlave1PolicyName,
 			pkg.PtpSlave2PolicyName,
-			pkg.PtpTempPolicyName:
+			pkg.PTPWPCTBCPolicyName,
+			pkg.PtpTempPolicyName,
+			"tbc-tr",
+			"tbc-tt":
+
+			if receiverOnly && *profile.Name == "tbc-tt" {
+				continue
+			}
 			return *profile.Name, nil
 		}
 	}
@@ -998,6 +1224,80 @@ func GetWPCEnabledInterfaces(nodeName string) (interfaces []string, err error) {
 	}
 
 	return nil, nil
+}
+
+// GetWPCEnabledInterfaceNames returns the list of WPC interfaces for a node.
+func GetWPCEnabledInterfaceNames(nodeName string) []string {
+	WPCifaces := getWPCEnabledIfaces(nodeName)
+	retList := make([]string, 0, len(WPCifaces))
+	for _, iface := range WPCifaces {
+		retList = append(retList, iface)
+	}
+	sort.Slice(retList, func(i, j int) bool {
+		return retList[i] < retList[j]
+	})
+	return retList
+}
+
+// GetInterfacesByPHCAndPins groups interfaces by PTP hardware clock (ethtool -T)
+// and selects a leading interface that has PTP pins.
+func GetInterfacesByPHCAndPins(nodeName string, ifaces []string, anchorIface string) ([]string, string, string, error) {
+	phcIndex, err := getPTPHardwareClockIndex(nodeName, anchorIface)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	group := make([]string, 0)
+	for _, iface := range ifaces {
+		if iface == "" {
+			continue
+		}
+		idx, err := getPTPHardwareClockIndex(nodeName, iface)
+		if err != nil {
+			logrus.Debugf("Skipping iface=%s due to ethtool error: %v", iface, err)
+			continue
+		}
+		if idx == phcIndex {
+			group = append(group, iface)
+		}
+	}
+	sort.Slice(group, func(i, j int) bool {
+		return group[i] < group[j]
+	})
+	if len(group) == 0 {
+		return nil, "", "", fmt.Errorf("no interfaces found for phc index %d (anchor %s)", phcIndex, anchorIface)
+	}
+
+	leadingIface := ""
+	ifaceWithPins, err := findIfaceWithPinsForPhc(nodeName, phcIndex)
+	if err != nil {
+		return group, "", "", err
+	}
+	for _, iface := range group {
+		if iface == ifaceWithPins {
+			leadingIface = iface
+			break
+		}
+	}
+	if leadingIface == "" {
+		return group, "", "", fmt.Errorf("no interface with PTP pins found for phc index %d (anchor %s)", phcIndex, anchorIface)
+	}
+
+	deviceID, err := CheckGNSSForInterface(nodeName, leadingIface)
+	if err != nil {
+		return group, leadingIface, "", err
+	}
+	return group, leadingIface, deviceID, nil
+}
+
+// GetLeadingInterfaceForSlavePHC returns the interface with PTP pins that shares
+// the same hardware clock as the given slave interface.
+func GetLeadingInterfaceForSlavePHC(nodeName string, slaveIface string, ifaces []string) (string, string, error) {
+	_, leadingIface, deviceID, err := GetInterfacesByPHCAndPins(nodeName, ifaces, slaveIface)
+	if err != nil {
+		return "", "", err
+	}
+	return leadingIface, deviceID, nil
 }
 
 func getWPCEnabledIfaces(nodeName string) map[string]string {
@@ -1225,4 +1525,45 @@ func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 	}
 
 	return !ver.LessThan(minVer)
+}
+
+// GetLocalClockID calculates the PTP clock identity for a node by finding the
+// leading interface (the one with PTP pins) from the named profile's e810 plugin
+// config, looking up its MAC address in L2 discovery data, and performing the
+// standard EUI-48 → EUI-64 conversion (inserting fffe in the middle of the MAC).
+// This mirrors how the linuxptp-daemon's getPTPClockID() derives the identity.
+func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2exports.L2Info, nodeName string) (string, error) {
+	// Find the leading interface from the profile's e810 plugin "pins" key
+	var leadingIface string
+	for _, profile := range ptpConfig.Spec.Profile {
+		if profile.Name != nil && *profile.Name == profileName && profile.Plugins != nil {
+			if e810JSON, ok := profile.Plugins["e810"]; ok && e810JSON != nil {
+				var e810Config map[string]interface{}
+				if err := json.Unmarshal(e810JSON.Raw, &e810Config); err != nil {
+					return "", fmt.Errorf("failed to parse e810 plugin config for profile %s: %v", profileName, err)
+				}
+				if pins, ok := e810Config["pins"].(map[string]interface{}); ok {
+					for ifaceName := range pins {
+						leadingIface = ifaceName
+						break
+					}
+				}
+			}
+			break
+		}
+	}
+	if leadingIface == "" {
+		return "", fmt.Errorf("could not find leading interface from profile %s e810 plugin config", profileName)
+	}
+
+	// Look up the interface MAC in L2 discovery data
+	for _, ptpIf := range l2Config.GetPtpIfList() {
+		if ptpIf.NodeName == nodeName && ptpIf.IfName == leadingIface {
+			mac := strings.ToLower(strings.ReplaceAll(ptpIf.IfMac.Data, ":", ""))
+			clockID := fmt.Sprintf("%s.fffe.%s", mac[:6], mac[6:])
+			logrus.Infof("GetLocalClockID: profile=%s leadingIface=%s mac=%s clockID=%s", profileName, leadingIface, mac, clockID)
+			return clockID, nil
+		}
+	}
+	return "", fmt.Errorf("could not find MAC for leading interface %s on node %s", leadingIface, nodeName)
 }

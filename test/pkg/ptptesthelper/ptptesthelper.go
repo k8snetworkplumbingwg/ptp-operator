@@ -37,7 +37,7 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 	if gmID != nil {
 		logrus.Infof("expected master=%s", *gmID)
 	}
-	profileName, errProfile := ptphelper.GetProfileName(ptpConfig)
+	profileName, errProfile := ptphelper.GetProfileName(ptpConfig, true)
 
 	if fullConfig.PtpModeDesired == testconfig.Discovery {
 		// Only for ptp mode == discovery, if errProfile is not nil just log a info message
