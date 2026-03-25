@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -34,7 +35,9 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/pods"
 
 	configv1 "github.com/openshift/api/config/v1"
+	l2lib "github.com/redhat-cne/l2discovery-lib"
 	l2exports "github.com/redhat-cne/l2discovery-lib/exports"
+	"github.com/redhat-cne/l2discovery-lib/pkg/graphsolver"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -850,20 +853,66 @@ func IsExternalGM() (out bool) {
 	return out
 }
 
+// gnssSimNmeaActive is set when Telco GM uses gnss-sim (or similar) PTY NMEA because hardware GNSS was not found.
+var gnssSimNmeaActive atomic.Bool
+
+// ResetGnssSimNmeaMode clears GNSS source state before a new CreatePtpConfigurations / Telco GM setup.
+func ResetGnssSimNmeaMode() {
+	gnssSimNmeaActive.Store(false)
+}
+
+// GetListOfWPCEnabledInterfaces prefers real WPC (subsystem 000e) and /sys/.../gnss NMEA; if unavailable,
+// tries interfaces discovered by L2 as WPC (including integrated GNSS / GNRD normalized subsystem); then falls
+// back to GNSS_SIM_* env interfaces and GNSS_SIM_NMEA_DEVICE when that PTY produces GNRMC.
 func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
-	var retList = make([]string, 0)
-	var deviceId = ""
-	WPCifaces := getWPCEnabledIfaces(nodeName)
+	gnssSimNmeaActive.Store(false)
+	WPCifaces := getWPCEnabledIfacesFromSysfs(nodeName)
 	for _, iFace := range WPCifaces {
 		if strings.HasSuffix(iFace, "0") {
-			deviceId, ret := checkGNSSAvailabilityForIface(nodeName, iFace)
-			if ret {
-				retList = append(retList, addAllInterfacesForNic(WPCifaces, iFace)...)
-				return retList, deviceId
+			deviceID, ok := checkGNSSAvailabilityForIfaceHardware(nodeName, iFace)
+			if ok {
+				logrus.Infof("Telco GM: using hardware GNSS (interface %s, device %s)", iFace, deviceID)
+				return addAllInterfacesForNic(WPCifaces, iFace), deviceID
 			}
 		}
 	}
-	return retList, deviceId
+
+	dev := envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
+	l2WPC := getWPCIfacesFromL2ForNode(nodeName)
+	for _, iFace := range l2WPC {
+		if strings.HasSuffix(iFace, "0") {
+			if deviceID, ok := checkGNSSAvailabilityForIfaceHardware(nodeName, iFace); ok {
+				logrus.Infof("Telco GM: using hardware GNSS via L2 WPC (interface %s, device %s)", iFace, deviceID)
+				return addAllInterfacesForNic(l2WPC, iFace), deviceID
+			}
+			break
+		}
+	}
+	if len(l2WPC) > 0 && checkGNMRCString(dev, nodeName) {
+		for _, iFace := range l2WPC {
+			if strings.HasSuffix(iFace, "0") {
+				gnssSimNmeaActive.Store(true)
+				logrus.Infof("Telco GM: using gnss-sim NMEA on /dev/%s with WPC interfaces from L2 discovery", dev)
+				return addAllInterfacesForNic(l2WPC, iFace), dev
+			}
+		}
+	}
+
+	iface1 := envOrDefault("GNSS_SIM_IFACE1", "ens1f0")
+	iface2 := envOrDefault("GNSS_SIM_IFACE2", "ens1f1")
+	if !checkGNMRCString(dev, nodeName) {
+		logrus.Warnf("Telco GM: no hardware GNSS and /dev/%s did not yield GNRMC on node %s", dev, nodeName)
+		return nil, ""
+	}
+	logrus.Infof("Telco GM: using gnss-sim (or software) NMEA on /dev/%s — hardware GNSS not available", dev)
+	gnssSimNmeaActive.Store(true)
+	simMap := map[string]string{iface1: iface1, iface2: iface2}
+	for _, iFace := range simMap {
+		if strings.HasSuffix(iFace, "0") {
+			return addAllInterfacesForNic(simMap, iFace), dev
+		}
+	}
+	return nil, ""
 }
 func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
 	var ret = make([]string, 0)
@@ -878,13 +927,7 @@ func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []st
 	return ret
 }
 
-func getWPCEnabledIfaces(nodeName string) map[string]string {
-	if IsSimulatedTGM() {
-		iface1 := envOrDefault("GNSS_SIM_IFACE1", "ens1f0")
-		iface2 := envOrDefault("GNSS_SIM_IFACE2", "ens1f1")
-		logrus.Infof("Simulated T-GM: returning mock WPC interfaces [%s, %s]", iface1, iface2)
-		return map[string]string{iface1: iface1, iface2: iface2}
-	}
+func getWPCEnabledIfacesFromSysfs(nodeName string) map[string]string {
 	resMap := make(map[string]string)
 	cmd := []string{"/bin/sh", "-c", "grep 000e /sys/class/net/*/device/subsystem_device | awk -F '/' '{print $5}'"}
 	so, se, err := execPodCommand(nodeName, cmd)
@@ -903,12 +946,7 @@ func getWPCEnabledIfaces(nodeName string) map[string]string {
 	return resMap
 }
 
-func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, bool) {
-	if IsSimulatedTGM() {
-		dev := envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
-		logrus.Infof("Simulated T-GM: returning mock GNSS device %s for interface %s", dev, IfaceName)
-		return dev, true
-	}
+func checkGNSSAvailabilityForIfaceHardware(nodeName string, IfaceName string) (string, bool) {
 	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss", IfaceName)}
 	logrus.Infof("cmd = %s ", cmd)
 	so, se, err := execPodCommand(nodeName, cmd)
@@ -1059,7 +1097,6 @@ func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 }
 
 // GetFirstWorkerNodeName returns the name of the first Kubernetes worker node.
-// Used by the simulated T-GM mode to pick a node without L2 discovery.
 func GetFirstWorkerNodeName() (string, error) {
 	nodeList, err := client.Client.CoreV1().Nodes().List(
 		context.Background(),
@@ -1184,9 +1221,82 @@ func GNSSSimIsHealthy() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// IsSimulatedTGM returns true when PTP_TEST_MODE is set to "tgm-sim".
-func IsSimulatedTGM() bool {
-	return strings.ToLower(os.Getenv("PTP_TEST_MODE")) == "tgm-sim"
+// UseGnssSimulation is true after GetListOfWPCEnabledInterfaces selected gnss-sim (or software) PTY NMEA.
+func UseGnssSimulation() bool {
+	return gnssSimNmeaActive.Load()
+}
+
+// IsGnssSimulatedCI is true for conformance paths that target gnss-sim instead of gpsd/hardware GNSS.
+func IsGnssSimulatedCI() bool {
+	return UseGnssSimulation()
+}
+
+// IsIntegratedGnssSim is an alias for UseGnssSimulation (historical name).
+func IsIntegratedGnssSim() bool {
+	return UseGnssSimulation()
+}
+
+// L2ConfigReportsIntelWPC returns true if L2 discovery reports an Intel WPC subsystem (E810-XXV-4T).
+// Call NormalizeL2IntegratedGnssNICsForTelcoGM first so integrated-GNSS (GNRD) ports are included.
+func L2ConfigReportsIntelWPC(config l2lib.L2Info) bool {
+	if config == nil {
+		return false
+	}
+	for _, p := range config.GetPtpIfList() {
+		if p != nil && strings.Contains(p.IfPci.Subsystem, graphsolver.WPCNICSubsystemID) {
+			return true
+		}
+	}
+	return false
+}
+
+// l2PtpIfPCIIndicatesIntegratedGnss matches NICs that expose Intel integrated GNSS (e.g. GNRD in PCI
+// description/subsystem from L2) so Telco GM can be solved without patching netdevsim-only overlays.
+func l2PtpIfPCIIndicatesIntegratedGnss(p *l2exports.PtpIf) bool {
+	if p == nil {
+		return false
+	}
+	joined := strings.ToUpper(p.IfPci.Subsystem + " " + p.IfPci.Description)
+	return strings.Contains(joined, "GNRD")
+}
+
+// NormalizeL2IntegratedGnssNICsForTelcoGM patches L2 PtpIf PCI Subsystem so the graph solver's StepIsWPCNic
+// matches integrated-GNSS NICs (GNRD) the same as E810 Westport Channel WPC.
+func NormalizeL2IntegratedGnssNICsForTelcoGM() {
+	const tag = graphsolver.WPCNICSubsystemID + " (integrated GNSS)"
+	patch := func(p *l2exports.PtpIf) {
+		if p == nil {
+			return
+		}
+		if strings.Contains(p.IfPci.Subsystem, graphsolver.WPCNICSubsystemID) {
+			return
+		}
+		if !l2PtpIfPCIIndicatesIntegratedGnss(p) {
+			return
+		}
+		p.IfPci.Subsystem = tag
+		logrus.Infof("L2 Telco GM: normalized integrated GNSS PCI identity for interface %s (%s)",
+			p.InterfaceName, p.IfPci.Description)
+	}
+	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfList {
+		patch(p)
+	}
+	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfListUnfiltered {
+		patch(p)
+	}
+}
+
+func getWPCIfacesFromL2ForNode(nodeName string) map[string]string {
+	res := make(map[string]string)
+	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfList {
+		if p == nil || p.NodeName != nodeName {
+			continue
+		}
+		if strings.Contains(p.IfPci.Subsystem, graphsolver.WPCNICSubsystemID) {
+			res[p.InterfaceName] = p.InterfaceName
+		}
+	}
+	return res
 }
 
 func envOrDefault(key, fallback string) string {
@@ -1194,4 +1304,44 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// ApplyIntegratedGnssSimWPCPCIOverlay sets IfPci.Subsystem on selected interfaces so the L2 graph
+// solver treats them as Intel WPC (StepIsWPCNic / AlgoTelcoGMString) on netdevsim CI where real
+// E810 PCI identity is absent. Matches graphsolver.WPCNICSubsystemID prefix "E810-XXV-4T".
+func ApplyIntegratedGnssSimWPCPCIOverlay() {
+	list := strings.TrimSpace(os.Getenv("GNSS_SIM_WPC_IFACES"))
+	if list == "" {
+		list = envOrDefault("GNSS_SIM_IFACE1", "ens1f0") + "," + envOrDefault("GNSS_SIM_IFACE2", "ens1f1")
+	}
+	want := make(map[string]struct{})
+	for _, name := range strings.Split(list, ",") {
+		n := strings.TrimSpace(name)
+		if n != "" {
+			want[n] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	const wpcSubsystem = "E810-XXV-4T"
+	patch := func(p *l2exports.PtpIf) {
+		if p == nil {
+			return
+		}
+		if _, ok := want[p.InterfaceName]; !ok {
+			return
+		}
+		if strings.Contains(p.IfPci.Subsystem, wpcSubsystem) {
+			return
+		}
+		p.IfPci.Subsystem = wpcSubsystem + " (gnss-sim CI)"
+	}
+	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfList {
+		patch(p)
+	}
+	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfListUnfiltered {
+		patch(p)
+	}
+	logrus.Infof("Applied L2 WPC PCI overlay for netdevsim Telco GM (no E810 in L2): interfaces %v", want)
 }

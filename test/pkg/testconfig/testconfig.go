@@ -60,8 +60,6 @@ const (
 	DualNICBoundaryClockHAString = "DualNICBCHA"
 	// TelcoGrandMasterClockString matches the T-GM clock mode in Environement
 	TelcoGrandMasterClockString = "TGM"
-	// TelcoGrandMasterSimClockString matches the simulated T-GM clock mode
-	TelcoGrandMasterSimClockString = "tgm-sim"
 	ptp4lEthernet                  = "-2 --summary_interval -4"
 	ptp4lEthernetSlave             = "-2 -s --summary_interval -4"
 	phc2sysGM                      = "-a -r -r -n 24" // use phc2sys to sync phc to system clock
@@ -106,8 +104,6 @@ const (
 	None
 	//Dual Follower mode
 	DualFollowerClock
-	// TelcoGrandMasterSimClock Simulated T-GM mode for CI without real GNSS/WPC hardware
-	TelcoGrandMasterSimClock
 )
 
 type TestConfig struct {
@@ -389,8 +385,6 @@ func (mode PTPMode) String() string {
 		return DualNICBoundaryClockHAString
 	case TelcoGrandMasterClock:
 		return TelcoGrandMasterClockString
-	case TelcoGrandMasterSimClock:
-		return TelcoGrandMasterSimClockString
 	case Discovery:
 		return DiscoveryString
 	case None:
@@ -414,8 +408,6 @@ func StringToMode(aString string) PTPMode {
 		return DualNICBoundaryClockHA
 	case strings.ToLower(TelcoGrandMasterClockString):
 		return TelcoGrandMasterClock
-	case strings.ToLower(TelcoGrandMasterSimClockString):
-		return TelcoGrandMasterSimClock
 	case strings.ToLower(DiscoveryString), strings.ToLower(legacyDiscoveryString):
 		return Discovery
 	case strings.ToLower(NoneString):
@@ -462,7 +454,7 @@ func GetDesiredConfig(forceUpdate bool) TestConfig {
 	}
 
 	switch mode {
-	case OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA, TelcoGrandMasterClock, TelcoGrandMasterSimClock, DualFollowerClock, Discovery:
+	case OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA, TelcoGrandMasterClock, DualFollowerClock, Discovery:
 		logrus.Infof("%s mode detected", mode)
 		GlobalConfig.PtpModeDesired = mode
 		GlobalConfig.Status = InitStatus
@@ -493,12 +485,7 @@ func CreatePtpConfigurations() error {
 	}
 	// Initialize desired ptp config for all configs
 	GetDesiredConfig(true)
-
-	// Simulated T-GM bypasses L2 discovery and solver entirely;
-	// interface names and GNSS device paths are pre-known from the CI setup.
-	if GlobalConfig.PtpModeDesired == TelcoGrandMasterSimClock {
-		return PtpConfigTelcoGMSim()
-	}
+	ptphelper.ResetGnssSimNmeaMode()
 
 	// in multi node configuration create ptp configs
 
@@ -516,6 +503,12 @@ func CreatePtpConfigurations() error {
 	logrus.Tracef("L2DiscoveryConfig: %s\n", config)
 	logrus.Tracef("L2 ifListFiltered=%+v, ifListUnfiltered=%+v", config.GetPtpIfList(), config.GetPtpIfListUnfiltered())
 	GlobalConfig.L2Config = config
+	if GlobalConfig.PtpModeDesired == TelcoGrandMasterClock {
+		ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
+		if !ptphelper.L2ConfigReportsIntelWPC(config) {
+			ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
+		}
+	}
 
 	if GlobalConfig.PtpModeDesired != Discovery {
 		// initialize L2 config in solver
@@ -527,9 +520,6 @@ func CreatePtpConfigurations() error {
 			return fmt.Errorf("could not find a solution")
 		}
 		isExternalMaster := ptphelper.IsExternalGM()
-		if err != nil {
-			return fmt.Errorf("cannot determine if cluster is single node")
-		}
 		switch GlobalConfig.PtpModeDesired {
 		case Discovery, None:
 			logrus.Errorf("error creating ptpconfig Discovery, None not supported")
@@ -921,8 +911,8 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	if err != nil {
 		logrus.Fatalf("error: %v", err)
 	}
-	if ptphelper.IsSimulatedTGM() {
-		logrus.Info("Simulated T-GM: skipping E810 plugin (no real Intel hardware)")
+	if ptphelper.UseGnssSimulation() {
+		logrus.Info("GNSS simulation / netdevsim CI: skipping E810 hardware plugin bundle")
 		plugins = nil
 	} else {
 		plugins = result
@@ -1590,25 +1580,6 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 		}
 	}
 	return nil
-}
-
-// PtpConfigTelcoGMSim creates a T-GM configuration for simulated CI environments.
-// It bypasses L2 discovery (netdevsim can't pass StepIsWPCNic) but reuses
-// the real CreatePtpConfigWPCGrandMaster path — the detection functions in
-// ptphelper are mocked when IsSimulatedTGM() is true, so GetListOfWPCEnabledInterfaces
-// transparently returns the simulated interfaces and GNSS device.
-func PtpConfigTelcoGMSim() error {
-	nodeName, err := ptphelper.GetFirstWorkerNodeName()
-	if err != nil {
-		return fmt.Errorf("failed to find worker node for simulated T-GM: %v", err)
-	}
-
-	IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(nodeName)
-	if len(IfList) == 0 {
-		return fmt.Errorf("simulated WPC NIC interfaces not found (check GNSS_SIM_IFACE1/IFACE2 env vars)")
-	}
-	logrus.Infof("Simulated T-GM: calling CreatePtpConfigWPCGrandMaster with interfaces=%v device=%s", IfList, deviceID)
-	return CreatePtpConfigWPCGrandMaster(pkg.PtpSimGrandMasterPolicyName, nodeName, IfList, deviceID)
 }
 
 // helper function to add an interface to the ptp4l config

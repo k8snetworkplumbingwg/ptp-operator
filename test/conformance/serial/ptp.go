@@ -1898,6 +1898,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM verification expects gpsd/hardware GNSS; gnss-sim PTY is in use")
+				}
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
@@ -2114,6 +2117,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("ubxtool/GNSS loss tests require hardware GNSS; gnss-sim PTY is in use")
+				}
 			})
 			/*
 				Step | Action
@@ -2175,6 +2181,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
+				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("ts2phc termination GM event tests target hardware GNSS path")
 				}
 			})
 
@@ -2241,6 +2250,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM v1 events expect hardware GNSS")
+				}
 			})
 		})
 
@@ -2248,6 +2260,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("test valid only for GM test config")
+				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM v2 GNSS reboot events expect ubxtool/hardware GNSS (use Simulated T-GM events when gnss-sim is active)")
 				}
 
 				// Set up consumer pod for event monitoring
@@ -2346,8 +2361,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		Context("Simulated T-GM Verification Tests", func() {
 			BeforeEach(func() {
-				if !ptphelper.IsSimulatedTGM() {
-					Skip("test valid only for simulated T-GM (PTP_TEST_MODE=tgm-sim)")
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
 				}
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
@@ -2437,8 +2452,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		Context("Simulated T-GM GNSS signal loss tests", func() {
 			BeforeEach(func() {
-				if !ptphelper.IsSimulatedTGM() {
-					Skip("test valid only for simulated T-GM (PTP_TEST_MODE=tgm-sim)")
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
 				}
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
@@ -2533,8 +2548,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		Context("Simulated T-GM Events verification (V2)", func() {
 			BeforeEach(func() {
-				if !ptphelper.IsSimulatedTGM() {
-					Skip("test valid only for simulated T-GM (PTP_TEST_MODE=tgm-sim)")
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
 				}
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")

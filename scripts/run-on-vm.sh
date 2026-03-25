@@ -85,4 +85,4 @@ kubectl get pods -n openshift-ptp -o wide
 ./configGNSS.sh "$VM_IP"
 
 # run tests
-./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm-sim --linuxptp-daemon-image "$VM_IP/test:lptpd"
+./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm --linuxptp-daemon-image "$VM_IP/test:lptpd"
