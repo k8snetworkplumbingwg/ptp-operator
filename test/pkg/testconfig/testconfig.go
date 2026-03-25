@@ -69,6 +69,13 @@ const (
 	L2_DISCOVERY_IMAGE          = "quay.io/redhat-cne/l2discovery:v15"
 )
 
+func getL2DiscoveryImage() string {
+	if img := os.Getenv("L2_DISCOVERY_IMAGE"); img != "" {
+		return img
+	}
+	return L2_DISCOVERY_IMAGE
+}
+
 type ConfigStatus int64
 
 const (
@@ -473,6 +480,17 @@ func GetDesiredConfig(forceUpdate bool) TestConfig {
 
 // Create ptpconfigs
 func CreatePtpConfigurations() error {
+	err := metrics.InitEnvIntParamConfig("MAX_OFFSET_IN_NS", metrics.MaxOffsetDefaultNs, &metrics.MaxOffsetNs)
+	if err != nil {
+		logrus.Errorf("Error initializing MAX_OFFSET_IN_NS: %v", err)
+		return err
+	}
+	err = metrics.InitEnvIntParamConfig("MIN_OFFSET_IN_NS", metrics.MinOffsetDefaultNs, &metrics.MinOffsetNs)
+	if err != nil {
+		logrus.Errorf("Error initializing MIN_OFFSET_IN_NS: %v", err)
+		return err
+	}
+
 	if GlobalConfig.PtpModeDesired != Discovery {
 		// for external grand master, clean previous configuration so that it is not detected as a external grandmaster
 		err := clean.All()
@@ -493,7 +511,7 @@ func CreatePtpConfigurations() error {
 	_, useContainerCmds := os.LookupEnv("USE_CONTAINER_CMDS")
 
 	// Collect L2 info
-	config, err := l2lib.GlobalL2DiscoveryConfig.GetL2DiscoveryConfig(true, false, useContainerCmds, L2_DISCOVERY_IMAGE)
+	config, err := l2lib.GlobalL2DiscoveryConfig.GetL2DiscoveryConfig(true, false, useContainerCmds, getL2DiscoveryImage())
 	if err != nil {
 		return fmt.Errorf("getting L2 discovery info failed with err=%s", err)
 	}
@@ -505,6 +523,18 @@ func CreatePtpConfigurations() error {
 		// initialize L2 config in solver
 		solver.GlobalConfig.SetL2Config(config)
 		logrus.Infof("Ports getting PTP frames=%+v", config.GetPortsGettingPTP())
+		for _, ptpIf := range config.GetPortsGettingPTP() {
+			if len(ptpIf.Announces) == 0 {
+				logrus.Infof("PTP announce missing iface=%s node=%s", ptpIf.IfName, ptpIf.NodeName)
+				continue
+			}
+			for gmID, announce := range ptpIf.Announces {
+				logrus.Infof("PTP announce iface=%s node=%s domain=%d clockClass=%d gmId=%s priority1=%d priority2=%d stepsRemoved=%d timeSource=%d",
+					ptpIf.IfName, ptpIf.NodeName, announce.DomainNumber, announce.ClockClass,
+					gmID, announce.GrandmasterPriority1, announce.GrandmasterPriority2,
+					announce.StepsRemoved, announce.TimeSource)
+			}
+		}
 		initAndSolveProblems()
 
 		if len(data.solutions) == 0 {
