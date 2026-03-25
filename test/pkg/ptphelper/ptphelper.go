@@ -899,21 +899,65 @@ func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 	var retList = make([]string, 0)
 	var deviceId = ""
 	WPCifaces := getWPCEnabledIfaces(nodeName)
+	if len(WPCifaces) == 0 {
+		return retList, deviceId
+	}
+
+	phcGroups := make(map[int][]string)
 	for _, iFace := range WPCifaces {
-		if strings.HasSuffix(iFace, "0") {
-			deviceId, ret := checkGNSSAvailabilityForIface(nodeName, iFace)
-			if ret {
-				retList = append(retList, addAllInterfacesForNic(WPCifaces, iFace)...)
-				return retList, deviceId
+		if iFace == "" {
+			continue
+		}
+		idx, err := getPTPHardwareClockIndex(nodeName, iFace)
+		if err != nil || idx < 0 {
+			continue
+		}
+		phcGroups[idx] = append(phcGroups[idx], iFace)
+	}
+
+	if len(phcGroups) == 0 {
+		return retList, deviceId
+	}
+
+	phcIndexes := make([]int, 0, len(phcGroups))
+	for idx := range phcGroups {
+		phcIndexes = append(phcIndexes, idx)
+	}
+	sort.Ints(phcIndexes)
+
+	for _, idx := range phcIndexes {
+		group := phcGroups[idx]
+		sort.Slice(group, func(i, j int) bool {
+			return group[i] < group[j]
+		})
+		ifaceWithPins, err := findIfaceWithPinsForPhc(nodeName, idx)
+		if err != nil {
+			logrus.Debugf("PTP pins lookup failed phc=%d err=%v", idx, err)
+			continue
+		}
+		for _, iface := range group {
+			if iface == ifaceWithPins {
+				deviceId, _ = checkGNSSAvailabilityForIface(nodeName, iface)
+				return group, deviceId
 			}
 		}
 	}
+
 	return retList, deviceId
 }
-func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
+
+func addAllInterfacesForNic(nodeName string, WPCifaces map[string]string, firstIface string) []string {
 	var ret = make([]string, 0)
+	phcIndex, err := getPTPHardwareClockIndex(nodeName, firstIface)
+	if err != nil || phcIndex < 0 {
+		return ret
+	}
 	for _, iFace := range WPCifaces {
-		if strings.HasPrefix(iFace, strings.TrimSuffix(firstIface, "0")) {
+		idx, idxErr := getPTPHardwareClockIndex(nodeName, iFace)
+		if idxErr != nil {
+			continue
+		}
+		if idx == phcIndex {
 			ret = append(ret, iFace)
 		}
 	}
@@ -940,6 +984,56 @@ func getWPCEnabledIfaces(nodeName string) map[string]string {
 		}
 	}
 	return resMap
+}
+
+func getPTPHardwareClockIndex(nodeName string, ifaceName string) (int, error) {
+	cmd := []string{"ethtool", "-T", ifaceName}
+	so, se, err := execPodCommand(nodeName, cmd)
+	if err != nil {
+		return -1, fmt.Errorf("ethtool -T %s failed: %s", ifaceName, strings.TrimSpace(se.String()))
+	}
+	scanner := bufio.NewScanner(&so)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "PTP Hardware Clock:") {
+			parts := strings.Fields(line)
+			if len(parts) == 0 {
+				break
+			}
+			val := parts[len(parts)-1]
+			if strings.EqualFold(val, "none") {
+				return -1, nil
+			}
+			idx, parseErr := strconv.Atoi(val)
+			if parseErr != nil {
+				return -1, fmt.Errorf("unable to parse PTP Hardware Clock index from %q", line)
+			}
+			return idx, nil
+		}
+	}
+	return -1, fmt.Errorf("PTP Hardware Clock not found in ethtool output for %s", ifaceName)
+}
+
+func findIfaceWithPinsForPhc(nodeName string, phcIndex int) (string, error) {
+	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls -d /sys/class/net/*/device/ptp/ptp%d/pins 2>/dev/null | head -n1", phcIndex)}
+	so, se, err := execPodCommand(nodeName, cmd)
+	if err != nil {
+		return "", fmt.Errorf("PTP pins lookup failed phc=%d stderr=%s err=%v", phcIndex, strings.TrimSpace(se.String()), err)
+	}
+	path := strings.TrimSpace(so.String())
+	if path == "" {
+		return "", nil
+	}
+	const netPrefix = "/sys/class/net/"
+	if !strings.HasPrefix(path, netPrefix) {
+		return "", fmt.Errorf("unexpected pins path %q", path)
+	}
+	rest := strings.TrimPrefix(path, netPrefix)
+	iface := strings.SplitN(rest, "/", 2)[0]
+	if iface == "" {
+		return "", fmt.Errorf("unexpected pins path %q", path)
+	}
+	return iface, nil
 }
 
 func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, bool) {
