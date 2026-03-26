@@ -485,6 +485,8 @@ func CreatePtpConfigurations() error {
 	}
 	// Initialize desired ptp config for all configs
 	GetDesiredConfig(true)
+	ptphelper.ResetGnssSimNmeaMode()
+
 	// in multi node configuration create ptp configs
 
 	// Initialize l2 library
@@ -501,6 +503,12 @@ func CreatePtpConfigurations() error {
 	logrus.Tracef("L2DiscoveryConfig: %s\n", config)
 	logrus.Tracef("L2 ifListFiltered=%+v, ifListUnfiltered=%+v", config.GetPtpIfList(), config.GetPtpIfListUnfiltered())
 	GlobalConfig.L2Config = config
+	if GlobalConfig.PtpModeDesired == TelcoGrandMasterClock {
+		ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
+		if !ptphelper.L2ConfigReportsIntelWPC(config) {
+			ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
+		}
+	}
 
 	if GlobalConfig.PtpModeDesired != Discovery {
 		// initialize L2 config in solver
@@ -512,9 +520,6 @@ func CreatePtpConfigurations() error {
 			return fmt.Errorf("could not find a solution")
 		}
 		isExternalMaster := ptphelper.IsExternalGM()
-		if err != nil {
-			return fmt.Errorf("cannot determine if cluster is single node")
-		}
 		switch GlobalConfig.PtpModeDesired {
 		case Discovery, None:
 			logrus.Errorf("error creating ptpconfig Discovery, None not supported")
@@ -906,7 +911,12 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	if err != nil {
 		logrus.Fatalf("error: %v", err)
 	}
-	plugins = result
+	if ptphelper.UseGnssSimulation() {
+		logrus.Info("GNSS simulation / netdevsim CI: skipping E810 hardware plugin bundle")
+		plugins = nil
+	} else {
+		plugins = result
+	}
 	return createConfigWithTs2PhcAndPlugins(policyName,
 		nil,
 		&ptp4lsysOpts,
