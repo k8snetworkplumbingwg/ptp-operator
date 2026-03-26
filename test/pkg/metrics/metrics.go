@@ -277,7 +277,7 @@ Only this label should be used to identify the clock under test. err:%s`, *label
 		if err != nil {
 			return fmt.Errorf("error strconv for role=%s, err:%s", role, err)
 		}
-		logrus.Infof("nodeName=%s, aIf=%s, roleInt=%s", *nodeName, aIf, MetricRole(roleInt))
+		logrus.Debugf("nodeName=%s, aIf=%s, roleInt=%s", *nodeName, aIf, MetricRole(roleInt))
 
 		if MetricRole(roleInt) != MetricRoleMaster {
 			return fmt.Errorf("incorrect metric role: expecting %s found %s", MetricRoleMaster.String(), MetricRole(roleInt).String())
@@ -296,7 +296,7 @@ Only this label should be used to identify the clock under test. err:%s`, *label
 		if err != nil {
 			return fmt.Errorf("error strconv for roleString=%s, err:%s", roleString, err)
 		}
-		logrus.Infof("nodeName=%s, aIf=%s, roleInt=%s", *nodeName, aIf, MetricRole(roleInt))
+		logrus.Debugf("nodeName=%s, aIf=%s, roleInt=%s", *nodeName, aIf, MetricRole(roleInt))
 		if MetricRole(roleInt) != expectedClockRole {
 			logrus.Errorf("incorrect role, continue looking for other interfaces")
 			continue
@@ -312,7 +312,7 @@ Only this label should be used to identify the clock under test. err:%s`, *label
 		if err != nil {
 			return fmt.Errorf("error strconv for roleString=%s, err:%s", roleString, err)
 		}
-		logrus.Infof("nodeName=%s, aIf=%s, clockStateInt=%s expectedClockstate=%s", *nodeName, aIf, MetricClockState(clockStateInt), expectedClockState)
+		logrus.Debugf("nodeName=%s, aIf=%s, clockStateInt=%s expectedClockstate=%s", *nodeName, aIf, MetricClockState(clockStateInt), expectedClockState)
 		if MetricClockState(clockStateInt) != expectedClockState {
 			return fmt.Errorf("incorrect clock state")
 		}
@@ -332,7 +332,7 @@ Only this label should be used to identify the clock under test. err:%s`, *label
 		if offsetInt > MaxOffsetNs || offsetInt < MinOffsetNs {
 			return fmt.Errorf("incorrect offset %d ns > %d ns", offsetInt, MaxOffsetNs)
 		}
-		logrus.Infof("Clock sync offset withing expected range min=%d ns < %d ns < max=%d ns", MinOffsetNs, offsetInt, MaxOffsetNs)
+		logrus.Debugf("Clock sync offset withing expected range min=%d ns < %d ns < max=%d ns", MinOffsetNs, offsetInt, MaxOffsetNs)
 		return nil
 	}
 	return fmt.Errorf("error finding a Follower port in the expected %s state", expectedClockState)
@@ -343,7 +343,7 @@ func InitEnvIntParamConfig(envString string, defaultInt int, param *int) error {
 	value, isSet := os.LookupEnv(envString)
 	if !isSet {
 		*param = defaultInt
-		logrus.Infof("%s not set, assuming %d ns", envString, *param)
+		logrus.Debugf("%s not set, assuming %d ns", envString, *param)
 		return nil
 	}
 	value = strings.ToLower(value)
@@ -354,6 +354,6 @@ func InitEnvIntParamConfig(envString string, defaultInt int, param *int) error {
 		return fmt.Errorf("cannot parse %s, got %s, err:%s", envString, value, err)
 	}
 
-	logrus.Infof("%s=%d", envString, *param)
+	logrus.Debugf("%s=%d", envString, *param)
 	return nil
 }

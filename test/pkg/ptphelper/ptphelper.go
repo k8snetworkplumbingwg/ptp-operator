@@ -176,7 +176,7 @@ func WaitForClockIDForeign(ptpConfigName string, label *string, nodeName *string
 		if err != nil {
 			return fmt.Errorf("expected master %s not found in logs: %w", expectedGMID, err)
 		}
-		logrus.Infof("slave's Master=%s (matched expected GM)", expectedGMID)
+		logrus.Debugf("slave's Master=%s (matched expected GM)", expectedGMID)
 		return nil
 	}
 	return fmt.Errorf("no matching pod found for profile %s", ptpConfigName)
@@ -468,13 +468,13 @@ func WaitForPtpDaemonToBeReady(podList []*v1core.Pod) int {
 	Eventually(func() error {
 		ptpVersion, err := GetPtpOperatorVersionFromDeployment()
 		if err != nil {
-			logrus.Infof("Unable to get PTP operator version, skipping readiness check: %v", err)
+			logrus.Debugf("Unable to get PTP operator version, skipping readiness check: %v", err)
 			return nil
 		}
 
 		ptpVer, err := semver.NewVersion(ptpVersion)
 		if err != nil {
-			logrus.Infof("Unable to parse PTP operator version %s, skipping readiness check: %v", ptpVersion, err)
+			logrus.Debugf("Unable to parse PTP operator version %s, skipping readiness check: %v", ptpVersion, err)
 			return nil
 		}
 
@@ -538,7 +538,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 		// Check if the ConfigMap exists
 		configMap, err := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 		if err != nil {
-			logrus.Infof("ConfigMap %s does not exist: %v", configMapName, err)
+			logrus.Debugf("ConfigMap %s does not exist: %v", configMapName, err)
 		} else {
 			// Empty the ConfigMap
 			configMap.Data = map[string]string{}
@@ -550,7 +550,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 				logrus.Errorf("Error updating ConfigMap: %v", err)
 			}
 
-			logrus.Infof("ConfigMap %s emptied successfully\n", configMapName)
+			logrus.Debugf("ConfigMap %s emptied successfully\n", configMapName)
 		}
 	}
 	_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
@@ -625,7 +625,7 @@ func GetPtpOperatorVersion() (string, error) {
 	deploy, err := client.Client.AppsV1Interface.Deployments(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), pkg.PtpOperatorDeploymentName, metav1.GetOptions{})
 
 	if err != nil {
-		logrus.Infof("PTP Operator version is not found: %v", err)
+		logrus.Debugf("PTP Operator version is not found: %v", err)
 		return "", err
 	}
 
@@ -637,7 +637,7 @@ func GetPtpOperatorVersion() (string, error) {
 		}
 	}
 
-	logrus.Infof("PTP operator version is %v", ptpOperatorVersion)
+	logrus.Debugf("PTP operator version is %v", ptpOperatorVersion)
 
 	return ptpOperatorVersion, err
 }
@@ -652,7 +652,7 @@ func GetPtpOperatorVersionFromDeployment() (string, error) {
 
 	deploy, err := client.Client.AppsV1Interface.Deployments(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), pkg.PtpOperatorDeploymentName, metav1.GetOptions{})
 	if err != nil {
-		logrus.Infof("PTP Operator deployment not found: %v", err)
+		logrus.Debugf("PTP Operator deployment not found: %v", err)
 		return "", err
 	}
 
@@ -667,7 +667,7 @@ func GetPtpOperatorVersionFromDeployment() (string, error) {
 			ptpOperatorVersion := strings.TrimPrefix(env.Value, "v")
 			cachedReleaseVersion = ptpOperatorVersion
 			if !releaseVersionLogged {
-				logrus.Infof("PTP operator version from RELEASE_VERSION: %s", ptpOperatorVersion)
+				logrus.Debugf("PTP operator version from RELEASE_VERSION: %s", ptpOperatorVersion)
 				releaseVersionLogged = true
 			}
 			return cachedReleaseVersion, nil
@@ -689,16 +689,16 @@ func IsSecondaryBc(config *ptpv1.PtpConfig) bool {
 
 // Checks if the ptpSettings has more than one HA profile
 func hasHaProfiles(ptpSettings map[string]string) bool {
-	logrus.Infof("Checking if ptpSettings %v has more than one HA profile", ptpSettings)
+	logrus.Debugf("Checking if ptpSettings %v has more than one HA profile", ptpSettings)
 	return ptpSettings != nil && ptpSettings["haProfiles"] != "" && len(strings.Split(ptpSettings["haProfiles"], ",")) > 1
 }
 
 // Checks for DualNIC BC HA
 func ConfigIsPhc2SysHa(config *ptpv1.PtpConfig) bool {
-	logrus.Infof("Checking if config %s is Phc2Sys HA", config.Name)
+	logrus.Debugf("Checking if config %s is Phc2Sys HA", config.Name)
 	for _, profile := range config.Spec.Profile {
 		if profile.Phc2sysOpts != nil && profile.Ptp4lOpts != nil && *profile.Ptp4lOpts == "" && hasHaProfiles(profile.PtpSettings) {
-			logrus.Infof("Config %s is Phc2Sys HA", config.Name)
+			logrus.Debugf("Config %s is Phc2Sys HA", config.Name)
 			return true
 		}
 	}
@@ -843,7 +843,7 @@ func IsExternalGM() (out bool) {
 	value, isSet := os.LookupEnv("EXTERNAL_GM")
 	value = strings.ToLower(value)
 	out = isSet && !strings.Contains(value, "false")
-	logrus.Infof("EXTERNAL_GM=%t", out)
+	logrus.Debugf("EXTERNAL_GM=%t", out)
 	return out
 }
 
@@ -896,7 +896,7 @@ func getWPCEnabledIfaces(nodeName string) map[string]string {
 
 func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, bool) {
 	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss", IfaceName)}
-	logrus.Infof("cmd = %s ", cmd)
+	logrus.Debugf("cmd = %s ", cmd)
 	so, se, err := execPodCommand(nodeName, cmd)
 	if err != nil {
 		logrus.Errorf("could not gnss device, err: %s \n stderr: %s interfaceName: %s, nodeName: %s", err, se.String(), IfaceName, nodeName)
@@ -906,7 +906,7 @@ func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, b
 
 	for _, dev := range devs {
 		if dev != "" {
-			logrus.Infof("gnss device string: %s", dev)
+			logrus.Debugf("gnss device string: %s", dev)
 			if checkGNMRCString(dev, nodeName) {
 				return dev, true
 			}
@@ -928,9 +928,9 @@ func checkGNMRCString(deviceName string, nodeName string) bool {
 	for _, log := range logs {
 		if strings.Contains(log, "GNRMC") {
 			timeVal := strings.Split(log, ",")[1]
-			logrus.Infof("log value: %s", timeVal)
+			logrus.Debugf("log value: %s", timeVal)
 			formattedTime := time.Now().UTC().Format("150405") + ".00"
-			logrus.Infof("time value: %s", formattedTime)
+			logrus.Debugf("time value: %s", formattedTime)
 			if strings.EqualFold(timeVal, formattedTime) {
 				return true
 			}
@@ -1025,19 +1025,19 @@ func GetOCPVersion() (ocpVersion string, err error) {
 func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 	foundVersion, err := GetPtpOperatorVersionFromDeployment()
 	if err != nil {
-		logrus.Infof("Could not get PTP Operator version, assuming version check passes: %v", err)
+		logrus.Debugf("Could not get PTP Operator version, assuming version check passes: %v", err)
 		return true
 	}
-	logrus.Infof("Found version %s; checking %s <= %s", foundVersion, foundVersion, minVersion)
+	logrus.Debugf("Found version %s; checking %s <= %s", foundVersion, foundVersion, minVersion)
 	ver, err := semver.NewVersion(foundVersion)
 	if err != nil {
-		logrus.Infof("Could not parse PTP Operator version %s, assuming version check passes: %v", foundVersion, err)
+		logrus.Debugf("Could not parse PTP Operator version %s, assuming version check passes: %v", foundVersion, err)
 		return true
 	}
 
 	minVer, err := semver.NewVersion(minVersion)
 	if err != nil {
-		logrus.Infof("Could not parse min version %s, assuming version check passes: %v", minVersion, err)
+		logrus.Debugf("Could not parse min version %s, assuming version check passes: %v", minVersion, err)
 		return true
 	}
 

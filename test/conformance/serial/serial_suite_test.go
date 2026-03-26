@@ -43,35 +43,38 @@ func TestTest(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	logrus.Info("Executed from serial suite")
-	testclient.Client = testclient.New("")
-	Expect(testclient.Client).NotTo(BeNil())
+	By("Creating Kubernetes client and initializing event pub/sub", func() {
 
-	// Initialize the pub/sub system for event handling
-	event.InitPubSub()
+		testclient.Client = testclient.New("")
+		Expect(testclient.Client).NotTo(BeNil())
+		event.InitPubSub()
+	})
+	By("Starting log collection from PTP pods", func() {
 
-	// Start log collection if enabled
-	err := logging.StartLogCollection("serial")
-	if err != nil {
-		logrus.Errorf("Failed to start log collection: %v", err)
-	}
+		err := logging.StartLogCollection("serial")
+		if err != nil {
+			logrus.Errorf("Failed to start log collection: %v", err)
+		}
+	})
 })
 
 var _ = AfterSuite(func() {
-
-	if DeletePtpConfig && testconfig.GetDesiredConfig(false).PtpModeDesired != testconfig.Discovery {
-		clean.All()
-	}
-
-	// Stop log collection
-	logging.StopLogCollection()
+	By("Cleaning up PTP configs", func() {
+		if DeletePtpConfig && testconfig.GetDesiredConfig(false).PtpModeDesired != testconfig.Discovery {
+			clean.All()
+		}
+	})
+	By("Stopping log collection and saving artifacts", func() {
+		logging.StopLogCollection()
+	})
 })
 
 var _ = ReportBeforeEach(func(report SpecReport) {
-	// Write test start marker to all log files
+	By("Writing test start marker to log files")
 	logging.WriteTestStart(report)
 })
 
 var _ = ReportAfterEach(func(report SpecReport) {
-	// Write test end marker to all log files
+	By("Writing test end marker to log files")
 	logging.WriteTestEnd(report)
 })
