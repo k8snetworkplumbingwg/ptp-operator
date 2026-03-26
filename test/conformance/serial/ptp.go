@@ -1354,7 +1354,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(cloudProxyFound).ToNot(BeFalse(),
 							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Debugf("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						// Search for "starting v2 rest api server at port" in pod logs (literal text search)
 						matches, err := pods.GetPodLogsRegex(
@@ -1370,7 +1370,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(matches).NotTo(BeEmpty(),
 							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
+						logrus.Debugf("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 					}
 				})
 
@@ -1415,7 +1415,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(cloudProxyFound).ToNot(BeFalse(),
 							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
 
-						logrus.Infof("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Debugf("Checking cloud-event-proxy logs on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						// Search for REST API config v2.0 in pod logs (literal text search)
 						matches, err := pods.GetPodLogsRegex(
@@ -1431,7 +1431,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Expect(matches).NotTo(BeEmpty(),
 							fmt.Sprintf("No 'starting v2 rest api server at port' found in cloud-event-proxy logs on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
+						logrus.Debugf("Pod %s: found 'starting v2 rest api server at port' in logs", pod.Name)
 					}
 				})
 				// Verify invalid apiVersion values are rejected and pods are not restarted
@@ -2463,7 +2463,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.DiscoveredClockUnderTestPod != nil {
 					nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
 					if nodeName != "" {
-						logrus.Info("Deploy consumer app for testing event API v2")
+						logrus.Debug("Deploy consumer app for testing event API v2")
 						err := event.CreateConsumerApp(nodeName)
 						if err != nil {
 							logrus.Errorf("PTP events are not available due to consumer app creation error err=%s", err)
@@ -2471,7 +2471,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						}
 
 						// Wait a bit more for the consumer pod to be fully ready
-						logrus.Info("Waiting for consumer pod to be fully ready...")
+						logrus.Debug("Waiting for consumer pod to be fully ready...")
 						time.Sleep(10 * time.Second)
 
 						// Initialize pub/sub system
@@ -2499,7 +2499,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Verifying Clock Class, GNSS, and PTP State")
 
 				// Ensure system starts in LOCKED (ClockClass 6)
-				logrus.Info("Verifying current LOCKED state...")
+				logrus.Debug("Verifying current LOCKED state...")
 				By("Check current LOCKED state")
 				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 

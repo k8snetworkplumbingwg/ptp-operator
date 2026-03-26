@@ -71,6 +71,14 @@ type SlaveClockSync struct {
 var ptpTestConfig PtpTestConfig
 var loaded bool
 
+func reformatPtpTestConfig(cfg *PtpTestConfig) string {
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Sprintf("unable to marshal config: %v", err)
+	}
+	return string(out)
+}
+
 func (conf *PtpTestConfig) loadPtpTestConfig(filename string) error {
 	yamlFile, err := os.ReadFile(filename)
 	if err != nil {
@@ -100,7 +108,8 @@ func GetPtpTestConfig() (*PtpTestConfig, error) {
 		return nil, err
 	}
 
-	logrus.Infof("PTP Test Config: %+v", ptpTestConfig)
+	logrus.Infof("Loaded PTP test config from %s", path)
+	logrus.Debugf("PTP test config:\n%s", reformatPtpTestConfig(&ptpTestConfig))
 	loaded = true
 	return &ptpTestConfig, nil
 }
