@@ -33,7 +33,7 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 	if gmID != nil {
 		logrus.Infof("expected master=%s", *gmID)
 	}
-	profileName, errProfile := ptphelper.GetProfileName(ptpConfig)
+	profileName, errProfile := ptphelper.GetProfileName(ptpConfig, true)
 
 	if fullConfig.PtpModeDesired == testconfig.Discovery {
 		// Only for ptp mode == discovery, if errProfile is not nil just log a info message
@@ -96,7 +96,7 @@ func VerifyAfterRebootState(rebootedNodes []string, fullConfig testconfig.TestCo
 	ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	listOptions := metav1.ListOptions{}
-	if ptpConfig.Spec.DaemonNodeSelector != nil && len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
+	if len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
 		listOptions = metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: ptpConfig.Spec.DaemonNodeSelector})}
 	}
 
@@ -264,17 +264,23 @@ func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfa
 			logrus.Infof("Skipping the interface %s", ptpNodeInterface)
 		} else {
 			logrus.Infof("Simulating PTP outage using interface %s", ptpNodeInterface)
-			toggleNetworkInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName, fullConfig)
+			toggleNetworkInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName)
 		}
 	}
 	k8sPriviledgedDs.DeleteNamespaceIfPresent(pkg.RecoveryNetworkOutageDaemonSetNamespace)
 	logrus.Info("Recovery PTP outage ends ...........")
 }
 
-func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string, fullConfig testconfig.TestConfig) {
-
+func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string) {
 	const (
-		waitingPeriod      = 5 * time.Minute
+		waitingPeriod = 5 * time.Minute
+	)
+	restoreInterface := disableInterface(pod, interfaceName, slavePodNodeName, waitingPeriod)
+	restoreInterface()
+}
+
+func disableInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string, waitingPeriod time.Duration) func() {
+	const (
 		offsetRetryCounter = 5
 	)
 	By("Setting interface down then wait")
@@ -290,26 +296,82 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleFaulty}, []string{interfaceName}, &slavePodNodeName)
 	}, waitingPeriod, 10*time.Second).Should(BeNil())
 
-	By("Set the interface UP again and wait")
-	upInterfaceCommand := fmt.Sprintf("ip link set dev %s up", interfaceName)
-	pods.ExecutePtpInterfaceCommand(pod, interfaceName, upInterfaceCommand)
-	logrus.Infof("Interface %s is up", interfaceName)
+	return func() {
+		By("Set the interface UP again and wait")
+		upInterfaceCommand := fmt.Sprintf("ip link set dev %s up", interfaceName)
+		pods.ExecutePtpInterfaceCommand(pod, interfaceName, upInterfaceCommand)
+		logrus.Infof("Interface %s is up", interfaceName)
 
-	By("Checking that the port role is SLAVE after wait and clock is in sync")
-	// Check if the port has changed back to slave
-	Eventually(func() error {
-		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleSlave}, []string{interfaceName}, &slavePodNodeName)
-	}, waitingPeriod, 10*time.Second).Should(BeNil())
+		By("Checking that the port role is SLAVE after wait and clock is in sync")
+		// Check if the port has changed back to slave
+		Eventually(func() error {
+			return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleSlave}, []string{interfaceName}, &slavePodNodeName)
+		}, waitingPeriod, 10*time.Second).Should(BeNil())
 
-	var offsetWithinBound bool
-	for i := 0; i < offsetRetryCounter && !offsetWithinBound; i++ {
-		offsetVal, err := metrics.GetPtpOffeset(interfaceName, &slavePodNodeName)
-		Expect(err).NotTo(HaveOccurred())
-		offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+		var offsetWithinBound bool
+		for i := 0; i < offsetRetryCounter && !offsetWithinBound; i++ {
+			offsetVal, err := metrics.GetPtpOffeset(interfaceName, &slavePodNodeName)
+			Expect(err).NotTo(HaveOccurred())
+			offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+		}
+		Expect(offsetWithinBound).To(BeTrue())
+		logrus.Info("Successfully ended Slave clock sync with master")
 	}
-	Expect(offsetWithinBound).To(BeTrue())
+}
 
-	logrus.Info("Successfully ended Slave clock sync with master")
+func DisableSlaveInterfaces(fullConfig testconfig.TestConfig, skippedInterfaces map[string]bool) func() {
+	logrus.Info("Disabling slave ports ...........")
+
+	// Get a slave pod
+	slavePod, err := ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig))
+	if err != nil {
+		logrus.Error("Could not determine ptp daemon pod selected by ptpconfig")
+	}
+	// Get the slave pod's node name
+	slavePodNodeName := slavePod.Spec.NodeName
+	logrus.Info("slave node name is ", slavePodNodeName)
+
+	// Get the pod from ptp test daemonset set on the slave node
+	outageRecoveryDaemonSetRunningPods := CreatePtpTestPrivilegedDaemonSet(pkg.RecoveryNetworkOutageDaemonSetName, pkg.RecoveryNetworkOutageDaemonSetNamespace, pkg.RecoveryNetworkOutageDaemonSetContainerName)
+	Expect(len(outageRecoveryDaemonSetRunningPods.Items)).To(BeNumerically(">", 0), "no damonset pods found in the namespace "+pkg.RecoveryNetworkOutageDaemonSetNamespace)
+
+	var outageRecoveryDaemonsetPod corev1.Pod
+	var isOutageRecoveryPodFound bool
+	for _, dsPod := range outageRecoveryDaemonSetRunningPods.Items {
+		if dsPod.Spec.NodeName == slavePodNodeName {
+			outageRecoveryDaemonsetPod = dsPod
+			isOutageRecoveryPodFound = true
+			break
+		}
+	}
+	Expect(isOutageRecoveryPodFound).To(BeTrue())
+	logrus.Infof("outage recovery pod name is %s", outageRecoveryDaemonsetPod.Name)
+
+	// Get the list of network interfaces on the slave node
+	slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
+	logrus.Infof("Slave interfaces are %+q\n", slaveIf)
+	recoveryFunctions := make([]func(), 0)
+	// Toggle the interfaces
+	for _, ptpNodeInterface := range slaveIf {
+		_, skip := skippedInterfaces[ptpNodeInterface]
+		if skip {
+			logrus.Infof("Skipping the interface %s", ptpNodeInterface)
+		} else {
+			logrus.Infof("Simulating PTP outage using interface %s", ptpNodeInterface)
+			recoveryFunctions = append(recoveryFunctions, disableInterface(outageRecoveryDaemonsetPod, ptpNodeInterface, slavePodNodeName, 10*time.Minute))
+
+		}
+	}
+
+	return func() {
+		for _, f := range recoveryFunctions {
+			if f != nil {
+				f()
+			}
+		}
+		k8sPriviledgedDs.DeleteNamespaceIfPresent(pkg.RecoveryNetworkOutageDaemonSetNamespace)
+		logrus.Info("Slave ports are now recovered ...........")
+	}
 }
 
 func RebootSlaveNode(fullConfig testconfig.TestConfig) {
