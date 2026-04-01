@@ -38,8 +38,10 @@ const (
 	ConsumerSaName                = "consumer-sa"
 	ConsumerServiceName           = "consumer-events-subscription-service"
 	TestSidecarSuccessLogString   = "rest service returned healthy status"
+	ConsumerReadyLogString        = "waiting for events"
 	ConsumerContainerName         = "consumer"
 	sidecarNamespaceDeleteTimeout = time.Minute * 2
+	consumerReadyTimeout          = time.Minute * 2
 	ApiBaseV1                     = "127.0.0.1:9085/api/ocloudNotifications/v1/"
 	ApiBaseV2                     = "127.0.0.1:9043/api/ocloudNotifications/v2"
 )
@@ -322,6 +324,50 @@ func CreateConsumerApp(nodeNameFull string) (err error) {
 	return nil
 }
 
+// WaitForConsumerReady polls the publisher's health endpoint from within the
+// consumer pod until it responds OK, then waits for the consumer app to log
+// "waiting for events" confirming it has finished initialization.
+func WaitForConsumerReady(nodeNameFull string) error {
+	nodeName := nodeNameFull
+	if nodeNameFull != "" && strings.Contains(nodeNameFull, ".") {
+		nodeName = strings.Split(nodeName, ".")[0]
+	}
+	publisherHealthURL := fmt.Sprintf("http://ptp-event-publisher-service-%s.%s.svc.cluster.local:9043/api/ocloudNotifications/v2/health", nodeName, ProducerNamespace)
+	logrus.Infof("Waiting for publisher to become ready at %s", publisherHealthURL)
+
+	consumerPod, err := testclient.Client.Pods(ConsumerNamespace).Get(context.TODO(), ConsumerPodName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("could not get consumer pod: %s", err)
+	}
+
+	deadline := time.Now().Add(consumerReadyTimeout)
+	for time.Now().Before(deadline) {
+		buf, _, execErr := pods.ExecCommand(
+			testclient.Client,
+			false,
+			consumerPod,
+			ConsumerContainerName,
+			[]string{"curl", "-s", "--max-time", "5", publisherHealthURL},
+		)
+		if execErr == nil && strings.Contains(buf.String(), "OK") {
+			logrus.Info("Publisher health endpoint is ready")
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if time.Now().After(deadline) {
+		return fmt.Errorf("publisher health endpoint %s did not return OK within %s", publisherHealthURL, consumerReadyTimeout)
+	}
+
+	logrus.Info("Waiting for consumer app to finish initialization")
+	_, err = pods.GetPodLogsRegex(ConsumerNamespace, ConsumerPodName, ConsumerContainerName, ConsumerReadyLogString, true, consumerReadyTimeout)
+	if err != nil {
+		return fmt.Errorf("consumer app did not become ready: %s", err)
+	}
+	logrus.Info("Consumer app is ready")
+	return nil
+}
+
 const roleName = "use-privileged"
 const roleBindingName = "sidecar-rolebinding"
 
@@ -509,12 +555,32 @@ func MonitorPodLogsRegex() (term chan bool, err error) {
 	return term, nil
 }
 
-// returns last Regex match in the logs for a given pod
-func PushInitialEvent(eventType string, timeout time.Duration) (err error) {
+// PushInitialEvent scans consumer logs for a single event type's CurrentState
+// and publishes it to PubSub. For multiple topics, prefer PushInitialEvents.
+func PushInitialEvent(eventType string, timeout time.Duration) error {
+	missing, err := PushInitialEvents([]string{eventType}, timeout)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("timed out waiting for initial event %s", eventType)
+	}
+	return nil
+}
+
+// PushInitialEvents scans consumer logs with a single log stream and publishes
+// CurrentState events for all requested topics. Returns the list of topics
+// that were not found before the timeout.
+func PushInitialEvents(eventTypes []string, timeout time.Duration) (missing []string, err error) {
 	namespace := ConsumerNamespace
 	podName := ConsumerPodName
 	containerName := ConsumerContainerName
 	regex := `Got CurrentState: ({.*})`
+
+	pending := make(map[string]bool, len(eventTypes))
+	for _, t := range eventTypes {
+		pending[t] = true
+	}
 
 	count := int64(0)
 	podLogOptions := corev1.PodLogOptions{
@@ -523,39 +589,45 @@ func PushInitialEvent(eventType string, timeout time.Duration) (err error) {
 		TailLines: &count,
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
-	stream, err := podLogRequest.Stream(context.TODO())
+	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
-		return fmt.Errorf("could not retrieve log in ns=%s pod=%s, err=%s", namespace, podName, err)
+		return nil, fmt.Errorf("could not retrieve log in ns=%s pod=%s, err=%s", namespace, podName, err)
 	}
 	defer stream.Close()
-	start := time.Now()
-	for {
-		scanner := bufio.NewScanner(stream)
-		for scanner.Scan() {
-			t := time.Now()
-			elapsed := t.Sub(start)
-			if elapsed > timeout {
-				return fmt.Errorf("timedout PushInitialValue, waiting for log in ns=%s pod=%s, looking for = %s", namespace, podName, regex)
-			}
-			line := scanner.Text()
-			logrus.Trace(line)
 
-			r := regexp.MustCompile(regex)
-			matches := r.FindAllStringSubmatch(line, -1)
-			if len(matches) > 0 {
-				aStoredEvent, eType, err := createStoredEvent([]byte(matches[0][1]))
-				if err != nil {
-					return err
-				}
-				if eType == eventType {
-					PubSub.Publish(eType, aStoredEvent)
-					return nil
+	r := regexp.MustCompile(regex)
+	scanner := bufio.NewScanner(stream)
+	for scanner.Scan() {
+		line := scanner.Text()
+		logrus.Trace(line)
+
+		matches := r.FindAllStringSubmatch(line, -1)
+		if len(matches) > 0 {
+			aStoredEvent, eType, err := createStoredEvent([]byte(matches[0][1]))
+			if err != nil {
+				logrus.Warnf("PushInitialEvents: failed to parse event: %v", err)
+				continue
+			}
+			if pending[eType] {
+				PubSub.Publish(eType, aStoredEvent)
+				delete(pending, eType)
+				if len(pending) == 0 {
+					return nil, nil
 				}
 			}
 		}
-
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		return nil, fmt.Errorf("error reading logs in ns=%s pod=%s: %s", namespace, podName, scanErr)
+	}
+	for t := range pending {
+		missing = append(missing, t)
+	}
+	return missing, nil
 }
 func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType string, err error) {
 	apiVersion := ptphelper.PtpEventEnabled()
@@ -652,9 +724,12 @@ func SubscribeToGMChangeEvents(
 	lsCh, lID := PubSub.Subscribe(lsTopic, buffer)
 
 	if pushInitial {
-		_ = PushInitialEvent(gnssTopic, initialTTL)
-		_ = PushInitialEvent(ccTopic, initialTTL)
-		_ = PushInitialEvent(lsTopic, initialTTL)
+		missing, err := PushInitialEvents([]string{gnssTopic, ccTopic, lsTopic}, initialTTL)
+		if err != nil {
+			logrus.Warnf("PushInitialEvents failed: %v", err)
+		} else if len(missing) > 0 {
+			logrus.Warnf("PushInitialEvents: timed out waiting for topics: %v", missing)
+		}
 	}
 
 	return Subscriptions{
