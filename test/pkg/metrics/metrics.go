@@ -29,10 +29,12 @@ const (
 	metricsEndPoint             = "127.0.0.1:9091/metrics"
 	MaxOffsetDefaultNs          = 100
 	MinOffsetDefaultNs          = -100
+	MaxInSpecOffsetDefaultNs    = 100
 )
 
 var MaxOffsetNs int
 var MinOffsetNs int
+var MaxInSpecOffsetNs int
 
 // type and display for  OpenshiftPtpInterfaceRole metric. Values: 0 = PASSIVE, 1 = SLAVE, 2 = MASTER, 3 = FAULTY, 4 =  UNKNOWN
 type MetricRole int
@@ -182,6 +184,7 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 	if err != nil {
 		return metric, err
 	}
+	var availableLines []string
 	for index := range ptpPods.Items {
 		if ptpPods.Items[index].Spec.NodeName != nodeName {
 			continue
@@ -220,9 +223,17 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 				return metric, nil
 			}
 		}
+
+		// Metric not found — collect available lines for this metric name to include in error
+		for _, line := range strings.Split(metrics, "\n") {
+			if strings.HasPrefix(line, metricName+"{") {
+				availableLines = append(availableLines, line)
+			}
+		}
 		break
 	}
-	return metric, fmt.Errorf("metric: %s, nodeName: %s, aIf: %s not found", metricName, nodeName, aIf)
+	return metric, fmt.Errorf("metric: %s, nodeName: %s, aIf: %s not found, available %s metrics: %v",
+		metricName, nodeName, aIf, metricName, availableLines)
 }
 
 // gets a node name based on a label

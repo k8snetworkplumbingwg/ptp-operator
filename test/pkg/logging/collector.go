@@ -237,6 +237,13 @@ func WriteTestEnd(report ginkgo.SpecReport) {
 	}
 }
 
+// WriteStep writes a test step marker to all pod log files
+func WriteStep(step string) {
+	if collector != nil && ShouldWriteTestMarkers() {
+		collector.writers.writeToAll(createStepMarker(step))
+	}
+}
+
 // ============================================================================
 // File Writer - One goroutine per file
 // ============================================================================
@@ -715,6 +722,11 @@ func createTestStartMarker(report ginkgo.SpecReport) string {
 		lineNumber,
 		testMarkerLine,
 	)
+}
+
+func createStepMarker(step string) string {
+	return fmt.Sprintf(">>>>>>>>>> STEP [%s]: %s <<<<<<<<<<",
+		time.Now().Format(time.RFC3339), step)
 }
 
 func createTestEndMarker(report ginkgo.SpecReport) string {
