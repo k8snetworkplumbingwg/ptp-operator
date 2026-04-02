@@ -650,8 +650,11 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 
 		values := exports.StoredEventValues{}
 		for _, v := range e.Data.Values {
-			dataType := string(v.DataType)
-			values[dataType] = v.Value
+			key := v.Resource
+			if key == "" {
+				key = string(v.DataType)
+			}
+			values[key] = v.Value
 		}
 		return exports.StoredEvent{exports.EventTimeStamp: e.Time, exports.EventType: e.Type, exports.EventSource: e.Source, exports.EventValues: values}, e.Type, nil
 	}
@@ -679,8 +682,14 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		dataType := string(v.DataType)
-		values[dataType] = v.Value
+		// Use ResourceAddress as key to avoid collisions when multiple
+		// values share the same data_type (e.g., BC mode clock class
+		// events have two "metric" values for different ptp4l instances).
+		key := v.Resource
+		if key == "" {
+			key = string(v.DataType)
+		}
+		values[key] = v.Value
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil

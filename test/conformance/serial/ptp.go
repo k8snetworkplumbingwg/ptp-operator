@@ -3769,9 +3769,11 @@ func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration)
 			return
 		case ev := <-ccCh:
 			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
-				if v, ok2 := res.Values["metric"].(float64); ok2 && int(v) == expectedClockClass {
-					fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
-					return
+				for _, val := range res.Values {
+					if v, ok2 := val.(float64); ok2 && int(v) == expectedClockClass {
+						fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+						return
+					}
 				}
 			}
 		}
