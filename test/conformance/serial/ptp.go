@@ -486,13 +486,15 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Getting ptp config details")
 				ptpConfig := testconfig.GlobalConfig
 
-				masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+				if ptpConfig.DiscoveredGrandMasterPtpConfig != nil {
+					masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+					logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
+					AddReportEntry("master-ptp-config", masterPtpConfigStr)
+				} else {
+					logrus.Infof("No internal grandmaster PTP config discovered (external GM)")
+				}
 				slavePtpConfigStr := ptpConfig.DiscoveredClockUnderTestPtpConfig.String()
-
-				logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
 				logrus.Infof("Discovered slave ptp config %s", slavePtpConfigStr)
-
-				AddReportEntry("master-ptp-config", masterPtpConfigStr)
 				AddReportEntry("slave-ptp-config", slavePtpConfigStr)
 			})
 		})
@@ -820,24 +822,28 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], portEngine.InitialRoles[0], portEngine.InitialRoles[1])
 				}, 120*time.Second, 1*time.Second).Should(BeNil())
 
-				By("Remove Grandmaster")
-				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
-				Expect(err).To(BeNil())
-				By("Check clock role")
-				Eventually(func() error {
-					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
-				}, 120*time.Second, 1*time.Second).Should(BeNil())
-				By("Check holdover")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Check freerun")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Recreate Grandmaster")
-				tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
-				tempPtpConfig.SetResourceVersion("")
-				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
-				Expect(err).To(BeNil())
+				if !isExternalMaster {
+					By("Remove Grandmaster")
+					err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
+					Expect(err).To(BeNil())
+					By("Check clock role")
+					Eventually(func() error {
+						return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
+					}, 120*time.Second, 1*time.Second).Should(BeNil())
+					By("Check holdover")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Check freerun")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Recreate Grandmaster")
+					tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+					tempPtpConfig.SetResourceVersion("")
+					_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
+					Expect(err).To(BeNil())
+				} else {
+					logrus.Infof("Skipping GM removal/recreation test phase (external GM)")
+				}
 			})
 
 			// Multinode BCSlave clock sync
