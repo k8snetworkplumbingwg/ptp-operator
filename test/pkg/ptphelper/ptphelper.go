@@ -50,7 +50,7 @@ func GetPodWithLabel(label *string, nodeName *string) ([]*corev1.Pod, error) {
 		pod := &ptpPods.Items[i]
 		isPodFound, err := pods.HasPodLabelOrNodeName(pod, label, nodeName)
 		if err != nil {
-			return res, fmt.Errorf("could not check pod role (label=%v, node=%v): %w", label, nodeName, err)
+			return res, fmt.Errorf("could not check pod role (label=%s, node=%s): %w", ptrStr(label), ptrStr(nodeName), err)
 		}
 		if !isPodFound {
 			continue
@@ -66,9 +66,16 @@ func findMatchingPod(label *string, nodeName *string) (*corev1.Pod, error) {
 		return nil, err
 	}
 	if len(foundPods) == 0 {
-		return nil, fmt.Errorf("no PTP pods found for label=%v node=%v", label, nodeName)
+		return nil, fmt.Errorf("no PTP pods found for label=%s node=%s", ptrStr(label), ptrStr(nodeName))
 	}
 	return foundPods[0], nil
+}
+
+func ptrStr(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
 }
 
 func GetProfileLogID(ptpConfigName string, label *string, nodeName *string) (string, error) {
@@ -558,12 +565,13 @@ func mutateE810PluginSettings(config *ptpv1.PtpConfig, profileName, nodeName str
 	config.Spec.Profile[index].Plugins["e810"] = &rawJSON
 }
 
-// GetConfigForProfile returns the config file path for a given profile name and label
-func GetConfigForProfile(profileName, label string) (string, error) {
+// GetConfigForProfile returns the config file path for a given profile name,
+// using the provided label and/or nodeName to locate the target pod.
+func GetConfigForProfile(profileName string, label *string, nodeName *string) (string, error) {
 	deadline := time.Now().Add(pkg.TimeoutIn3Minutes)
 	var lastErr error
 	for {
-		runId, err := GetProfileLogID(profileName, &label, nil)
+		runId, err := GetProfileLogID(profileName, label, nodeName)
 		if err == nil && runId != "" {
 			// Normalize message_tag runId like "ptp4l.0.config:{level}"
 			runId = strings.TrimSpace(runId)
@@ -580,7 +588,7 @@ func GetConfigForProfile(profileName, label string) (string, error) {
 		}
 		if err != nil {
 			lastErr = err
-			pod, podErr := findMatchingPod(&label, nil)
+			pod, podErr := findMatchingPod(label, nodeName)
 			if podErr != nil {
 				return "", podErr
 			}
@@ -1027,7 +1035,17 @@ func IsPtpMaster(ptp4lOpts, phc2sysOpts *string) bool {
 	return ptp4lOpts != nil && phc2sysOpts != nil && !strings.Contains(*ptp4lOpts, "-s ") && strings.Count(*phc2sysOpts, "-a") == 1 && strings.Count(*phc2sysOpts, "-r") == 2
 }
 
-// Checks for DualNIC BC
+// QualifyProfileName returns the daemon-qualified profile name
+// (<crName>_<profileName>). If profileName already carries the prefix
+// it is returned unchanged.
+func QualifyProfileName(crName, profileName string) string {
+	prefix := crName + "_"
+	if strings.HasPrefix(profileName, prefix) {
+		return profileName
+	}
+	return prefix + profileName
+}
+
 func GetProfileName(config *ptpv1.PtpConfig, receiverOnly bool) (string, error) {
 	if config == nil {
 		return "", fmt.Errorf("ptp config is nil")
@@ -1047,10 +1065,11 @@ func GetProfileName(config *ptpv1.PtpConfig, receiverOnly bool) (string, error) 
 			"tbc-tr",
 			"tbc-tt":
 
-			if receiverOnly && *profile.Name == "tbc-tt" {
+			qualified := QualifyProfileName(config.Name, *profile.Name)
+			if receiverOnly && qualified == QualifyProfileName(config.Name, "tbc-tt") {
 				continue
 			}
-			return *profile.Name, nil
+			return qualified, nil
 		}
 	}
 	return "", fmt.Errorf("cannot find valid test profile name")
@@ -1536,7 +1555,7 @@ func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2
 	// Find the leading interface from the profile's e810 plugin "pins" key
 	var leadingIface string
 	for _, profile := range ptpConfig.Spec.Profile {
-		if profile.Name != nil && *profile.Name == profileName && profile.Plugins != nil {
+		if profile.Name != nil && QualifyProfileName(ptpConfig.Name, *profile.Name) == QualifyProfileName(ptpConfig.Name, profileName) && profile.Plugins != nil {
 			if e810JSON, ok := profile.Plugins["e810"]; ok && e810JSON != nil {
 				var e810Config map[string]interface{}
 				if err := json.Unmarshal(e810JSON.Raw, &e810Config); err != nil {

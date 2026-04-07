@@ -891,12 +891,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				aLabel := pkg.PtpClockUnderTestNodeLabel
 				name := pkg.PtpBcMaster1PolicyName
 				if fullConfig.PtpModeDiscovered == testconfig.TelcoBoundaryClock {
-					// configName, err := ptphelper.GetConfigForProfile("tbc-tr", aLabel)
-					// if err != nil {
-					// 	Fail(fmt.Sprintf("unable to find configName for T-BC: %s", err))
-					// }
-					// name = configName
-					name = "tbc-tr"
+					Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).ToNot(BeNil(), "T-BC mode requires DiscoveredClockUnderTestPtpConfig")
+					crName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig).Name
+					name = ptphelper.QualifyProfileName(crName, "tbc-tr")
 				}
 				masterIDBc1, err := ptphelper.GetClockIDMaster(name, &aLabel, nil, false)
 				Expect(err).To(BeNil())
@@ -1826,7 +1823,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					for _, profile := range config.Spec.Profile {
 						if profile.PtpSchedulingPolicy != nil && *profile.PtpSchedulingPolicy == "SCHED_FIFO" {
 							if profile.PtpSchedulingPriority != nil {
-								fifoPriorities[*profile.Name] = *profile.PtpSchedulingPriority
+								fifoPriorities[ptphelper.QualifyProfileName(config.Name, *profile.Name)] = *profile.PtpSchedulingPriority
 							}
 						}
 					}
@@ -2841,7 +2838,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			qualifiedTR := originalPtpConfig.Name + "_tbc-tr"
 
 			// Setup PMC monitor for TT profile to watch announcements
-			cfgName, err := ptphelper.GetConfigForProfile(qualifiedTT, pkg.PtpLinuxDaemonPodsLabel)
+			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			cfgName, err := ptphelper.GetConfigForProfile(qualifiedTT, nil, &nodeName)
 			Expect(err).NotTo(HaveOccurred())
 			ttNIC := ptptesthelper.NICInfo{
 				ConfigFile: cfgName,
@@ -2892,7 +2890,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// 2. Verify GM announcements are passed downstream in locked mode
 			By("Verifying all announcement fields match between receiver and transmitter")
 			logging.WriteStep("Verifying all announcement fields match between receiver and transmitter")
-			trCfgName, err := ptphelper.GetConfigForProfile(qualifiedTR, pkg.PtpLinuxDaemonPodsLabel)
+			trCfgName, err := ptphelper.GetConfigForProfile(qualifiedTR, nil, &nodeName)
 			Expect(err).NotTo(HaveOccurred())
 			pmcTR, err := pmc.Query(fullConfig.DiscoveredClockUnderTestPod, trCfgName)
 			Expect(err).NotTo(HaveOccurred())
@@ -2939,7 +2937,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			}
 
 			slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
-			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			nodeName = fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
 			var toggledIfaces []string
 			for _, iface := range slaveIf {
 				if skipInterfaces[iface] {
@@ -2965,7 +2963,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			var expectedPriority1, expectedPriority2 int
 			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
 			for _, profile := range ptpConfig.Spec.Profile {
-				if profile.Name != nil && *profile.Name == "tbc-tt" && profile.Ptp4lConf != nil {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt") && profile.Ptp4lConf != nil {
 					for _, match := range priorityRegex.FindAllStringSubmatch(*profile.Ptp4lConf, -1) {
 						v, err := strconv.Atoi(match[2])
 						Expect(err).NotTo(HaveOccurred())
