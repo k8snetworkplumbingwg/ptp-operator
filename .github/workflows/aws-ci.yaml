@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   deploy-ec2:
+    if: github.repository == 'k8snetworkplumbingwg/ptp-operator'
     runs-on: ubuntu-latest
     timeout-minutes: 115
     steps:

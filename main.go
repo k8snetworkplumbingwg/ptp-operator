@@ -334,17 +334,17 @@ func setupChecks(mgr ctrl.Manager, checker healthz.Checker) {
 func fetchTLSConfig(cfg *rest.Config) (configv1.TLSProfileSpec, configv1.TLSAdherencePolicy, error) {
 	s := runtime.NewScheme()
 	if err := configv1.Install(s); err != nil {
-		return configv1.TLSProfileSpec{}, "", fmt.Errorf("failed to add configv1 to scheme: %v", err)
+		return configv1.TLSProfileSpec{}, configv1.TLSAdherencePolicyNoOpinion, fmt.Errorf("failed to add configv1 to scheme: %v", err)
 	}
 	c, err := client.New(cfg, client.Options{Scheme: s})
 	if err != nil {
-		return configv1.TLSProfileSpec{}, "", fmt.Errorf("failed to create client: %v", err)
+		return configv1.TLSProfileSpec{}, configv1.TLSAdherencePolicyNoOpinion, fmt.Errorf("failed to create client: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	profileSpec, err := openshifttls.FetchAPIServerTLSProfile(ctx, c)
 	if err != nil {
-		return configv1.TLSProfileSpec{}, "", err
+		return configv1.TLSProfileSpec{}, configv1.TLSAdherencePolicyNoOpinion, err
 	}
 	adherencePolicy, err := openshifttls.FetchAPIServerTLSAdherencePolicy(ctx, c)
 	if err != nil {
@@ -354,7 +354,7 @@ func fetchTLSConfig(cfg *rest.Config) (configv1.TLSProfileSpec, configv1.TLSAdhe
 			setupLog.Info("APIServer CR not found for adherence policy, defaulting to legacy behavior")
 			return profileSpec, configv1.TLSAdherencePolicyNoOpinion, nil
 		}
-		return configv1.TLSProfileSpec{}, "", fmt.Errorf("failed to fetch TLS adherence policy: %v", err)
+		return configv1.TLSProfileSpec{}, configv1.TLSAdherencePolicyNoOpinion, fmt.Errorf("failed to fetch TLS adherence policy: %v", err)
 	}
 	return profileSpec, adherencePolicy, nil
 }

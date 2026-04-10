@@ -130,11 +130,7 @@ func TestTLSProfileTemplateRendering_LegacyAdherence(t *testing.T) {
 	// cipher suites that were in place before cluster TLS profile support.
 	data := makeTestRenderData()
 	data.Data["TLSMinVersion"] = ""
-	data.Data["TLSCipherSuites"] = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256," +
-		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256," +
-		"TLS_RSA_WITH_AES_128_CBC_SHA256," +
-		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256," +
-		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+	data.Data["TLSCipherSuites"] = legacyCipherSuites
 
 	objs, err := render.RenderTemplate("../bindata/linuxptp/ptp-daemon.yaml", data)
 	assert.NoError(t, err)
@@ -165,11 +161,7 @@ func TestTLSProfileTemplateRendering_LegacyAdherence(t *testing.T) {
 				"TLS min version should not be set in legacy adherence mode")
 		}
 		assert.Contains(t, rbacProxyArgs,
-			"--tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,"+
-				"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,"+
-				"TLS_RSA_WITH_AES_128_CBC_SHA256,"+
-				"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,"+
-				"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256")
+			"--tls-cipher-suites="+legacyCipherSuites)
 	}
 }
 
