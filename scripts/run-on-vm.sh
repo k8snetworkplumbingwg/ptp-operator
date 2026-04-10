@@ -81,6 +81,9 @@ kubectl rollout status deployment ptp-operator -n openshift-ptp
 
 kubectl get pods -n openshift-ptp -o wide
 
+# Start GNSS simulator for T-GM simulation tests
+./configGNSS.sh "$VM_IP"
+
 # run tests
 ./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower \
   --linuxptp-daemon-image "$VM_IP/test:lptpd" \
