@@ -6,7 +6,6 @@ import (
 	"path"
 	"runtime"
 	"strconv"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,7 +33,7 @@ func InitLogLevel() {
 // SetLogFormat sets the log format for logrus
 func SetLogFormat() {
 	customFormatter := new(logrus.TextFormatter)
-	customFormatter.TimestampFormat = time.StampMilli
+	customFormatter.TimestampFormat = "2006-01-02 15:04:05.000 MST"
 	customFormatter.PadLevelText = true
 	customFormatter.FullTimestamp = true
 	customFormatter.ForceColors = true
