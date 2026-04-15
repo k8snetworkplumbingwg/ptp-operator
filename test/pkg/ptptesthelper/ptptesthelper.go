@@ -749,11 +749,54 @@ func VerifyPerConfigClockClassWithMetrics(fullConfig testconfig.TestConfig, conf
 		fmt.Sprintf("Expected metrics clock class %d for config %s", expectedClass, configName))
 }
 
-// VerifyNICClockClass checks the expected clock class for a NIC via PMC
-// and per-config Prometheus metrics.
-func VerifyNICClockClass(fullConfig testconfig.TestConfig, nic NICInfo, expectedClass int) {
+// nodeClockClassRe matches openshift_ptp_clock_class without the config label (4.16/4.17).
+var nodeClockClassRe = regexp.MustCompile(`^openshift_ptp_clock_class\{node="([^"]+)",process="ptp4l"\}\s+(\d+)`)
+
+// getNodeClockClassFromMetrics returns the clock class from the node-level metric
+// (without config label, used on OCP < 4.18).
+func getNodeClockClassFromMetrics(fullConfig testconfig.TestConfig) (int, error) {
+	buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
+		pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	if err != nil {
+		return -1, fmt.Errorf("error getting metrics: %v", err)
+	}
+	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+	for scanner.Scan() {
+		matches := nodeClockClassRe.FindStringSubmatch(scanner.Text())
+		if len(matches) >= 3 {
+			return strconv.Atoi(matches[2])
+		}
+	}
+	return -1, fmt.Errorf("openshift_ptp_clock_class metric not found")
+}
+
+// verifyNodeClockClassWithMetrics polls the node-level clock class metric (no config label)
+// until the expected value is seen. Used on OCP < 4.18 for single NIC.
+func verifyNodeClockClassWithMetrics(fullConfig testconfig.TestConfig, expectedClass int) {
+	Eventually(func() int {
+		cc, err := getNodeClockClassFromMetrics(fullConfig)
+		if err != nil {
+			fmt.Fprintf(GinkgoWriter, "Node-level clock class metric error: %v\n", err)
+			return -1
+		}
+		fmt.Fprintf(GinkgoWriter, "Node-level clock class metric: %d (expected %d)\n", cc, expectedClass)
+		return cc
+	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(Equal(expectedClass),
+		fmt.Sprintf("Expected node-level clock class metric %d", expectedClass))
+}
+
+// VerifyNICClockClass checks the expected clock class for a NIC via PMC and metrics.
+// isDualNIC controls the metric check on OCP < 4.18:
+//   - On OCP >= 4.18: always verifies via per-config metric (config label available).
+//   - On OCP < 4.18, single NIC: verifies via node-level metric (no config label).
+//   - On OCP < 4.18, dual NIC: metrics skipped (single metric can't distinguish NICs).
+func VerifyNICClockClass(fullConfig testconfig.TestConfig, nic NICInfo, expectedClass int, isDualNIC bool) {
 	VerifyClockClassViaPMC(fullConfig, nic.ConfigFile, expectedClass)
-	VerifyPerConfigClockClassWithMetrics(fullConfig, nic.ConfigName, expectedClass)
+	if ptphelper.IsPTPOperatorVersionAtLeast("4.18") {
+		VerifyPerConfigClockClassWithMetrics(fullConfig, nic.ConfigName, expectedClass)
+	} else if !isDualNIC {
+		verifyNodeClockClassWithMetrics(fullConfig, expectedClass)
+	}
 }
 
 // TurnOffAndWaitFaulty brings the interface down and polls until its clock role

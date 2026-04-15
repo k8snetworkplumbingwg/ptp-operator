@@ -1111,21 +1111,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				// Step 1: verify initial locked state via PMC, metrics, and events
 				By("Step 1: Verifying NIC reports clockClass 6 (initial locked state)")
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, false)
 				verifyClockClassViaEvent(evCtx, locked)
 
 				// Step 2: cut upstream sync by bringing slave interface down
 				By(fmt.Sprintf("Step 2: Locking NIC-1 PTP source (bringing down %s)", nic1.SlaveIf))
 				portEngine.TurnOffAndWaitFaulty(nic1.SlaveIf, nodeName)
 				// Clock should transition to freerun (248) without its time source
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun, false)
 				verifyClockClassViaEvent(evCtx, freerun)
 
 				// Step 3: restore upstream sync by bringing slave interface back up
 				By(fmt.Sprintf("Step 3: Unlocking NIC-1 PTP source (bringing up %s)", nic1.SlaveIf))
 				portEngine.TurnOnAndWaitSlave(nic1.SlaveIf, nodeName)
 				// Clock should recover to locked (6)
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, false)
 				verifyClockClassViaEvent(evCtx, locked)
 			})
 
@@ -1169,8 +1169,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				// Step 1: all NICs should report clockClass 6 (locked)
 				By("Step 1: Verifying all NICs report clockClass 6 (initial locked state)")
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked)
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, locked)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, true)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, locked, true)
 				verifyClockClassViaEvent(evCtx, locked)
 
 				// Step 2: lock NIC-2's PTP source
@@ -1179,8 +1179,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				// Step 3: NIC-1 still locked, NIC-2 now freerun
 				By("Step 3: Verifying NIC-1=6, NIC-2=248")
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked)
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, freerun)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, true)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, freerun, true)
 				verifyClockClassViaEvent(evCtx, freerun)
 
 				// Step 4: swap — lock NIC-1, unlock NIC-2
@@ -1190,8 +1190,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				// Step 5: NIC-1 now freerun, NIC-2 recovered to locked
 				By("Step 5: Verifying NIC-1=248, NIC-2=6")
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun)
-				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, locked)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun, true)
+				ptptesthelper.VerifyNICClockClass(fullConfig, nic2, locked, true)
 				verifyClockClassViaEvent(evCtx, freerun)
 			})
 		})
