@@ -887,12 +887,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				aLabel := pkg.PtpClockUnderTestNodeLabel
 				name := pkg.PtpBcMaster1PolicyName
 				if fullConfig.PtpModeDiscovered == testconfig.TelcoBoundaryClock {
-					// configName, err := ptphelper.GetConfigForProfile("tbc-tr", aLabel)
-					// if err != nil {
-					// 	Fail(fmt.Sprintf("unable to find configName for T-BC: %s", err))
-					// }
-					// name = configName
-					name = "tbc-tr"
+					Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).ToNot(BeNil(), "T-BC mode requires DiscoveredClockUnderTestPtpConfig")
+					crName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig).Name
+					name = ptphelper.QualifyProfileName(crName, "tbc-tr")
 				}
 				masterIDBc1, err := ptphelper.GetClockIDMaster(name, &aLabel, nil, false)
 				Expect(err).To(BeNil())
@@ -2956,7 +2953,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			var expectedPriority1, expectedPriority2 int
 			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
 			for _, profile := range ptpConfig.Spec.Profile {
-				if profile.Name != nil && *profile.Name == "tbc-tt" && profile.Ptp4lConf != nil {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt") && profile.Ptp4lConf != nil {
 					for _, match := range priorityRegex.FindAllStringSubmatch(*profile.Ptp4lConf, -1) {
 						v, err := strconv.Atoi(match[2])
 						Expect(err).NotTo(HaveOccurred())

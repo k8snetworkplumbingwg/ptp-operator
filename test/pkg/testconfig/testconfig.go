@@ -2149,10 +2149,11 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			hasTbcTt := false
 			for _, profile := range ptpConfig.Spec.Profile {
 				if profile.Name != nil {
-					switch *profile.Name {
-					case "tbc-tr":
+					q := ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name)
+					if q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr") {
 						hasTbcTr = true
-					case "tbc-tt":
+					}
+					if q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt") {
 						hasTbcTt = true
 					}
 				}
