@@ -907,11 +907,24 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						}
 					})
 
+					// Wait for operator to reconcile the config map with the
+					// temp profile before restarting the daemon pod, so the new
+					// pod starts with the correct config on first boot.
+					err = ptphelper.WaitForConfigMapProfile(nodes.Items[0].Name, pkg.PtpTempPolicyName, 2*time.Minute)
+					Expect(err).NotTo(HaveOccurred(), "operator did not reconcile temp profile into configmap in time")
+
 					testPtpPod, err = ptphelper.GetPtpPodOnNode(nodes.Items[0].Name)
 					Expect(err).NotTo(HaveOccurred())
 
 					testPtpPod, err = ptphelper.ReplaceTestPod(&testPtpPod, time.Minute)
 					Expect(err).NotTo(HaveOccurred())
+				})
+
+				By("Waiting for daemon to load the temp profile", func() {
+					_, err := pods.GetPodLogsRegex(testPtpPod.Namespace,
+						testPtpPod.Name, pkg.PtpContainerName,
+						"Profile Name: "+pkg.PtpTempPolicyName, true, pkg.TimeoutIn3Minutes)
+					Expect(err).NotTo(HaveOccurred(), "daemon did not load temp profile in time")
 				})
 
 				By("Checking if Node has Profile and check sync", func() {

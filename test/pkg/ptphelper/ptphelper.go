@@ -384,6 +384,35 @@ func PtpDiscoveredInterfaceList(nodeName string) []string {
 	return ptpInterfaces
 }
 
+// WaitForConfigMapProfile polls the ptp-configmap until the given node's entry
+// contains the expected profile name (qualified or unqualified substring).
+// This ensures the operator has reconciled and the daemon will see the new
+// config when it starts or detects the change.
+func WaitForConfigMapProfile(nodeName, profileSubstring string, timeout time.Duration) error {
+	var lastErr error
+	Eventually(func() error {
+		cm, err := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), "ptp-configmap", metav1.GetOptions{})
+		if err != nil {
+			lastErr = fmt.Errorf("could not get configmap: %v", err)
+			return lastErr
+		}
+		data, ok := cm.Data[nodeName]
+		if !ok {
+			lastErr = fmt.Errorf("node %s not found in configmap", nodeName)
+			return lastErr
+		}
+		if !strings.Contains(data, profileSubstring) {
+			lastErr = fmt.Errorf("profile %q not found in configmap for node %s", profileSubstring, nodeName)
+			return lastErr
+		}
+		return nil
+	}, timeout, 2*time.Second).Should(BeNil(),
+		fmt.Sprintf("timed out waiting for profile %q in configmap for node %s: %v",
+			profileSubstring, nodeName, lastErr))
+	return nil
+}
+
 func MutateProfile(profile *ptpv1.PtpConfig, profileName, nodeName string) *ptpv1.PtpConfig {
 	mutatedConfig := profile.DeepCopy()
 	priority := int64(0)
