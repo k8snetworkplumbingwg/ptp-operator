@@ -799,9 +799,12 @@ func VerifyNICClockClass(fullConfig testconfig.TestConfig, nic NICInfo, expected
 	}
 }
 
-// TurnOffAndWaitFaulty brings the interface down and polls until its clock role
-// becomes FAULTY, failing the test on timeout.
+// TurnOffAndWaitFaulty disables NetworkManager management on the interface,
+// brings it down, and polls until its clock role becomes FAULTY. Disabling NM
+// prevents it from auto-recovering the link while the test expects it to stay down.
 func (p *PortEngine) TurnOffAndWaitFaulty(iface, nodeName string) {
+	p.nmSetManaged(iface, false)
+	DeferCleanup(p.nmSetManaged, iface, true)
 	err := p.TurnPortDown(iface)
 	Expect(err).NotTo(HaveOccurred())
 	Eventually(func() error {
@@ -811,14 +814,32 @@ func (p *PortEngine) TurnOffAndWaitFaulty(iface, nodeName string) {
 		iface+" should be FAULTY")
 }
 
-// TurnOnAndWaitSlave brings the interface up and polls until its clock role
-// recovers to SLAVE, failing the test on timeout.
+// TurnOnAndWaitSlave brings the interface up, re-enables NetworkManager
+// management, and polls until its clock role recovers to SLAVE.
 func (p *PortEngine) TurnOnAndWaitSlave(iface, nodeName string) {
 	err := p.TurnPortUp(iface)
 	Expect(err).NotTo(HaveOccurred())
+	p.nmSetManaged(iface, true)
 	Eventually(func() error {
 		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleSlave},
 			[]string{iface}, &nodeName)
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeNil(),
 		iface+" should recover to SLAVE")
+}
+
+// nmSetManaged tells NetworkManager to start or stop managing an interface.
+// This prevents NM from auto-recovering a link that the test brought down.
+// Silently ignored when nmcli is not available (e.g. Kind clusters).
+func (p *PortEngine) nmSetManaged(port string, managed bool) {
+	val := "no"
+	if managed {
+		val = "yes"
+	}
+	stdout, _, err := pods.ExecCommand(client.Client, true, p.ClockPod, pkg.RecoveryNetworkOutageDaemonSetContainerName,
+		[]string{"chroot", "/host", "nmcli", "device", "set", port, "managed", val})
+	if err != nil {
+		logrus.Debugf("nmcli not available for %s (expected on Kind): %v", port, err)
+		return
+	}
+	logrus.Infof("NM set managed=%s for %s: output: %s", val, port, stdout.String())
 }
