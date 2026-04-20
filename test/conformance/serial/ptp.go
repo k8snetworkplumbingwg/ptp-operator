@@ -2019,21 +2019,43 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired == testconfig.DualFollowerClock {
 					Skip("Test not valid for dual follower scenario")
 				}
-				By("toggling network interfaces and syncing", func() {
-					skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
 
-					if !isSet {
-						Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
-					} else {
-						skipInterfaces := make(map[string]bool)
-						separated := strings.Split(skippedInterfacesStr, ",")
-						for _, val := range separated {
-							skipInterfaces[val] = true
-						}
-						logrus.Info("skipINterfaces", skipInterfaces)
-						ptptesthelper.RecoverySlaveNetworkOutage(fullConfig, skipInterfaces)
+				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
+				if !isSet {
+					Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
+				}
+				skipInterfaces := make(map[string]bool)
+				for _, val := range strings.Split(skippedInterfacesStr, ",") {
+					skipInterfaces[val] = true
+				}
+
+				slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+				By("Taking all slave interfaces down")
+				var toggledIfaces []string
+				for _, iface := range slaveIf {
+					if skipInterfaces[iface] {
+						logrus.Infof("Skipping interface %s", iface)
+						continue
 					}
-				})
+					logrus.Infof("Simulating PTP outage on interface %s", iface)
+					portEngine.TurnOffAndWaitFaulty(iface, nodeName)
+					toggledIfaces = append(toggledIfaces, iface)
+				}
+
+				By("Restoring all slave interfaces and verifying sync")
+				for _, iface := range toggledIfaces {
+					portEngine.TurnOnAndWaitSlave(iface, nodeName)
+
+					var offsetWithinBound bool
+					for i := 0; i < 5 && !offsetWithinBound; i++ {
+						offsetVal, err := metrics.GetPtpOffeset(iface, &nodeName)
+						Expect(err).NotTo(HaveOccurred())
+						offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+					}
+					Expect(offsetWithinBound).To(BeTrue())
+				}
 			})
 
 			It("BC clock class recovers to Locked after upstream link outage", func() {
