@@ -275,7 +275,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Skip("Skipping as the test is only applicable for Dual NIC BC in HA mode (dualnicbcha)")
 			}
 
-			By("Checking if HA is availble in this opertator version")
+			By("Checking if HA is available in this operator version")
 			ptpOperatorVersion, err := ptphelper.GetPtpOperatorVersion()
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ptpOperatorVersion).ShouldNot(BeEmpty())
