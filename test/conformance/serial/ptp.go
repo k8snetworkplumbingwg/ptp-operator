@@ -369,6 +369,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				ptphelper.RestartPTPDaemon()
 			}
 
+			if fullConfig.DiscoveredClockUnderTestPod == nil {
+				Fail("DiscoveredClockUnderTestPod is nil - check that the node is labeled with " + pkg.PtpClockUnderTestNodeLabel)
+			}
 			portEngine.Initialize(fullConfig.DiscoveredClockUnderTestPod, fullConfig.DiscoveredFollowerInterfaces)
 
 		})
@@ -2985,8 +2988,25 @@ func getClockStateByProcess(metrics, process string) (string, bool) {
 	return "", false
 }
 
+func refreshPodOnNotFound(pod *v1core.Pod, err error) {
+	if err == nil || pod == nil {
+		return
+	}
+	if !kerrors.IsNotFound(err) {
+		return
+	}
+	nodeName := pod.Spec.NodeName
+	fmt.Fprintf(GinkgoWriter, "Pod %s not found, refreshing pod reference for node %s\n", pod.Name, nodeName)
+	newPod, refreshErr := ptphelper.GetPtpPodOnNode(nodeName)
+	if refreshErr != nil {
+		fmt.Fprintf(GinkgoWriter, "Failed to refresh pod for node %s: %v\n", nodeName, refreshErr)
+		return
+	}
+	*pod = newPod
+	fmt.Fprintf(GinkgoWriter, "Refreshed pod reference to %s\n", pod.Name)
+}
+
 func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
-	// Add nil checks to prevent panic
 	if fullConfig.DiscoveredClockUnderTestPod == nil {
 		Fail("DiscoveredClockUnderTestPod is nil - cannot check process status")
 		return
@@ -3007,13 +3027,21 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		openshift_ptp_process_status{config="ts2phc.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="ts2phc"} 1
 	*/
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return ""
+		}
 		return buf.String()
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpProcessStatus),
 		"Process status metrics are not detected")
 
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return ""
+		}
 		return buf.String()
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring("phc2sys"),
 		"phc2ys process status not detected")
@@ -3036,6 +3064,7 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 		if err != nil {
 			fmt.Fprintf(GinkgoWriter, "Error executing curl: %v\n", err)
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
 			return false
 		}
 
@@ -3076,7 +3105,11 @@ func checkDPLLFrequencyState(fullConfig testconfig.TestConfig, state string) {
 		# openshift_ptp_frequency_status{from="dpll",iface="ens7fx",node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="dpll"} 3
 	*/
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return ""
+		}
 		return buf.String()
 	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpFrequencyStatus),
 		"frequency status metrics are not detected")
@@ -3121,7 +3154,11 @@ func checkDPLLPhaseState(fullConfig testconfig.TestConfig, state string) {
 		# openshift_ptp_phase_status{from="dpll",iface="ens7fx",node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="dpll"} 3
 	*/
 	Eventually(func() string {
-		buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return ""
+		}
 		return buf.String()
 	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpPhaseStatus),
 		"frequency status metrics are not detected")
@@ -3409,7 +3446,11 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 }
 
 func checkClockClassStateReturnBool(fullConfig testconfig.TestConfig, expectedState string) bool {
-	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	if err != nil {
+		refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+		return false
+	}
 	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
 	for scanner.Scan() {
 		line := scanner.Text()
