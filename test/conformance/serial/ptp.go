@@ -21,8 +21,10 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/namespaces"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/pmc"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptptesthelper"
 	"github.com/sirupsen/logrus"
@@ -136,7 +138,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			listOptions := metav1.ListOptions{}
-			if ptpConfig.Spec.DaemonNodeSelector != nil && len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
+			if len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
 				listOptions = metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: ptpConfig.Spec.DaemonNodeSelector})}
 			}
 
@@ -274,8 +276,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Skip("Skipping as the test is only applicable for Dual NIC BC in HA mode (dualnicbcha)")
 			}
 
+			By("Checking if HA is availble in this opertator version")
+			ptpOperatorVersion, err := ptphelper.GetPtpOperatorVersion()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ptpOperatorVersion).ShouldNot(BeEmpty())
+			operatorVersion, err := semver.NewVersion(ptpOperatorVersion)
+			Expect(err).ToNot(HaveOccurred())
+			haVersion, _ := semver.NewVersion("4.16")
+			if operatorVersion.LessThan(haVersion) {
+				Skip("HA is not available in version < 4.16")
+			}
+
 			By("Creating a PtpConfig with underscore profile names in haProfiles")
-			err := testconfig.CreatePtpConfigWithUnderscoreProfileNames()
+			err = testconfig.CreatePtpConfigWithUnderscoreProfileNames()
 			Expect(err).ToNot(HaveOccurred(), "webhook should accept underscores in profile names")
 			logrus.Infof("Successfully created PtpConfig with underscore profile names: test_profile_bc1, test_profile_bc2")
 
@@ -408,14 +421,15 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
-				var err error
+
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
 				ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
@@ -473,13 +487,15 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Getting ptp config details")
 				ptpConfig := testconfig.GlobalConfig
 
-				masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+				if ptpConfig.DiscoveredGrandMasterPtpConfig != nil {
+					masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+					logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
+					AddReportEntry("master-ptp-config", masterPtpConfigStr)
+				} else {
+					logrus.Infof("No internal grandmaster PTP config discovered (external GM)")
+				}
 				slavePtpConfigStr := ptpConfig.DiscoveredClockUnderTestPtpConfig.String()
-
-				logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
 				logrus.Infof("Discovered slave ptp config %s", slavePtpConfigStr)
-
-				AddReportEntry("master-ptp-config", masterPtpConfigStr)
 				AddReportEntry("slave-ptp-config", slavePtpConfigStr)
 			})
 		})
@@ -494,13 +510,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 			})
 			AfterEach(func() {
 				portEngine.TurnAllPortsUp()
@@ -527,9 +543,22 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						Fail(fmt.Sprintf("check Grandmaster clock type, err=%s", err))
 					}
 					if isClockUnderTest {
-						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
-							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
-							profileSlave, true, pkg.TimeoutIn3Minutes)
+						if fullConfig.PtpModeDesired == testconfig.TelcoBoundaryClock {
+							// T-BC daemon profiles are qualified: <configname>_tbc-tr / <configname>_tbc-tt
+							tbcConfigName := fullConfig.DiscoveredClockUnderTestPtpConfig.Name
+							_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
+								ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+								"Profile Name: "+tbcConfigName+"_tbc-tr", true, pkg.TimeoutIn3Minutes)
+							if err != nil {
+								_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
+									ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+									"Profile Name: "+tbcConfigName+"_tbc-tt", true, pkg.TimeoutIn3Minutes)
+							}
+						} else {
+							_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
+								ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+								profileSlave, true, pkg.TimeoutIn3Minutes)
+						}
 						if err != nil {
 							Fail(fmt.Sprintf("could not get slave profile name, err=%s", err))
 						}
@@ -578,7 +607,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						expectedClockClass = fbprotocol.ClockClassSlaveOnly
 					}
 					By(fmt.Sprintf("Verifying OC clock_class is %d", expectedClockClass))
-					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)), pkg.TimeoutIn5Minutes)
 				}
 			})
 
@@ -807,24 +836,28 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], portEngine.InitialRoles[0], portEngine.InitialRoles[1])
 				}, 120*time.Second, 1*time.Second).Should(BeNil())
 
-				By("Remove Grandmaster")
-				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
-				Expect(err).To(BeNil())
-				By("Check clock role")
-				Eventually(func() error {
-					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
-				}, 120*time.Second, 1*time.Second).Should(BeNil())
-				By("Check holdover")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Check freerun")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Recreate Grandmaster")
-				tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
-				tempPtpConfig.SetResourceVersion("")
-				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
-				Expect(err).To(BeNil())
+				if !isExternalMaster {
+					By("Remove Grandmaster")
+					err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
+					Expect(err).To(BeNil())
+					By("Check clock role")
+					Eventually(func() error {
+						return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
+					}, 120*time.Second, 1*time.Second).Should(BeNil())
+					By("Check holdover")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Check freerun")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Recreate Grandmaster")
+					tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+					tempPtpConfig.SetResourceVersion("")
+					_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
+					Expect(err).To(BeNil())
+				} else {
+					logrus.Infof("Skipping GM removal/recreation test phase (external GM)")
+				}
 			})
 
 			// Multinode BCSlave clock sync
@@ -838,19 +871,29 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
-					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA {
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA &&
+					fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
 					Skip("test only valid for Boundary clock in multi-node clusters")
 				}
 
 				if !fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesExtGMString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] {
+					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] &&
+					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesString] &&
+					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesExtGMString] {
 					Skip("test only valid for Boundary clock in multi-node clusters with slaves")
 				}
 				aLabel := pkg.PtpClockUnderTestNodeLabel
-				masterIDBc1, err := ptphelper.GetClockIDMaster(pkg.PtpBcMaster1PolicyName, &aLabel, nil, false)
+				name := pkg.PtpBcMaster1PolicyName
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoBoundaryClock {
+					Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).ToNot(BeNil(), "T-BC mode requires DiscoveredClockUnderTestPtpConfig")
+					crName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig).Name
+					name = ptphelper.QualifyProfileName(crName, "tbc-tr")
+				}
+				masterIDBc1, err := ptphelper.GetClockIDMaster(name, &aLabel, nil, false)
 				Expect(err).To(BeNil())
+
 				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave1PtpConfig), &masterIDBc1, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil())
 
@@ -889,6 +932,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						policyName = pkg.PtpBcMaster1PolicyName
 					case testconfig.DualNICBoundaryClock, testconfig.DualNICBoundaryClockHA:
 						policyName = pkg.PtpBcMaster1PolicyName
+					case testconfig.TelcoBoundaryClock:
+						policyName = pkg.PTPWPCTBCPolicyName
 					}
 					ptpConfigToModify, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), policyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
@@ -944,7 +989,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						gmClockID, err := ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
 						Expect(err).To(BeNil())
 
-						profileName, err := ptphelper.GetProfileName(modifiedPtpConfig)
+						profileName, err := ptphelper.GetProfileName(modifiedPtpConfig, true)
 						Expect(err).To(BeNil())
 						label, err := ptphelper.GetLabel(modifiedPtpConfig)
 						if err != nil {
@@ -977,7 +1022,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						testPtpPod.Name, pkg.PtpContainerName,
 						"Profile Name: "+policyName, true, pkg.TimeoutIn3Minutes)
 					if err != nil {
-						Fail(fmt.Sprintf("could not get profile name, err=%s", err))
+						profileRegex := policyName
+						if policyName == pkg.PTPWPCTBCPolicyName {
+							profileRegex = "tbc-(tr|tt)"
+						}
+						_, err = ptphelper.GetConfigForProfileFromVarRun(profileRegex, &testPtpPod, pkg.PtpContainerName)
+						if err != nil {
+							Fail(fmt.Sprintf("could not get profile name, err=%s", err))
+						}
 					}
 				})
 			})
@@ -1217,15 +1269,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
-
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
-				var err error
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 
 				_, err = pods.GetPodLogsRegex(fullConfig.DiscoveredClockUnderTestPod.Namespace,
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
@@ -2015,21 +2065,43 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired == testconfig.DualFollowerClock {
 					Skip("Test not valid for dual follower scenario")
 				}
-				By("toggling network interfaces and syncing", func() {
-					skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
 
-					if !isSet {
-						Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
-					} else {
-						skipInterfaces := make(map[string]bool)
-						separated := strings.Split(skippedInterfacesStr, ",")
-						for _, val := range separated {
-							skipInterfaces[val] = true
-						}
-						logrus.Info("skipINterfaces", skipInterfaces)
-						ptptesthelper.RecoverySlaveNetworkOutage(fullConfig, skipInterfaces)
+				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
+				if !isSet {
+					Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
+				}
+				skipInterfaces := make(map[string]bool)
+				for _, val := range strings.Split(skippedInterfacesStr, ",") {
+					skipInterfaces[val] = true
+				}
+
+				slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+				By("Taking all slave interfaces down")
+				var toggledIfaces []string
+				for _, iface := range slaveIf {
+					if skipInterfaces[iface] {
+						logrus.Infof("Skipping interface %s", iface)
+						continue
 					}
-				})
+					logrus.Infof("Simulating PTP outage on interface %s", iface)
+					portEngine.TurnOffAndWaitFaulty(iface, nodeName)
+					toggledIfaces = append(toggledIfaces, iface)
+				}
+
+				By("Restoring all slave interfaces and verifying sync")
+				for _, iface := range toggledIfaces {
+					portEngine.TurnOnAndWaitSlave(iface, nodeName)
+
+					var offsetWithinBound bool
+					for i := 0; i < 5 && !offsetWithinBound; i++ {
+						offsetVal, err := metrics.GetPtpOffeset(iface, &nodeName)
+						Expect(err).NotTo(HaveOccurred())
+						offsetWithinBound = offsetVal >= metrics.MinOffsetNs && offsetVal < metrics.MaxOffsetNs
+					}
+					Expect(offsetWithinBound).To(BeTrue())
+				}
 			})
 
 			It("BC clock class recovers to Locked after upstream link outage", func() {
@@ -2065,7 +2137,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 
 				By("Checking initial clock class is Locked (6)")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				By("Setting all slave interfaces down")
 				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
@@ -2237,7 +2309,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						# TYPE openshift_ptp_clock_class gauge
 						# openshift_ptp_clock_class{node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="ptp4l"} 6
 					*/
-					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				})
 
@@ -2358,7 +2430,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					checkStabilityOfWPCGMUsingMetrics(fullConfig)
 
 					// Initially system should be LOCKED (ClockClass 6)
-					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 					// Disable GNSS
 					disableGNSSViaSignalRequirements(fullConfig)
@@ -2405,7 +2477,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			It("Continuously terminating ts2phc triggers FREERUN event and then recovers to LOCKED", func() {
 				By("Ensure initial state is LOCKED via clock class 6")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				// Ensure event consumer exists and pubsub is initialized (V2)
 				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
@@ -2517,7 +2589,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				// Ensure system starts in LOCKED (ClockClass 6)
 				logrus.Info("Verifying current LOCKED state...")
 				By("Check current LOCKED state")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				// Subscribe to CHANGE events (consistent with later verifications)
 				const incomingEventsBuffer = 100
@@ -2726,12 +2798,395 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				time.Sleep(5 * time.Second)
 			})
 		})
+
+		It("Check GM announcements in locked mode and holdover transitions", func() {
+			if fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
+				Skip("test valid only for T-BC test config")
+			}
+			// 0. Modify E810 plugin settings and replace existing config
+			originalPtpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+
+			// Store original config for restoration
+			originalConfigCopy := originalPtpConfig.DeepCopy()
+
+			// Modify E810 plugin settings in place (keep same name and metadata)
+			modifiedPtpConfig := ptphelper.MutateE810PluginSettings(
+				originalPtpConfig,
+				*originalPtpConfig.Spec.Profile[0].Name, // Keep original profile name
+				fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName,
+				500, // LocalMaxHoldoverOffSet: 500ns (DPLL offset threshold for freerun/class 248, ~250s at ~2ns/s drift)
+				300, // LocalHoldoverTimeout: 300s (safety net, offset should cross 500ns first)
+				100, // MaxInSpecOffset: 100ns (DPLL offset threshold for out-of-spec/class 165, ~50s at ~2ns/s drift)
+			)
+
+			// Keep original metadata (name, namespace, etc.)
+			modifiedPtpConfig.ObjectMeta = originalPtpConfig.ObjectMeta
+
+			_, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), modifiedPtpConfig, metav1.UpdateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Deleting daemon pod to apply new profile")
+			logging.WriteStep("Deleting daemon pod to apply new profile")
+			newPod, err := ptphelper.ReplaceTestPod(fullConfig.DiscoveredClockUnderTestPod, 5*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+			*fullConfig.DiscoveredClockUnderTestPod = newPod
+
+			// Daemon profiles are qualified: <configname>_<profilename>
+			qualifiedTT := originalPtpConfig.Name + "_tbc-tt"
+			qualifiedTR := originalPtpConfig.Name + "_tbc-tr"
+
+			// Setup PMC monitor for TT profile to watch announcements
+			cfgName, err := ptphelper.GetConfigForProfile(qualifiedTT, pkg.PtpLinuxDaemonPodsLabel)
+			Expect(err).NotTo(HaveOccurred())
+
+			pmcMonitor, err := pmc.NewMonitor(fullConfig.DiscoveredClockUnderTestPod, cfgName, 5*time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			pmcMonitor.Start()
+
+			// Cleanup: Stop monitor and restore original config after test
+			DeferCleanup(func() {
+				pmcMonitor.Stop()
+				// Re-fetch the latest version to get the current resourceVersion,
+				// then restore the original spec on top of it to avoid conflict errors.
+				latest, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), originalConfigCopy.Name, metav1.GetOptions{})
+				if err != nil {
+					logrus.Errorf("Failed to get latest PtpConfig for restore: %v", err)
+					return
+				}
+				latest.Spec = originalConfigCopy.Spec
+				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), latest, metav1.UpdateOptions{})
+				if err != nil {
+					logrus.Errorf("Failed to restore original PtpConfig: %v", err)
+				}
+			})
+
+			// Track clock class transitions (only record when value changes)
+			var clockClassTransitions []int
+			lastRecordedClass := -1
+
+			// 1. Wait for locked state (class 6) after E810 config update
+			By("Waiting for locked state after E810 config update")
+			logging.WriteStep("Waiting for locked state after E810 config update")
+			lockStart := time.Now()
+			Eventually(func() bool {
+				select {
+				case data := <-pmcMonitor.DataChan():
+					if data != nil && data.GrandmasterClockQuality.ClockClass != lastRecordedClass {
+						clockClassTransitions = append(clockClassTransitions, data.GrandmasterClockQuality.ClockClass)
+						lastRecordedClass = data.GrandmasterClockQuality.ClockClass
+					}
+					logrus.Warnf("Current Clock class: %v (expected: 6)", data.GrandmasterClockQuality.ClockClass)
+					if data != nil && data.GrandmasterClockQuality.ClockClass == 6 {
+						return true
+					}
+				case err := <-pmcMonitor.ErrorChan():
+					logrus.Warnf("PMC monitor error: %v", err)
+				default:
+					// No data available, return false and Eventually will retry
+				}
+				return false
+			}, 30*time.Minute, 1*time.Second).Should(BeTrue(), "Clock should reach locked state (class 6)")
+			fmt.Fprintf(GinkgoWriter, "Locked to class 6 in %s (startup transitions: %v)\n", time.Since(lockStart).Truncate(time.Second), clockClassTransitions)
+			clockClassTransitions = []int{6}
+			lastRecordedClass = 6
+
+			// 2. Verify GM announcements are passed downstream in locked mode
+			By("Verifying all announcement fields match between receiver and transmitter")
+			logging.WriteStep("Verifying all announcement fields match between receiver and transmitter")
+			trCfgName, err := ptphelper.GetConfigForProfile(qualifiedTR, pkg.PtpLinuxDaemonPodsLabel)
+			Expect(err).NotTo(HaveOccurred())
+			pmcTR, err := pmc.Query(fullConfig.DiscoveredClockUnderTestPod, trCfgName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pmcTR).ToNot(BeNil(), "tbc-tr announce data should not be nil")
+
+			pmcTT, err := pmc.Query(fullConfig.DiscoveredClockUnderTestPod, cfgName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pmcTT).ToNot(BeNil(), "tbc-tt announce data should not be nil")
+
+			pmcTR.MeanPathDelay = pmcTT.MeanPathDelay
+			pmcTR.OffsetFromMaster = pmcTT.OffsetFromMaster
+			pmcTR.ParentPortIdentity = pmcTT.ParentPortIdentity
+			pmcTR.GrandmasterPriority1 = pmcTT.GrandmasterPriority1
+			pmcTR.GrandmasterPriority2 = pmcTT.GrandmasterPriority2
+
+			err = pmcTT.CheckSame(pmcTR)
+			Expect(err).NotTo(HaveOccurred(), "Transmitter should propagate exact GM information from receiver: %v", err)
+			err = pmcTR.CheckSame(pmcTT)
+			Expect(err).NotTo(HaveOccurred())
+
+			// 3. Trigger holdover by disabling upstream port
+			By("Triggering holdover by disabling upstream port")
+			logging.WriteStep("Triggering holdover by disabling upstream port")
+			skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
+
+			if !isSet {
+				Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
+			}
+
+			skipInterfaces := make(map[string]bool)
+			separated := strings.Split(skippedInterfacesStr, ",")
+			for _, val := range separated {
+				skipInterfaces[val] = true
+			}
+
+			for continueLooping := true; continueLooping; {
+				select {
+				case _ = <-pmcMonitor.DataChan():
+					continue
+				default:
+					// If we hit defualt then we cleared the backlog.
+					continueLooping = false
+				}
+			}
+
+			slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
+			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			var toggledIfaces []string
+			for _, iface := range slaveIf {
+				if skipInterfaces[iface] {
+					logrus.Infof("Skipping interface %s", iface)
+					continue
+				}
+				logrus.Infof("Disabling upstream interface %s", iface)
+				portEngine.TurnOffAndWaitFaulty(iface, nodeName)
+				toggledIfaces = append(toggledIfaces, iface)
+			}
+			restoreInterfacesOnce := sync.OnceFunc(func() {
+				for _, iface := range toggledIfaces {
+					portEngine.TurnOnAndWaitSlave(iface, nodeName)
+				}
+			})
+			defer restoreInterfacesOnce()
+
+			// Transition timer — tracks elapsed time between each phase
+			lastTransitionTime := time.Now()
+
+			// Look up expected priorities from the TT profile's ptp4l.conf
+			priorityRegex := regexp.MustCompile(`priority(\d)\s+(\d+)`)
+			var expectedPriority1, expectedPriority2 int
+			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+			for _, profile := range ptpConfig.Spec.Profile {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt") && profile.Ptp4lConf != nil {
+					for _, match := range priorityRegex.FindAllStringSubmatch(*profile.Ptp4lConf, -1) {
+						v, err := strconv.Atoi(match[2])
+						Expect(err).NotTo(HaveOccurred())
+						switch match[1] {
+						case "1":
+							expectedPriority1 = v
+						case "2":
+							expectedPriority2 = v
+						}
+					}
+					break
+				}
+			}
+			logrus.Infof("Expected TT priorities from ptp4l.conf: priority1=%d, priority2=%d", expectedPriority1, expectedPriority2)
+
+			// Calculate the TT clock identity from the leading interface's MAC address.
+			// The leading interface (with PTP pins) is found in the tbc-tr profile's
+			// e810 plugin config. The clock identity uses the standard EUI-48 → EUI-64
+			// conversion (insert fffe in the middle of the MAC).
+			expectedClockID, err := ptphelper.GetLocalClockID(ptpConfig, "tbc-tr",
+				fullConfig.L2Config, fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
+			Expect(err).NotTo(HaveOccurred(), "Should be able to calculate TT clock identity from MAC")
+			logrus.Infof("Expected TT clock identity: %s", expectedClockID)
+
+			// 3. Wait for holdover state (class 135) - in-spec holdover
+			// The comparison is inside the Eventually loop so the PMC monitor keeps
+			// querying until both the clock class AND the announced data match.
+			By("Waiting for holdover state (class 135) and verifying announced data")
+			logging.WriteStep("Waiting for holdover state (class 135) and verifying announced data")
+			Eventually(func() bool {
+				select {
+				case data := <-pmcMonitor.DataChan():
+
+					if data == nil {
+						return false
+					}
+					currentClass := data.GrandmasterClockQuality.ClockClass
+					logrus.Warnf("Current Clock class: %v (expected: 135)", currentClass)
+					if currentClass != lastRecordedClass {
+						clockClassTransitions = append(clockClassTransitions, currentClass)
+						lastRecordedClass = currentClass
+					}
+					if currentClass != 135 {
+						return false
+					}
+					// Clock class matches; now verify the announced data
+					expectedInSpec := pmc.AnnounceData{
+						GrandmasterClockQuality: pmc.ClockQuality{
+							ClockClass:              135,
+							ClockAccuracy:           data.GrandmasterClockQuality.ClockAccuracy, // Is calculated based on ramp so lets set it
+							OffsetScaledLogVariance: "0xFFFF",
+						},
+						Leap61:                false,
+						Leap59:                false,
+						CurrentUtcOffsetValid: true,
+						PtpTimescale:          true,
+						TimeTraceable:         true,
+						FrequencyTraceable:    data.FrequencyTraceable, // Can be either so we can just set it //based on traceability to Cat 1 frequency source
+						CurrentUtcOffset:      data.CurrentUtcOffset,   // Comes from leap seconds file
+						GrandmasterPriority1:  expectedPriority1,       // From TT ptp4l.conf
+						GrandmasterPriority2:  expectedPriority2,       // From TT ptp4l.conf
+						GrandmasterIdentity:   expectedClockID,         // TT's own clock identity in holdover
+						StepsRemoved:          0,
+						TimeSource:            "0xA0",
+						ParentPortIdentity:    data.ParentPortIdentity, // Checked separately below
+					}
+					if checkErr := data.CheckSame(&expectedInSpec); checkErr != nil {
+						fmt.Fprintf(GinkgoWriter, "Class 135 data not yet matching expected, retrying: %v\n", checkErr)
+						return false
+					}
+					// Verify ParentPortIdentity references the TT's own clock (port number may vary)
+					Expect(data.ParentPortIdentity).To(HavePrefix(expectedClockID),
+						"ParentPortIdentity should reference the T-BC's own clock identity in holdover")
+					return true
+				case err := <-pmcMonitor.ErrorChan():
+					logrus.Warnf("PMC monitor error: %v", err)
+				default:
+					// No data available, return false and Eventually will retry
+				}
+				return false
+			}, 5*time.Minute, 1*time.Second).Should(BeTrue(),
+				fmt.Sprintf("Clock should reach holdover (class 135) with matching data. transitions=%v", clockClassTransitions))
+			now := time.Now()
+			fmt.Fprintf(GinkgoWriter, "Reached class 135  (%s)\n", now.Sub(lastTransitionTime).Truncate(time.Second))
+			lastTransitionTime = now
+
+			// 5. Wait for out-of-spec state (class 165) - triggered by low MaxInSpecOffset
+			// The comparison is inside the Eventually loop so the PMC monitor keeps
+			// querying until both the clock class AND the announced data match.
+			By("Waiting for out-of-spec state (class 165) and verifying announced data")
+			logging.WriteStep("Waiting for out-of-spec state (class 165) and verifying announced data")
+			Eventually(func() bool {
+				select {
+				case data := <-pmcMonitor.DataChan():
+					if data == nil {
+						return false
+					}
+					currentClass := data.GrandmasterClockQuality.ClockClass
+					logrus.Warnf("Current Clock class: %v (expected: 165)", currentClass)
+					if currentClass != lastRecordedClass {
+						clockClassTransitions = append(clockClassTransitions, currentClass)
+						lastRecordedClass = currentClass
+					}
+					if currentClass != 165 {
+						return false
+					}
+					// Clock class matches; now verify the announced data
+					expectedOutOfSpec := pmc.AnnounceData{
+						GrandmasterClockQuality: pmc.ClockQuality{
+							ClockClass:              165,
+							ClockAccuracy:           "0xFE",
+							OffsetScaledLogVariance: "0xFFFF",
+						},
+						Leap61:                false,
+						Leap59:                false,
+						CurrentUtcOffsetValid: true,
+						PtpTimescale:          true,
+						TimeTraceable:         false,
+						FrequencyTraceable:    data.FrequencyTraceable, // Can be either so we can just set it //based on traceability to Cat 1 frequency source
+						CurrentUtcOffset:      data.CurrentUtcOffset,   // Comes from leap seconds file
+						GrandmasterPriority1:  expectedPriority1,       // From TT ptp4l.conf
+						GrandmasterPriority2:  expectedPriority2,       // From TT ptp4l.conf
+						GrandmasterIdentity:   expectedClockID,         // TT's own clock identity in holdover
+						StepsRemoved:          0,
+						TimeSource:            "0xA0",
+						ParentPortIdentity:    data.ParentPortIdentity, // Checked separately below
+					}
+					if checkErr := data.CheckSame(&expectedOutOfSpec); checkErr != nil {
+						fmt.Fprintf(GinkgoWriter, "Class 165 data not yet matching expected, retrying: %v\n", checkErr)
+						return false
+					}
+					// Verify ParentPortIdentity references the TT's own clock (port number may vary)
+					Expect(data.ParentPortIdentity).To(HavePrefix(expectedClockID),
+						"ParentPortIdentity should reference the T-BC's own clock identity in out-of-spec holdover")
+					return true
+				case err := <-pmcMonitor.ErrorChan():
+					logrus.Warnf("PMC monitor error: %v", err)
+				default:
+					// No data available, return false and Eventually will retry
+				}
+				return false
+			}, 5*time.Minute, 1*time.Second).Should(BeTrue(),
+				fmt.Sprintf("Clock should reach out-of-spec (class 165) with matching data. transitions=%v", clockClassTransitions))
+			now = time.Now()
+			fmt.Fprintf(GinkgoWriter, "Reached class 165  (%s)\n", now.Sub(lastTransitionTime).Truncate(time.Second))
+			lastTransitionTime = now
+
+			// 6. Wait for freerun state (class 248) - holdover timeout expires
+			By("Waiting for freerun state (class 248)")
+			logging.WriteStep("Waiting for freerun state (class 248)")
+			Eventually(func() bool {
+				select {
+				case data := <-pmcMonitor.DataChan():
+					if data == nil {
+						return false
+					}
+					currentClass := data.GrandmasterClockQuality.ClockClass
+					logrus.Warnf("Current Clock class: %v (expected: 248)", currentClass)
+					if currentClass != lastRecordedClass {
+						clockClassTransitions = append(clockClassTransitions, currentClass)
+						lastRecordedClass = currentClass
+					}
+					return currentClass == 248
+				case err := <-pmcMonitor.ErrorChan():
+					logrus.Warnf("PMC monitor error: %v", err)
+				default:
+				}
+				return false
+			}, 5*time.Minute, 1*time.Second).Should(BeTrue(),
+				fmt.Sprintf("Clock should reach freerun (class 248). transitions=%v", clockClassTransitions))
+			now = time.Now()
+			fmt.Fprintf(GinkgoWriter, "Reached class 248  (%s)\n", now.Sub(lastTransitionTime).Truncate(time.Second))
+			lastTransitionTime = now
+
+			// 7. Restore upstream interfaces and wait for re-lock (class 6)
+			By("Restoring upstream interfaces to trigger re-lock")
+			logging.WriteStep("Restoring upstream interfaces to trigger re-lock")
+			restoreInterfacesOnce()
+
+			By("Waiting for re-locked state (class 6)")
+			logging.WriteStep("Waiting for re-locked state (class 6)")
+			Eventually(func() bool {
+				select {
+				case data := <-pmcMonitor.DataChan():
+					if data != nil && data.GrandmasterClockQuality.ClockClass != lastRecordedClass {
+						clockClassTransitions = append(clockClassTransitions, data.GrandmasterClockQuality.ClockClass)
+						lastRecordedClass = data.GrandmasterClockQuality.ClockClass
+					}
+					if data == nil || data.GrandmasterClockQuality.ClockClass != 6 {
+						return false
+					}
+					return true
+				case err := <-pmcMonitor.ErrorChan():
+					logrus.Warnf("PMC monitor error: %v", err)
+				default:
+				}
+				return false
+			}, 5*time.Minute, 1*time.Second).Should(BeTrue(), "Clock should re-lock (class 6)")
+			now = time.Now()
+			fmt.Fprintf(GinkgoWriter, "Reached class 6 (re-lock)  (%s)\n", now.Sub(lastTransitionTime).Truncate(time.Second))
+
+			// Verify the clock class transition history matches the expected order exactly.
+			// An optional leading 248 (freerun at startup) is allowed and stripped.
+			By("Verifying clock class transition history")
+			logging.WriteStep("Verifying clock class transition history")
+			actual := clockClassTransitions
+			if len(actual) > 0 && actual[0] == 248 {
+				actual = actual[1:]
+			}
+			expectedTransitions := []int{6, 135, 165, 248, 6}
+			fmt.Fprintf(GinkgoWriter, "Clock class transitions: %v (expected %v)\n", clockClassTransitions, expectedTransitions)
+			Expect(actual).To(Equal(expectedTransitions),
+				"Clock class transitions did not match expected order (raw: %v)", clockClassTransitions)
+		})
 	})
 })
 
 func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkProcessStatus(fullConfig, "1")
-	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 	checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 	checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 	checkClockState(fullConfig, "1")
@@ -3030,6 +3485,7 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		return
 	}
 
+	logging.WriteStep(fmt.Sprintf("Waiting for process status to become %s", state))
 	/*
 		# TYPE openshift_ptp_process_status gauge
 		openshift_ptp_process_status{config="ptp4l.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="phc2sys"} 1
@@ -3070,8 +3526,9 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 	Expect(ret["gpsd"]).To(BeTrue(), fmt.Sprintf("Expected gpsd to be q %s for GM", state))
 }
 
-func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string) {
+func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string, timeout time.Duration) {
 	By(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
+	logging.WriteStep(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
 	Eventually(func() bool {
 		// Get the latest metrics output
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
@@ -3107,7 +3564,7 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 		}
 
 		return false
-	}, pkg.TimeoutIn5Minutes, pkg.Timeout1Seconds).Should(BeTrue(),
+	}, timeout, pkg.Timeout1Seconds).Should(BeTrue(),
 		fmt.Sprintf("Expected ptp4l clock class to eventually be %s for GM", expectedState))
 }
 
@@ -3554,7 +4011,7 @@ func verifyMetric(events exports.StoredEventValues, value float64) {
 
 func stopMonitor(term chan bool) {
 	select {
-	case term <- true: // tell goroutine to exit
+	case term <- true: // tell goroutine to eit(
 	default: // avoid blocking if it’s already been stopped
 	}
 }
