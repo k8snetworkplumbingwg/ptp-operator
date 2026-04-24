@@ -1033,19 +1033,22 @@ func PtpConfigOC(isExtGM bool) error {
 
 	BestSolution := ""
 
-	if isExtGM {
-		if len(*data.solutions[AlgoOCExtGMString]) != 0 {
-			BestSolution = AlgoOCExtGMString
-		} else {
-			return fmt.Errorf("no solution found for OC configuration in External GM mode")
-		}
-	} else {
+	if !isExtGM {
 		if len(*data.solutions[AlgoOCString]) != 0 {
 			BestSolution = AlgoOCString
 		}
-		if BestSolution == "" {
-			return fmt.Errorf("no solution found for OC configuration in Local GM mode")
+		if BestSolution == "" && len(*data.solutions[AlgoOCExtGMString]) != 0 {
+			logrus.Info("No internal GM solution found for OC, auto-detecting external GM")
+			isExtGM = true
 		}
+	}
+	if isExtGM {
+		if len(*data.solutions[AlgoOCExtGMString]) != 0 {
+			BestSolution = AlgoOCExtGMString
+		}
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for OC configuration (tried both internal and external GM)")
 	}
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
@@ -1087,19 +1090,22 @@ func PtpConfigDualFollower(isExtGM bool) error {
 
 	BestSolution := ""
 
-	if isExtGM {
-		if len(*data.solutions[AlgoDualFollowerExtGMString]) != 0 {
-			BestSolution = AlgoDualFollowerExtGMString
-		} else {
-			return fmt.Errorf("no solution found for Dual Follower configuration in External GM mode")
-		}
-	} else {
+	if !isExtGM {
 		if len(*data.solutions[AlgoDualFollowerString]) != 0 {
 			BestSolution = AlgoDualFollowerString
 		}
-		if BestSolution == "" {
-			return fmt.Errorf("no solution found for Dual Follower configuration in Local GM mode")
+		if BestSolution == "" && len(*data.solutions[AlgoDualFollowerExtGMString]) != 0 {
+			logrus.Info("No internal GM solution found for DualFollower, auto-detecting external GM")
+			isExtGM = true
 		}
+	}
+	if isExtGM {
+		if len(*data.solutions[AlgoDualFollowerExtGMString]) != 0 {
+			BestSolution = AlgoDualFollowerExtGMString
+		}
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for Dual Follower configuration (tried both internal and external GM)")
 	}
 	logrus.Infof("Configuring best solution= %s", BestSolution)
 	switch BestSolution {
@@ -1145,18 +1151,7 @@ func PtpConfigBC(isExtGM bool) error {
 
 	BestSolution := ""
 
-	if isExtGM {
-		if len(*data.solutions[AlgoBCExtGMString]) != 0 {
-			BestSolution = AlgoBCExtGMString
-		}
-		if len(*data.solutions[AlgoBCWithSlavesExtGMString]) != 0 {
-			BestSolution = AlgoBCWithSlavesExtGMString
-		}
-		if BestSolution == "" {
-			return fmt.Errorf("no solution found for BC configuration in External GM mode")
-		}
-
-	} else {
+	if !isExtGM {
 		if len(*data.solutions[AlgoBCString]) != 0 {
 			BestSolution = AlgoBCString
 		}
@@ -1164,8 +1159,22 @@ func PtpConfigBC(isExtGM bool) error {
 			BestSolution = AlgoBCWithSlavesString
 		}
 		if BestSolution == "" {
-			return fmt.Errorf("no solution found for BC configuration in Local GM mode")
+			if len(*data.solutions[AlgoBCExtGMString]) != 0 || len(*data.solutions[AlgoBCWithSlavesExtGMString]) != 0 {
+				logrus.Info("No internal GM solution found for BC, auto-detecting external GM")
+				isExtGM = true
+			}
 		}
+	}
+	if isExtGM {
+		if len(*data.solutions[AlgoBCExtGMString]) != 0 {
+			BestSolution = AlgoBCExtGMString
+		}
+		if len(*data.solutions[AlgoBCWithSlavesExtGMString]) != 0 {
+			BestSolution = AlgoBCWithSlavesExtGMString
+		}
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for BC configuration (tried both internal and external GM)")
 	}
 
 	logrus.Infof("Configuring best solution= %s", BestSolution)
@@ -1353,17 +1362,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 	var grandmaster, bc1Master, bc1Slave, slave1, bc2Master, bc2Slave, slave2 int
 
 	BestSolution := ""
-	if isExtGM {
-		if len(*data.solutions[AlgoDualNicBCExtGMString]) != 0 {
-			BestSolution = AlgoDualNicBCExtGMString
-		}
-		if len(*data.solutions[AlgoDualNicBCWithSlavesExtGMString]) != 0 {
-			BestSolution = AlgoDualNicBCWithSlavesExtGMString
-		}
-		if BestSolution == "" {
-			return fmt.Errorf("no solution found for Dual NIC BC configuration in External GM mode")
-		}
-	} else {
+	if !isExtGM {
 		if len(*data.solutions[AlgoDualNicBCString]) != 0 {
 			BestSolution = AlgoDualNicBCString
 		}
@@ -1371,8 +1370,22 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 			BestSolution = AlgoDualNicBCWithSlavesString
 		}
 		if BestSolution == "" {
-			return fmt.Errorf("no solution found for Dual NIC BC configuration in Local GM mode")
+			if len(*data.solutions[AlgoDualNicBCExtGMString]) != 0 || len(*data.solutions[AlgoDualNicBCWithSlavesExtGMString]) != 0 {
+				logrus.Info("No internal GM solution found for DualNicBC, auto-detecting external GM")
+				isExtGM = true
+			}
 		}
+	}
+	if isExtGM {
+		if len(*data.solutions[AlgoDualNicBCExtGMString]) != 0 {
+			BestSolution = AlgoDualNicBCExtGMString
+		}
+		if len(*data.solutions[AlgoDualNicBCWithSlavesExtGMString]) != 0 {
+			BestSolution = AlgoDualNicBCWithSlavesExtGMString
+		}
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for Dual NIC BC configuration (tried both internal and external GM)")
 	}
 
 	logrus.Infof("Configuring best solution= %s", BestSolution)
