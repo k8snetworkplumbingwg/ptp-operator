@@ -27,6 +27,10 @@ func wrapWithRetry(rt http.RoundTripper) http.RoundTripper {
 	return &retryRoundTripper{inner: rt, maxRetries: defaultMaxRetries}
 }
 
+func (r *retryRoundTripper) canRetryBody(req *http.Request) bool {
+	return req.Body == nil || req.GetBody != nil
+}
+
 func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var err error
@@ -36,18 +40,18 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 			delay := backoffDelay(attempt)
 			glog.Infof("retryRoundTripper: attempt %d/%d for %s %s after %v",
 				attempt+1, r.maxRetries+1, req.Method, req.URL.Path, delay)
+
+			timer := time.NewTimer(delay)
 			select {
 			case <-req.Context().Done():
+				timer.Stop()
 				return nil, req.Context().Err()
-			case <-time.After(delay):
+			case <-timer.C:
 			}
 		}
 
 		reqToAttempt := req
 		if attempt > 0 && req.Body != nil {
-			if req.GetBody == nil {
-				return resp, err
-			}
 			newBody, bodyErr := req.GetBody()
 			if bodyErr != nil {
 				return nil, bodyErr
@@ -59,13 +63,13 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		resp, err = r.inner.RoundTrip(reqToAttempt)
 
 		if err != nil {
-			if isRetryableTransportError(err) {
+			if isRetryableTransportError(err) && attempt < r.maxRetries && r.canRetryBody(req) {
 				continue
 			}
 			return nil, err
 		}
 
-		if isRetryableStatusCode(resp.StatusCode) && attempt < r.maxRetries {
+		if isRetryableStatusCode(resp.StatusCode) && attempt < r.maxRetries && r.canRetryBody(req) {
 			drainAndClose(resp)
 			continue
 		}

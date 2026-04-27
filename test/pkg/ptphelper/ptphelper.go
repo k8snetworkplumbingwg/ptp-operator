@@ -639,7 +639,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 			logrus.Infof("ConfigMap %s emptied successfully\n", configMapName)
 		}
 	}
-	_, err := client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
+	_, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
 	return err
 }
 
@@ -694,7 +694,7 @@ func EnablePTPReferencePlugin() error {
 		(*ptpOperatorConfig.Spec.EnabledPlugins)["reference"] = &plugindata
 	}
 
-	_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
+	_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 	return err
 }
 
@@ -704,7 +704,7 @@ func DisablePTPReferencePlugin() error {
 
 	(*ptpOperatorConfig.Spec.EnabledPlugins)["reference"] = nil
 
-	_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
+	_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 	return err
 }
 
