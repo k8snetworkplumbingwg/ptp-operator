@@ -924,32 +924,55 @@ func IsExternalGM() (out bool) {
 	return out
 }
 
-func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
-	var retList = make([]string, 0)
-	var deviceId = ""
+// GetWPCEnabledInterfaces returns the WPC-enabled network interfaces for a
+// given node. Interfaces are grouped by PTP hardware clock and the first
+// group whose PHC has pin support is selected.
+func GetWPCEnabledInterfaces(nodeName string) (interfaces []string, err error) {
 	WPCifaces := getWPCEnabledIfaces(nodeName)
+	if len(WPCifaces) == 0 {
+		return nil, nil
+	}
+
+	phcGroups := make(map[int][]string)
 	for _, iFace := range WPCifaces {
-		if strings.HasSuffix(iFace, "0") {
-			deviceId, ret := checkGNSSAvailabilityForIface(nodeName, iFace)
-			if ret {
-				retList = append(retList, addAllInterfacesForNic(WPCifaces, iFace)...)
-				return retList, deviceId
+		if iFace == "" {
+			continue
+		}
+		idx, err := getPTPHardwareClockIndex(nodeName, iFace)
+		if err != nil {
+			continue
+		}
+		phcGroups[idx] = append(phcGroups[idx], iFace)
+	}
+
+	if len(phcGroups) == 0 {
+		return nil, nil
+	}
+
+	phcIndexes := make([]int, 0, len(phcGroups))
+	for idx := range phcGroups {
+		phcIndexes = append(phcIndexes, idx)
+	}
+	sort.Ints(phcIndexes)
+
+	for _, idx := range phcIndexes {
+		group := phcGroups[idx]
+		sort.Slice(group, func(i, j int) bool {
+			return group[i] < group[j]
+		})
+		ifaceWithPins, err := findIfaceWithPinsForPhc(nodeName, idx)
+		if err != nil {
+			logrus.Debugf("PTP pins lookup failed phc=%d err=%v", idx, err)
+			continue
+		}
+		for _, iface := range group {
+			if iface == ifaceWithPins {
+				return group, nil
 			}
 		}
 	}
-	return retList, deviceId
-}
-func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
-	var ret = make([]string, 0)
-	for _, iFace := range WPCifaces {
-		if strings.HasPrefix(iFace, strings.TrimSuffix(firstIface, "0")) {
-			ret = append(ret, iFace)
-		}
-	}
-	sort.Slice(ret, func(i, j int) bool {
-		return ret[i] < ret[j]
-	})
-	return ret
+
+	return nil, nil
 }
 
 func getWPCEnabledIfaces(nodeName string) map[string]string {
@@ -971,13 +994,71 @@ func getWPCEnabledIfaces(nodeName string) map[string]string {
 	return resMap
 }
 
-func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, bool) {
-	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss", IfaceName)}
-	logrus.Infof("cmd = %s ", cmd)
+func getPTPHardwareClockIndex(nodeName string, ifaceName string) (int, error) {
+	cmd := []string{"ethtool", "-T", ifaceName}
 	so, se, err := execPodCommand(nodeName, cmd)
 	if err != nil {
-		logrus.Errorf("could not gnss device, err: %s \n stderr: %s interfaceName: %s, nodeName: %s", err, se.String(), IfaceName, nodeName)
-		return "", false
+		return 0, fmt.Errorf("ethtool -T %s failed: %s", ifaceName, strings.TrimSpace(se.String()))
+	}
+	scanner := bufio.NewScanner(&so)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "PTP Hardware Clock:") {
+			parts := strings.Fields(line)
+			if len(parts) == 0 {
+				break
+			}
+			val := parts[len(parts)-1]
+			if strings.EqualFold(val, "none") {
+				return 0, fmt.Errorf("no PTP hardware clock for %s", ifaceName)
+			}
+			idx, parseErr := strconv.Atoi(val)
+			if parseErr != nil {
+				return 0, fmt.Errorf("unable to parse PTP Hardware Clock index from %q", line)
+			}
+			return idx, nil
+		}
+	}
+	return 0, fmt.Errorf("PTP Hardware Clock not found in ethtool output for %s", ifaceName)
+}
+
+// findIfaceWithPinsForPhc returns the network interface name that owns PTP pin
+// support for the given PHC index, by inspecting sysfs paths on the target node.
+// Returns ("", nil) when no pins directory exists for the PHC.
+func findIfaceWithPinsForPhc(nodeName string, phcIndex int) (string, error) {
+	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls -d /sys/class/net/*/device/ptp/ptp%d/pins 2>/dev/null | head -n1", phcIndex)}
+	so, se, err := execPodCommand(nodeName, cmd)
+	if err != nil {
+		return "", fmt.Errorf("PTP pins lookup failed phc=%d stderr=%s err=%v", phcIndex, strings.TrimSpace(se.String()), err)
+	}
+	path := strings.TrimSpace(so.String())
+	if path == "" {
+		return "", nil
+	}
+	const netPrefix = "/sys/class/net/"
+	if !strings.HasPrefix(path, netPrefix) {
+		return "", fmt.Errorf("unexpected pins path %q", path)
+	}
+	rest := strings.TrimPrefix(path, netPrefix)
+	iface := strings.SplitN(rest, "/", 2)[0]
+	if iface == "" {
+		return "", fmt.Errorf("unexpected pins path %q", path)
+	}
+	return iface, nil
+}
+
+// CheckGNSSForInterface checks whether a GNSS device is available on the
+// given network interface by inspecting sysfs on the target node. Returns
+// the GNSS device name if found, or ("", nil) if no GNSS is present.
+func CheckGNSSForInterface(nodeName, ifaceName string) (gnssDevice string, err error) {
+	// "|| true" ensures a missing gnss directory (the common case for most
+	// interfaces) exits 0, so execPodCommand only returns an error for
+	// actual infrastructure failures such as the pod being unreachable.
+	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss 2>/dev/null || true", ifaceName)}
+	logrus.Infof("cmd = %s ", cmd)
+	so, _, err := execPodCommand(nodeName, cmd)
+	if err != nil {
+		return "", fmt.Errorf("GNSS device check for %s: %w", ifaceName, err)
 	}
 	devs := strings.Split(so.String(), "\n")
 
@@ -985,11 +1066,11 @@ func checkGNSSAvailabilityForIface(nodeName string, IfaceName string) (string, b
 		if dev != "" {
 			logrus.Infof("gnss device string: %s", dev)
 			if checkGNMRCString(dev, nodeName) {
-				return dev, true
+				return dev, nil
 			}
 		}
 	}
-	return "", false
+	return "", nil
 }
 
 func checkGNMRCString(deviceName string, nodeName string) bool {

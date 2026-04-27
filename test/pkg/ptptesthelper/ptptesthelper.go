@@ -99,7 +99,7 @@ func VerifyAfterRebootState(rebootedNodes []string, fullConfig testconfig.TestCo
 	ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	listOptions := metav1.ListOptions{}
-	if ptpConfig.Spec.DaemonNodeSelector != nil && len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
+	if len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
 		listOptions = metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: ptpConfig.Spec.DaemonNodeSelector})}
 	}
 

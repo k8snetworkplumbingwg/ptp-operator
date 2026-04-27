@@ -21,6 +21,7 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/namespaces"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
@@ -136,7 +137,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			listOptions := metav1.ListOptions{}
-			if ptpConfig.Spec.DaemonNodeSelector != nil && len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
+			if len(ptpConfig.Spec.DaemonNodeSelector) != 0 {
 				listOptions = metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: ptpConfig.Spec.DaemonNodeSelector})}
 			}
 
@@ -274,8 +275,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Skip("Skipping as the test is only applicable for Dual NIC BC in HA mode (dualnicbcha)")
 			}
 
+			By("Checking if HA is available in this operator version")
+			ptpOperatorVersion, err := ptphelper.GetPtpOperatorVersion()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ptpOperatorVersion).ShouldNot(BeEmpty())
+			operatorVersion, err := semver.NewVersion(ptpOperatorVersion)
+			Expect(err).ToNot(HaveOccurred())
+			haVersion, _ := semver.NewVersion("4.16")
+			if operatorVersion.LessThan(haVersion) {
+				Skip("HA is not available in version < 4.16")
+			}
+
 			By("Creating a PtpConfig with underscore profile names in haProfiles")
-			err := testconfig.CreatePtpConfigWithUnderscoreProfileNames()
+			err = testconfig.CreatePtpConfigWithUnderscoreProfileNames()
 			Expect(err).ToNot(HaveOccurred(), "webhook should accept underscores in profile names")
 			logrus.Infof("Successfully created PtpConfig with underscore profile names: test_profile_bc1, test_profile_bc2")
 
@@ -412,14 +424,15 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
-				var err error
+
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
 				ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
@@ -477,13 +490,15 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Getting ptp config details")
 				ptpConfig := testconfig.GlobalConfig
 
-				masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+				if ptpConfig.DiscoveredGrandMasterPtpConfig != nil {
+					masterPtpConfigStr := ptpConfig.DiscoveredGrandMasterPtpConfig.String()
+					logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
+					AddReportEntry("master-ptp-config", masterPtpConfigStr)
+				} else {
+					logrus.Infof("No internal grandmaster PTP config discovered (external GM)")
+				}
 				slavePtpConfigStr := ptpConfig.DiscoveredClockUnderTestPtpConfig.String()
-
-				logrus.Infof("Discovered master ptp config %s", masterPtpConfigStr)
 				logrus.Infof("Discovered slave ptp config %s", slavePtpConfigStr)
-
-				AddReportEntry("master-ptp-config", masterPtpConfigStr)
 				AddReportEntry("slave-ptp-config", slavePtpConfigStr)
 			})
 		})
@@ -498,13 +513,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 			})
 			AfterEach(func() {
 				portEngine.TurnAllPortsUp()
@@ -582,7 +597,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						expectedClockClass = fbprotocol.ClockClassSlaveOnly
 					}
 					By(fmt.Sprintf("Verifying OC clock_class is %d", expectedClockClass))
-					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(expectedClockClass)), pkg.TimeoutIn5Minutes)
 				}
 			})
 
@@ -811,24 +826,28 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], portEngine.InitialRoles[0], portEngine.InitialRoles[1])
 				}, 120*time.Second, 1*time.Second).Should(BeNil())
 
-				By("Remove Grandmaster")
-				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
-				Expect(err).To(BeNil())
-				By("Check clock role")
-				Eventually(func() error {
-					return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
-				}, 120*time.Second, 1*time.Second).Should(BeNil())
-				By("Check holdover")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Check freerun")
-				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
-				Expect(err).To(BeNil())
-				By("Recreate Grandmaster")
-				tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
-				tempPtpConfig.SetResourceVersion("")
-				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
-				Expect(err).To(BeNil())
+				if !isExternalMaster {
+					By("Remove Grandmaster")
+					err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name, metav1.DeleteOptions{})
+					Expect(err).To(BeNil())
+					By("Check clock role")
+					Eventually(func() error {
+						return portEngine.CheckClockRole(portEngine.Ports[0], portEngine.Ports[1], metrics.MetricRoleListening, metrics.MetricRoleListening)
+					}, 120*time.Second, 1*time.Second).Should(BeNil())
+					By("Check holdover")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateHoldOver, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Check freerun")
+					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateFreeRun, metrics.MetricRoleListening, false)
+					Expect(err).To(BeNil())
+					By("Recreate Grandmaster")
+					tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+					tempPtpConfig.SetResourceVersion("")
+					_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(context.Background(), tempPtpConfig, metav1.CreateOptions{})
+					Expect(err).To(BeNil())
+				} else {
+					logrus.Infof("Skipping GM removal/recreation test phase (external GM)")
+				}
 			})
 
 			// Multinode BCSlave clock sync
@@ -1221,15 +1240,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
-
 				})
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
-				var err error
+				podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+				Expect(err).NotTo(HaveOccurred())
+				ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 
 				_, err = pods.GetPodLogsRegex(fullConfig.DiscoveredClockUnderTestPod.Namespace,
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
@@ -2075,7 +2092,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 
 				By("Checking initial clock class is Locked (6)")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				By("Setting all slave interfaces down")
 				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
@@ -2247,7 +2264,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						# TYPE openshift_ptp_clock_class gauge
 						# openshift_ptp_clock_class{node="cnfdg32.ptp.eng.rdu2.dc.redhat.com",process="ptp4l"} 6
 					*/
-					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				})
 
@@ -2368,7 +2385,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					checkStabilityOfWPCGMUsingMetrics(fullConfig)
 
 					// Initially system should be LOCKED (ClockClass 6)
-					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+					checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 					// Disable GNSS
 					disableGNSSViaSignalRequirements(fullConfig)
@@ -2415,7 +2432,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			It("Continuously terminating ts2phc triggers FREERUN event and then recovers to LOCKED", func() {
 				By("Ensure initial state is LOCKED via clock class 6")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				// Ensure event consumer exists and pubsub is initialized (V2)
 				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
@@ -2527,7 +2544,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				// Ensure system starts in LOCKED (ClockClass 6)
 				logrus.Info("Verifying current LOCKED state...")
 				By("Check current LOCKED state")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				// Subscribe to CHANGE events (consistent with later verifications)
 				const incomingEventsBuffer = 100
@@ -2741,7 +2758,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkProcessStatus(fullConfig, "1")
-	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 	checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 	checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 	checkClockState(fullConfig, "1")
@@ -3040,6 +3057,7 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		return
 	}
 
+	logging.WriteStep(fmt.Sprintf("Waiting for process status to become %s", state))
 	/*
 		# TYPE openshift_ptp_process_status gauge
 		openshift_ptp_process_status{config="ptp4l.0.config",node="cnfde22.ptp.lab.eng.bos.redhat.com",process="phc2sys"} 1
@@ -3080,8 +3098,9 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 	Expect(ret["gpsd"]).To(BeTrue(), fmt.Sprintf("Expected gpsd to be q %s for GM", state))
 }
 
-func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string) {
+func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string, timeout time.Duration) {
 	By(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
+	logging.WriteStep(fmt.Sprintf("Waiting for clock class to become %s", expectedState))
 	Eventually(func() bool {
 		// Get the latest metrics output
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
@@ -3117,7 +3136,7 @@ func checkClockClassState(fullConfig testconfig.TestConfig, expectedState string
 		}
 
 		return false
-	}, pkg.TimeoutIn5Minutes, pkg.Timeout1Seconds).Should(BeTrue(),
+	}, timeout, pkg.Timeout1Seconds).Should(BeTrue(),
 		fmt.Sprintf("Expected ptp4l clock class to eventually be %s for GM", expectedState))
 }
 
