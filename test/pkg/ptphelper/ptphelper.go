@@ -489,17 +489,21 @@ func WaitForPtpDaemonToExist() int {
 		return nil
 	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Succeed(), "linuxptp-daemon DaemonSet must exist before readiness wait")
 
-	Eventually(func() int32 {
+	Eventually(func() (int32, error) {
 		daemonset, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		return daemonset.Status.NumberReady
+		if err != nil {
+			return 0, err
+		}
+		return daemonset.Status.NumberReady, nil
 	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(expectedNumber),
 		daemonsetNotReadyMessage(expectedNumber))
 
-	Eventually(func() int {
+	Eventually(func() (int, error) {
 		ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
-		Expect(err).ToNot(HaveOccurred())
-		return len(ptpPods.Items)
+		if err != nil {
+			return 0, err
+		}
+		return len(ptpPods.Items), nil
 	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(int(expectedNumber)),
 		fmt.Sprintf("expected %d linuxptp-daemon pods, check DaemonSet status", expectedNumber))
 
