@@ -209,32 +209,57 @@ func CreatePtpTestPrivilegedDaemonSet(daemonsetName, daemonsetNamespace, daemons
 	const (
 		imageWithVersion = "quay.io/testnetworkfunction/debug-partner:latest"
 	)
-	// Create the client of Priviledged Daemonset
 	k8sPriviledgedDs.SetDaemonSetClient(client.Client.Interface)
-	// 1. create a daemon set for the node reboot
 	dummyLabels := map[string]string{}
 	cpuLim := "100m"
 	cpuReq := "100m"
 	memLim := "100M"
 	memReq := "100M"
 	var env []corev1.EnvVar
-	daemonSetRunningPods, err := k8sPriviledgedDs.CreateDaemonSet(daemonsetName, daemonsetNamespace, daemonsetContainerName, imageWithVersion, dummyLabels, env, pkg.TimeoutIn5Minutes, cpuReq, cpuLim, memReq, memLim)
 
-	if err != nil {
-		logrus.Errorf("error : +%v\n", err.Error())
-	}
-	return daemonSetRunningPods
+	var result *corev1.PodList
+	Eventually(func() error {
+		pods, err := k8sPriviledgedDs.CreateDaemonSet(daemonsetName, daemonsetNamespace, daemonsetContainerName, imageWithVersion, dummyLabels, env, pkg.TimeoutIn5Minutes, cpuReq, cpuLim, memReq, memLim)
+		if err != nil {
+			return fmt.Errorf("create privileged daemonset %s/%s: %w", daemonsetNamespace, daemonsetName, err)
+		}
+		if pods == nil {
+			return fmt.Errorf("create privileged daemonset %s/%s: nil pod list", daemonsetNamespace, daemonsetName)
+		}
+		if len(pods.Items) == 0 {
+			return fmt.Errorf("create privileged daemonset %s/%s: no daemonset pods", daemonsetNamespace, daemonsetName)
+		}
+		result = pods
+		return nil
+	}, 3*pkg.TimeoutIn5Minutes, 30*time.Second).Should(Succeed(),
+		fmt.Sprintf("privileged daemonset %q in namespace %q", daemonsetName, daemonsetNamespace))
+
+	Expect(result).NotTo(BeNil())
+	Expect(result.Items).NotTo(BeEmpty())
+	return result
 }
 
 func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfaces map[string]bool) {
 	logrus.Info("Recovery PTP outage begins ...........")
 
-	// Get a slave pod
-	slavePod, err := ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig))
-	if err != nil {
-		logrus.Error("Could not determine ptp daemon pod selected by ptpconfig")
-	}
-	// Get the slave pod's node name
+	var slavePod *corev1.Pod
+	Eventually(func() error {
+		var err error
+		slavePod, err = ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig))
+		if err != nil {
+			return fmt.Errorf("get PTP pod for clock-under-test config: %w", err)
+		}
+		if slavePod == nil {
+			return fmt.Errorf("get PTP pod for clock-under-test config: nil pod")
+		}
+		if slavePod.Spec.NodeName == "" {
+			return fmt.Errorf("get PTP pod for clock-under-test config: empty NodeName")
+		}
+		return nil
+	}, pkg.TimeoutIn10Minutes, 30*time.Second).Should(Succeed(), "locating linuxptp daemon pod for discovered clock-under-test")
+
+	Expect(slavePod).NotTo(BeNil())
+	Expect(slavePod.Spec.NodeName).NotTo(BeEmpty())
 	slavePodNodeName := slavePod.Spec.NodeName
 	logrus.Info("slave node name is ", slavePodNodeName)
 
@@ -325,10 +350,24 @@ func RebootSlaveNode(fullConfig testconfig.TestConfig) {
 	}
 
 	// 2. Get a slave pod
-	slavePod, err := ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig))
-	if err != nil {
-		logrus.Error("Could not determine ptp daemon pod selected by ptpconfig")
-	}
+	var slavePod *corev1.Pod
+	Eventually(func() error {
+		var err error
+		slavePod, err = ptphelper.GetPTPPodWithPTPConfig((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig))
+		if err != nil {
+			return fmt.Errorf("get PTP pod for clock-under-test config: %w", err)
+		}
+		if slavePod == nil {
+			return fmt.Errorf("get PTP pod for clock-under-test config: nil pod")
+		}
+		if slavePod.Spec.NodeName == "" {
+			return fmt.Errorf("get PTP pod for clock-under-test config: empty NodeName")
+		}
+		return nil
+	}, pkg.TimeoutIn10Minutes, 30*time.Second).Should(Succeed(), "locating linuxptp daemon pod for discovered clock-under-test")
+
+	Expect(slavePod).NotTo(BeNil())
+	Expect(slavePod.Spec.NodeName).NotTo(BeEmpty())
 	slavePodNodeName := slavePod.Spec.NodeName
 	logrus.Info("slave node name is ", slavePodNodeName)
 
