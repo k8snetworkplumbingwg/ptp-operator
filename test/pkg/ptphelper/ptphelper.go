@@ -476,11 +476,21 @@ func CheckLeaseDuration(namespace string, leaseDurationDefault int32, leaseDurat
 }
 
 func WaitForPtpDaemonToExist() int {
-	daemonset, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
-	Expect(err).ToNot(HaveOccurred())
-	expectedNumber := daemonset.Status.DesiredNumberScheduled
+	var expectedNumber int32
+	Eventually(func() error {
+		daemonset, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("linuxptp-daemon DaemonSet not created yet: %w", err)
+			}
+			return err
+		}
+		expectedNumber = daemonset.Status.DesiredNumberScheduled
+		return nil
+	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Succeed(), "linuxptp-daemon DaemonSet must exist before readiness wait")
+
 	Eventually(func() int32 {
-		daemonset, err = client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
+		daemonset, err := client.Client.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpDaemonsetName, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		return daemonset.Status.NumberReady
 	}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(expectedNumber),
@@ -585,8 +595,13 @@ func DiscoveryPTPConfiguration(namespace string) (masters, slaves []*ptpv1.PtpCo
 
 // EnablePTPEvent: if configMapName is passed, clean up the configMap when version changed
 func EnablePTPEvent(apiVersion, configMapName string) error {
-	ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
-	Expect(err).NotTo(HaveOccurred())
+	var ptpConfig *ptpv1.PtpOperatorConfig
+	Eventually(func() error {
+		var e error
+		ptpConfig, e = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+		return e
+	}, pkg.TimeoutIn5Minutes, 3*time.Second).Should(Succeed(), "PtpOperatorConfig must exist to enable events")
 
 	var currentApiVersion string
 	if ptpConfig.Spec.EventConfig == nil {
@@ -620,7 +635,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 			logrus.Infof("ConfigMap %s emptied successfully\n", configMapName)
 		}
 	}
-	_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
+	_, err := client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
 	return err
 }
 
@@ -641,8 +656,13 @@ func PtpEventEnabled() int {
 		}
 	}
 
-	ptpConfig, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
-	Expect(err).NotTo(HaveOccurred())
+	var ptpConfig *ptpv1.PtpOperatorConfig
+	Eventually(func() error {
+		var e error
+		ptpConfig, e = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), pkg.PtpConfigOperatorName, metav1.GetOptions{})
+		return e
+	}, pkg.TimeoutIn5Minutes, 3*time.Second).Should(Succeed(), "PtpOperatorConfig must exist for PtpEventEnabled check")
 	if ptpConfig.Spec.EventConfig == nil {
 		return 0
 	}

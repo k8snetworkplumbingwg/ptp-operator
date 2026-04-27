@@ -326,7 +326,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				ptpOperatorConfig.Spec.EventConfig = &ptpv1.PtpEventConfig{}
 			}
 			ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher = true
-			_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
+			_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Reading back and verifying EnableEventPublisher is true")
@@ -338,7 +338,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			By("Setting EnableEventPublisher to false")
 			ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher = false
-			_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
+			_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Reading back and verifying EnableEventPublisher is false")
@@ -349,7 +349,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			By("Restoring original EnableEventPublisher value")
 			ptpOperatorConfig.Spec.EventConfig.EnableEventPublisher = originalEnableEventPublisher
-			_, err = client.Client.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
+			_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpOperatorConfig, metav1.UpdateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			logrus.Infof("Restored EnableEventPublisher to original value: %v", originalEnableEventPublisher)
 		})
@@ -363,7 +363,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		portEngine := ptptesthelper.PortEngine{}
 
 		execute.BeforeAll(func() {
-			err := testconfig.CreatePtpConfigurations()
+			err := testconfig.CreatePtpConfigurationsWithRetry(3)
 			if err != nil {
 				fullConfig.Status = testconfig.DiscoveryFailureStatus
 				Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))

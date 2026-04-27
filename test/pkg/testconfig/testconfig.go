@@ -14,6 +14,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/clean"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/k8sutil"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/nodes"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
@@ -511,6 +512,13 @@ func CreatePtpConfigurations() error {
 	// if USE_CONTAINER_CMDS environment variable is present, use container commands (lspci, ethtool, ...)
 	_, useContainerCmds := os.LookupEnv("USE_CONTAINER_CMDS")
 
+	// Wait for stuck Terminating namespace before L2 init (vendor privileged-daemonset only waits 2m).
+	if err := k8sutil.PreWaitPrivilegedDSNamespaceIfTerminating(
+		context.Background(), pkg.L2DiscoveryNamespace, k8sutil.PrivilegedDaemonsetNamespaceStuckDeleteWait,
+	); err != nil {
+		return fmt.Errorf("waiting for %s namespace: %w", pkg.L2DiscoveryNamespace, err)
+	}
+
 	// Collect L2 info
 	config, err := l2lib.GlobalL2DiscoveryConfig.GetL2DiscoveryConfig(true, false, useContainerCmds, getL2DiscoveryImage())
 	if err != nil {
@@ -564,6 +572,28 @@ func CreatePtpConfigurations() error {
 		}
 	}
 	return nil
+}
+
+// CreatePtpConfigurationsWithRetry runs CreatePtpConfigurations up to maxAttempts when the error
+// is likely transient (namespace stuck in Terminating during privileged-daemonset / L2 init).
+func CreatePtpConfigurationsWithRetry(maxAttempts int) error {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var last error
+	for i := 0; i < maxAttempts; i++ {
+		last = CreatePtpConfigurations()
+		if last == nil {
+			return nil
+		}
+		if i < maxAttempts-1 && k8sutil.IsTransientL2OrPrivilegedNamespaceError(last) {
+			logrus.Warnf("CreatePtpConfigurations attempt %d/%d failed (transient): %v; retrying after 45s", i+1, maxAttempts, last)
+			time.Sleep(45 * time.Second)
+			continue
+		}
+		break
+	}
+	return last
 }
 
 func initAndSolveProblems() {

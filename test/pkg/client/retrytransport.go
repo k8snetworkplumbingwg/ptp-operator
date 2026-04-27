@@ -1,0 +1,112 @@
+package client
+
+import (
+	"io"
+	"math"
+	"math/rand"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/golang/glog"
+)
+
+const (
+	defaultMaxRetries   = 3
+	retryBaseDelay      = 500 * time.Millisecond
+	retryMaxDelay       = 5 * time.Second
+	retryJitterFraction = 0.3
+)
+
+type retryRoundTripper struct {
+	inner      http.RoundTripper
+	maxRetries int
+}
+
+func wrapWithRetry(rt http.RoundTripper) http.RoundTripper {
+	return &retryRoundTripper{inner: rt, maxRetries: defaultMaxRetries}
+}
+
+func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := backoffDelay(attempt)
+			glog.Infof("retryRoundTripper: attempt %d/%d for %s %s after %v",
+				attempt+1, r.maxRetries+1, req.Method, req.URL.Path, delay)
+			time.Sleep(delay)
+		}
+
+		resp, err = r.inner.RoundTrip(req)
+
+		if err != nil {
+			if isRetryableTransportError(err) {
+				continue
+			}
+			return nil, err
+		}
+
+		if isRetryableStatusCode(resp.StatusCode) {
+			drainAndClose(resp)
+			continue
+		}
+
+		return resp, nil
+	}
+
+	return resp, err
+}
+
+func isRetryableTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for _, substr := range []string{
+		"connection refused",
+		"connection reset",
+		"i/o timeout",
+		"TLS handshake timeout",
+		"unexpected EOF",
+		"server misbehaving",
+	} {
+		if strings.Contains(s, substr) {
+			return true
+		}
+	}
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	return false
+}
+
+func isRetryableStatusCode(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+}
+
+func backoffDelay(attempt int) time.Duration {
+	delay := float64(retryBaseDelay) * math.Pow(2, float64(attempt-1))
+	if delay > float64(retryMaxDelay) {
+		delay = float64(retryMaxDelay)
+	}
+	jitter := delay * retryJitterFraction * (rand.Float64()*2 - 1) //nolint:gosec
+	return time.Duration(delay + jitter)
+}
