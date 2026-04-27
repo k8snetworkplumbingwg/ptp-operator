@@ -30,6 +30,9 @@ import (
 // waits for the foreign master to appear in the logs and checks the clock accuracy
 func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpConfig, gmID *string,
 	expectedClockState metrics.MetricClockState, expectedClockRole metrics.MetricRole, isCheckOffset bool) error {
+	if ptpConfig == nil {
+		return errors.Errorf("ptpConfig is nil")
+	}
 	if gmID != nil {
 		logrus.Infof("expected master=%s", *gmID)
 	}
@@ -573,6 +576,7 @@ func (p *PortEngine) CheckClockRole(port0, port1 string, role0, role1 metrics.Me
 }
 
 func (p *PortEngine) Initialize(aClockPod *corev1.Pod, aPorts []string) {
+	Expect(aClockPod).NotTo(BeNil(), "PortEngine.Initialize requires a non-nil clock-under-test pod")
 	p.Ports = aPorts
 
 	// Get the pod from ptp test daemonset set on the slave node
@@ -628,6 +632,9 @@ type NICInfo struct {
 // GetClockClassViaPMC runs PMC GET PARENT_DATA_SET on the given config file
 // and returns the grandmaster clock class reported by that ptp4l instance.
 func GetClockClassViaPMC(fullConfig testconfig.TestConfig, configFile string) (int, error) {
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		return -1, fmt.Errorf("DiscoveredClockUnderTestPod is nil")
+	}
 	buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
 		pkg.PtpContainerName, []string{"pmc", "-b", "0", "-u", "-f", configFile, "GET PARENT_DATA_SET"})
 	if err != nil {
@@ -643,6 +650,9 @@ func GetClockClassViaPMC(fullConfig testconfig.TestConfig, configFile string) (i
 // GetPerConfigClockClassesWithMetrics returns a map of ptp4l config name to clock class value
 // by parsing the openshift_ptp_clock_class metrics with per-config labels.
 func GetPerConfigClockClassesWithMetrics(fullConfig testconfig.TestConfig) (map[string]int, error) {
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		return nil, fmt.Errorf("DiscoveredClockUnderTestPod is nil")
+	}
 	buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
 		pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 	if err != nil {
@@ -697,6 +707,8 @@ func RestorePtp4lConf(configName, originalConf string) {
 		logrus.Errorf("Failed to get PtpConfig %s for restore: %s", configName, err)
 		return
 	}
+	Expect(len(ptpCfg.Spec.Profile)).To(BeNumerically(">=", 1),
+		"PtpConfig %s must have at least one profile to restore ptp4l config", configName)
 	ptpCfg.Spec.Profile[0].Ptp4lConf = &originalConf
 	if _, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 		context.Background(), ptpCfg, metav1.UpdateOptions{}); err != nil {
@@ -706,6 +718,8 @@ func RestorePtp4lConf(configName, originalConf string) {
 
 // WaitForConfigContent polls a ptp4l config file in the pod until it contains the expected string.
 func WaitForConfigContent(fullConfig testconfig.TestConfig, configFile, expected string) {
+	Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+		"WaitForConfigContent requires DiscoveredClockUnderTestPod")
 	Eventually(func() bool {
 		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
 			pkg.PtpContainerName, []string{"cat", configFile})
@@ -794,6 +808,9 @@ var nodeClockClassRe = regexp.MustCompile(`^openshift_ptp_clock_class\{node="([^
 // getNodeClockClassFromMetrics returns the clock class from the node-level metric
 // (without config label, used on OCP < 4.18).
 func getNodeClockClassFromMetrics(fullConfig testconfig.TestConfig) (int, error) {
+	if fullConfig.DiscoveredClockUnderTestPod == nil {
+		return -1, fmt.Errorf("DiscoveredClockUnderTestPod is nil")
+	}
 	buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
 		pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 	if err != nil {
