@@ -60,6 +60,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		ptphelper.WaitForPtpDaemonToExist()
 		fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
 	})
+	Expect(fullConfig.Status).To(Equal(testconfig.DiscoverySuccessStatus), "parallel suite requires successful PTP discovery")
+	Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+		"clock-under-test pod missing; label node with "+pkg.PtpClockUnderTestNodeLabel)
 	ptphelper.RestartPTPDaemon()
 
 	isConsumerReady := true
@@ -105,6 +108,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
 		fullConfig.PtpEventsIsConsumerReady = isConsumerReady
 	})
+	Expect(fullConfig.Status).To(Equal(testconfig.DiscoverySuccessStatus), "parallel suite requires successful PTP discovery")
+	Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+		"clock-under-test pod missing; label node with "+pkg.PtpClockUnderTestNodeLabel)
 })
 var _ = AfterSuite(func() {
 	if DeletePtpConfig {

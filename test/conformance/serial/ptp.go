@@ -378,7 +378,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 		Context("PTP Reboot discovery", func() {
 			BeforeEach(func() {
-				Skip("This is covered by QE")
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
@@ -389,6 +388,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
+				Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+					"clock-under-test pod missing after refresh; label node with "+pkg.PtpClockUnderTestNodeLabel)
+				Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).NotTo(BeNil(),
+					"clock-under-test PtpConfig missing after refresh")
+				Skip("This is covered by QE")
 			})
 
 			It("The slave node is rebooted and discovered and in sync", func() {
@@ -2006,6 +2010,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.Status == testconfig.DiscoveryFailureStatus {
 					Skip("Failed to find a valid ptp slave configuration")
 				}
+				Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+					"clock-under-test pod missing after refresh; label node with "+pkg.PtpClockUnderTestNodeLabel)
+				Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).NotTo(BeNil(),
+					"clock-under-test PtpConfig missing after refresh")
 			})
 
 			It("The slave node network interface is taken down and up", func() {
@@ -2048,6 +2056,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
 				if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock ||
 					fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClockHA {
+					Expect(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig).NotTo(BeNil(),
+						"secondary PtpConfig required for dual-NIC BC outage tests")
 					secondarySlaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), ptpv1.Slave)
 					logrus.Infof("Secondary BC slave interfaces are %+q", secondarySlaveIf)
 					slaveIf = append(slaveIf, secondarySlaveIf...)
