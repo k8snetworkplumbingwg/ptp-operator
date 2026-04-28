@@ -705,28 +705,18 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 
 				By("Restoring authentication to test-grandmaster (cleanup)", func() {
-					// Restore the original config with auth settings intact
 					Expect(originalGMConfig).NotTo(BeNil(), "Original GM config should have been saved")
 
-					// Clear resource version for update
-					originalGMConfig.SetResourceVersion("")
-
-					// Delete the current config with spp 0
-					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.DeleteOptions{},
-					)
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
 
-					// Wait for deletion
-					time.Sleep(10 * time.Second)
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
 
-					// Recreate with the original config (spp 1)
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
-						originalGMConfig,
-						metav1.CreateOptions{},
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -769,21 +759,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						return
 					}
 
-					originalGMConfig.SetResourceVersion("")
-
-					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.DeleteOptions{},
-					)
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
 
-					time.Sleep(10 * time.Second)
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
 
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
-						originalGMConfig,
-						metav1.CreateOptions{},
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
 
