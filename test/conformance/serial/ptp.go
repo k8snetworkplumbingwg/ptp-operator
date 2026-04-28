@@ -895,6 +895,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired == testconfig.Discovery {
 					Skip("Skipping because adding a different profile and no modifications are allowed in discovery mode")
 				}
+				if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClockHA {
+					Skip("DualNICBCHA: temp profile conflicts with phc2sys HA haProfiles reference, causing master port to stay LISTENING")
+				}
 				var policyName string
 				var modifiedPtpConfig *ptpv1.PtpConfig
 				By("Creating a config with higher priority", func() {
