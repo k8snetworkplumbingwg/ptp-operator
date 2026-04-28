@@ -623,7 +623,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 	var err error
 	if currentApiVersion != "" && currentApiVersion != apiVersion && configMapName != "" {
 		// Check if the ConfigMap exists
-		configMap, getErr := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
+		configMap, getErr := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(context.Background(), configMapName, metav1.GetOptions{})
 		if getErr != nil {
 			logrus.Infof("ConfigMap %s does not exist: %v", configMapName, getErr)
 		} else {
@@ -632,7 +632,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 			configMap.BinaryData = map[string][]byte{}
 
 			// Update the ConfigMap
-			_, err = client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Update(context.TODO(), configMap, metav1.UpdateOptions{})
+			_, err = client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), configMap, metav1.UpdateOptions{})
 			if err != nil {
 				logrus.Errorf("Error updating ConfigMap: %v", err)
 			}
