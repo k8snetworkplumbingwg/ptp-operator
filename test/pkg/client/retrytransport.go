@@ -47,6 +47,7 @@ func (r *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 				timer.Stop()
 				return nil, req.Context().Err()
 			case <-timer.C:
+				timer.Stop()
 			}
 		}
 
