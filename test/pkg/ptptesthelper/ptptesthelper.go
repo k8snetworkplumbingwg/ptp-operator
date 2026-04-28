@@ -524,6 +524,10 @@ func (p *PortEngine) TurnPortUp(port string) error {
 }
 
 func (p *PortEngine) TurnAllPortsDown(skippedInterfaces map[string]bool) error {
+	if p.ClockPod == nil {
+		logrus.Warnf("TurnAllPortsDown: ClockPod is nil, skipping (PortEngine was not initialized)")
+		return nil
+	}
 	for _, port := range p.Ports {
 		if skippedInterfaces[port] {
 			logrus.Infof("Skipping interface: %s (in skip list)", port)
@@ -541,6 +545,10 @@ func (p *PortEngine) TurnAllPortsDown(skippedInterfaces map[string]bool) error {
 }
 
 func (p *PortEngine) TurnAllPortsUp() error {
+	if p.ClockPod == nil {
+		logrus.Warnf("TurnAllPortsUp: ClockPod is nil, skipping (PortEngine was not initialized)")
+		return nil
+	}
 	for _, port := range p.Ports {
 		stdout, stderr, err := pods.ExecCommand(client.Client, true, p.ClockPod, pkg.RecoveryNetworkOutageDaemonSetContainerName,
 			[]string{"ip", "link", "set", port, "up"})
