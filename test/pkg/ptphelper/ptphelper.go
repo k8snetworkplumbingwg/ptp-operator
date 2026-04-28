@@ -756,13 +756,13 @@ func IsSecondaryBc(config *ptpv1.PtpConfig) bool {
 
 // Checks if the ptpSettings has more than one HA profile
 func hasHaProfiles(ptpSettings map[string]string) bool {
-	logrus.Infof("Checking if ptpSettings %v has more than one HA profile", ptpSettings)
+	logrus.Debugf("Checking if ptpSettings %v has more than one HA profile", ptpSettings)
 	return ptpSettings != nil && ptpSettings["haProfiles"] != "" && len(strings.Split(ptpSettings["haProfiles"], ",")) > 1
 }
 
 // Checks for DualNIC BC HA
 func ConfigIsPhc2SysHa(config *ptpv1.PtpConfig) bool {
-	logrus.Infof("Checking if config %s is Phc2Sys HA", config.Name)
+	logrus.Debugf("Checking if config %s is Phc2Sys HA", config.Name)
 	for _, profile := range config.Spec.Profile {
 		if profile.Phc2sysOpts != nil && profile.Ptp4lOpts != nil && *profile.Ptp4lOpts == "" && hasHaProfiles(profile.PtpSettings) {
 			logrus.Infof("Config %s is Phc2Sys HA", config.Name)

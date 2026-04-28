@@ -39,22 +39,26 @@ func TestTest(t *testing.T) {
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {
-	// Get the test config parameters
-	testParameters, err := ptptestconfig.GetPtpTestConfig()
-	Expect(err).To(BeNil(), "Failed to get Test Config")
+	By("Getting test config parameters", func() {
+		testParameters, err := ptptestconfig.GetPtpTestConfig()
+		Expect(err).To(BeNil(), "Failed to get Test Config")
 
-	if testParameters.SoakTestConfig.DisableSoakTest {
-		Skip("Soak testing is disabled at the configuration file. Hence, skipping!")
-	}
+		if testParameters.SoakTestConfig.DisableSoakTest {
+			Skip("Soak testing is disabled at the configuration file. Hence, skipping!")
+		}
+	})
 
-	// Run on all Ginkgo nodes
 	logrus.Info("Executed from parallel suite")
-	testclient.Client = testclient.New("")
-	Expect(testclient.Client).NotTo(BeNil())
 
-	// discovers valid ptp configurations based on clock type
-	err = testconfig.CreatePtpConfigurations()
-	Expect(err).To(BeNil(), "Could not create a ptp config")
+	By("Creating Kubernetes client", func() {
+		testclient.Client = testclient.New("")
+		Expect(testclient.Client).NotTo(BeNil())
+	})
+
+	By("Creating PTP configurations from discovered clock types", func() {
+		err := testconfig.CreatePtpConfigurations()
+		Expect(err).To(BeNil(), "Could not create a ptp config")
+	})
 
 	By("Refreshing configuration", func() {
 		ptphelper.WaitForPtpDaemonToExist()
@@ -67,26 +71,34 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	isConsumerReady := true
 	apiVersion := event.GetDefaultApiVersion()
-	err = ptphelper.EnablePTPEvent(apiVersion, fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
-	Expect(err).To(BeNil(), "Error when enable ptp event")
-	if apiVersion == "1.0" {
-		logrus.Info("Deploy consumer app with sidecar for testing event API v1")
-		err = event.CreateConsumerAppWithSidecar(fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
-		if err != nil {
-			logrus.Errorf("PTP events are not available due to consumer app/sidecar creation error err=%s", err)
-			isConsumerReady = false
+
+	By("Enabling PTP event API", func() {
+		logrus.Info("API version %s", apiVersion)
+		err := ptphelper.EnablePTPEvent(apiVersion, fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
+		Expect(err).To(BeNil(), "Error when enable ptp event")
+	})
+
+	By("Deploying consumer app for event API", func() {
+		if apiVersion == "1.0" {
+			logrus.Debug("Deploy consumer app with sidecar for testing event API v1")
+			err := event.CreateConsumerAppWithSidecar(fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
+			if err != nil {
+				logrus.Errorf("PTP events are not available due to consumer app/sidecar creation error err=%s", err)
+				isConsumerReady = false
+			}
+		} else {
+			logrus.Debug("Deploy consumer app without sidecar for testing event API v2")
+			err := event.CreateConsumerApp(fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
+			if err != nil {
+				logrus.Errorf("PTP events are not available due to consumer app creation error err=%s", err)
+				isConsumerReady = false
+			}
 		}
-	} else {
-		logrus.Info("Deploy consumer app without sidecar for testing event API v2")
-		err = event.CreateConsumerApp(fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
-		if err != nil {
-			logrus.Errorf("PTP events are not available due to consumer app creation error err=%s", err)
-			isConsumerReady = false
-		}
-	}
+	})
+
 	// stops the event listening framework
 	DeferCleanup(func() {
-		err = event.DeleteConsumerNamespace()
+		err := event.DeleteConsumerNamespace()
 		if err != nil {
 			logrus.Debugf("Deleting consumer namespace failed because of err=%s", err)
 		}

@@ -157,6 +157,41 @@ const FirstSolution = 0
 
 var data solverData
 
+func reformatGlobalConfig(cfg *TestConfig) string {	
+	summary := map[string]interface{}{
+		"status":                  cfg.Status.String(),
+		"modeDesired":             cfg.PtpModeDesired.String(),
+		"modeDiscovered":          cfg.PtpModeDiscovered.String(),
+		"consumerReady":           cfg.PtpEventsIsConsumerReady,
+		"masterInterfaces":        cfg.DiscoveredMasterInterfaces,
+		"followerInterfaces":      cfg.DiscoveredFollowerInterfaces,
+		"foundSolutions":          cfg.FoundSolutions,
+		"grandMasterConfig":       discoveredConfigName(cfg.DiscoveredGrandMasterPtpConfig),
+		"clockUnderTestConfig":    discoveredConfigName(cfg.DiscoveredClockUnderTestPtpConfig),
+		"clockUnderTestSecondary": discoveredConfigName(cfg.DiscoveredClockUnderTestSecondaryPtpConfig),
+		"clockUnderTestPod":       discoveredPodName(cfg.DiscoveredClockUnderTestPod),
+	}
+	out, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("unable to marshal global config: %v", err)
+	}
+	return string(out)
+}
+
+func discoveredConfigName(cfg *ptpDiscoveryRes) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Name
+}
+
+func discoveredPodName(pod *v1core.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	return pod.Name
+}
+
 // indicates the clock roles in the algotithms
 type TestIfClockRoles int
 
@@ -447,7 +482,7 @@ func initFoundSolutions() {
 
 // Gets te desired configuration from the environment
 func GetDesiredConfig(forceUpdate bool) TestConfig {
-	defer logrus.Infof("Current PTP test config=%s", &GlobalConfig)
+	defer logrus.Debugf("Current PTP test config:\n%s", reformatGlobalConfig(&GlobalConfig))
 	if GlobalConfig.Status == InitStatus && !forceUpdate {
 		return GlobalConfig
 	}
@@ -779,8 +814,8 @@ func initAndSolveProblems() {
 
 // Gets the discovered configuration
 func GetFullDiscoveredConfig(namespace string, forceUpdate bool) TestConfig {
-	logrus.Infof("Getting ptp configuration for namespace:%s", namespace)
-	defer logrus.Infof("Current PTP test config=%s", &GlobalConfig)
+	logrus.Debugf("Getting ptp configuration for namespace:%s", namespace)
+	defer logrus.Debugf("Current PTP test config:\n%s", reformatGlobalConfig(&GlobalConfig))
 
 	if GlobalConfig.Status == DiscoveryFailureStatus ||
 		GlobalConfig.Status == DiscoverySuccessStatus && !forceUpdate {
@@ -1549,7 +1584,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 
 	// Create the third HA-specific phc2sys config if HA is enabled
 	if phc2SysHaEnabled {
-		logrus.Infof("Creating HA ptpconfig")
+		logrus.Debug("Creating HA ptpconfig")
 		// Determine the node for the HA config - use the same node as BC1
 		var haNodeName string
 		switch BestSolution {

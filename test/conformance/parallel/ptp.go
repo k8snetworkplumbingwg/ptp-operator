@@ -105,7 +105,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-parallel]", func() 
 
 			ptphelper.EnablePTPEvent("1.0", fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
 			isConsumerReady := true
-			logrus.Info("Deploy consumer app with sidecar for testing event API v1")
+			logrus.Debug("Deploy consumer app with sidecar for testing event API v1")
 			err := event.CreateConsumerAppWithSidecar(fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
 			if err != nil {
 				logrus.Errorf("PTP events are not available due to consumer app/sidecar creation error err=%s", err)
@@ -238,7 +238,7 @@ func testPtpCpuUtilization(fullConfig testconfig.TestConfig, testParameters *ptp
 	}
 
 	// Warmup: wait for Prometheus to have enough samples
-	logrus.Infof("Warming up for %s", prometheusRateTimeWindow)
+	logrus.Debugf("Warming up for %s", prometheusRateTimeWindow)
 	time.Sleep(prometheusRateTimeWindow)
 
 	testCaseDuration := time.Duration(params.CpuTestSpec.Duration) * time.Minute
@@ -255,7 +255,7 @@ func testPtpCpuUtilization(fullConfig testconfig.TestConfig, testParameters *ptp
 			logrus.Infof("Test completed: CPU utilization threshold was reached %d times.", failureCounter)
 			return
 		case <-cpuUsageCheckTicker.C:
-			logrus.Infof("Checking CPU usage of ptp pods...")
+			logrus.Debug("Checking CPU usage of ptp pods...")
 			thresholdReached, queryErr := RetryCpuUsageCheck(
 				prometheusPod,
 				ptpPodsPerNode,

@@ -197,7 +197,7 @@ func StopLogCollection() {
 		return
 	}
 
-	logrus.Info("Stopping log collection...")
+	logrus.Debug("Stopping log collection...")
 	logDir := collector.logDir
 
 	// Write suite end marker

@@ -243,7 +243,7 @@ func CreatePtpTestPrivilegedDaemonSet(daemonsetName, daemonsetNamespace, daemons
 }
 
 func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfaces map[string]bool) {
-	logrus.Info("Recovery PTP outage begins ...........")
+	logrus.Debug("Recovery PTP outage begins ...........")
 
 	var slavePod *corev1.Pod
 	Eventually(func() error {
@@ -296,7 +296,7 @@ func RecoverySlaveNetworkOutage(fullConfig testconfig.TestConfig, skippedInterfa
 		}
 	}
 	k8sPriviledgedDs.DeleteNamespaceIfPresent(pkg.RecoveryNetworkOutageDaemonSetNamespace)
-	logrus.Info("Recovery PTP outage ends ...........")
+	logrus.Debug("Recovery PTP outage ends ...........")
 }
 
 func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeName string, fullConfig testconfig.TestConfig) {
@@ -307,7 +307,7 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 	)
 	By("Setting interface down then wait")
 	downInterfaceCommand := fmt.Sprintf("ip link set dev %s down", interfaceName)
-	logrus.Infof("Setting the interface %s down", interfaceName)
+	logrus.Debugf("Setting the interface %s down", interfaceName)
 	pods.ExecutePtpInterfaceCommand(pod, interfaceName, downInterfaceCommand)
 	logrus.Infof("Interface %s is set down", interfaceName)
 
@@ -341,7 +341,7 @@ func toggleNetworkInterface(pod corev1.Pod, interfaceName string, slavePodNodeNa
 }
 
 func RebootSlaveNode(fullConfig testconfig.TestConfig) {
-	logrus.Info("Rebooting system starts ..............")
+	logrus.Debug("Rebooting system starts ..............")
 
 	// 1. Create reboot ptp test priviledged daemonset
 	rebootDaemonSetRunningPods := CreatePtpTestPrivilegedDaemonSet(pkg.RebootDaemonSetName, pkg.RebootDaemonSetNamespace, pkg.RebootDaemonSetContainerName)
@@ -388,7 +388,7 @@ func RebootSlaveNode(fullConfig testconfig.TestConfig) {
 	// 5. Delete the reboot ptp test priviledged daemonset
 	k8sPriviledgedDs.DeleteNamespaceIfPresent(pkg.RebootDaemonSetNamespace)
 
-	logrus.Info("Rebooting system ends ..............")
+	logrus.Debug("Rebooting system ends ..............")
 }
 
 // GetPtpPodsPerNode is a helper method to get a map of ptp-related pods (daemonset + operator)
@@ -560,7 +560,7 @@ func (p *PortEngine) SetInitialRoles() (err error) {
 	}
 
 	// Display initial roles per interface name
-	logrus.Infof("Setting up initial roles for interfaces on node %s:", p.ClockPod.Spec.NodeName)
+	logrus.Debugf("Setting up initial roles for interfaces on node %s:", p.ClockPod.Spec.NodeName)
 	for i, port := range p.Ports {
 		if i < len(p.InitialRoles) {
 			logrus.Infof("  Interface %s: %s", port, p.InitialRoles[i].String())
