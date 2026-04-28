@@ -480,8 +480,8 @@ func GetDesiredConfig(forceUpdate bool) TestConfig {
 	}
 }
 
-// Create ptpconfigs
-func CreatePtpConfigurations() error {
+// createPtpConfigurations sets up PTP configs using the given context for cancellation-aware waits.
+func createPtpConfigurations(ctx context.Context) error {
 	err := metrics.InitEnvIntParamConfig("MAX_OFFSET_IN_NS", metrics.MaxOffsetDefaultNs, &metrics.MaxOffsetNs)
 	if err != nil {
 		logrus.Errorf("Error initializing MAX_OFFSET_IN_NS: %v", err)
@@ -514,7 +514,7 @@ func CreatePtpConfigurations() error {
 
 	// Wait for stuck Terminating namespace before L2 init (vendor privileged-daemonset only waits 2m).
 	if err := k8sutil.PreWaitPrivilegedDSNamespaceIfTerminating(
-		context.Background(), pkg.L2DiscoveryNamespace, k8sutil.PrivilegedDaemonsetNamespaceStuckDeleteWait,
+		ctx, pkg.L2DiscoveryNamespace, k8sutil.PrivilegedDaemonsetNamespaceStuckDeleteWait,
 	); err != nil {
 		return fmt.Errorf("waiting for %s namespace: %w", pkg.L2DiscoveryNamespace, err)
 	}
@@ -574,7 +574,9 @@ func CreatePtpConfigurations() error {
 	return nil
 }
 
-// CreatePtpConfigurationsWithRetry runs CreatePtpConfigurations up to maxAttempts when the error
+const retryDelay = 45 * time.Second
+
+// CreatePtpConfigurationsWithRetry runs createPtpConfigurations up to maxAttempts when the error
 // is likely transient (namespace stuck in Terminating during privileged-daemonset / L2 init).
 func CreatePtpConfigurationsWithRetry(maxAttempts int) error {
 	return CreatePtpConfigurationsWithRetryContext(context.Background(), maxAttempts)
@@ -588,13 +590,13 @@ func CreatePtpConfigurationsWithRetryContext(ctx context.Context, maxAttempts in
 	}
 	var last error
 	for i := 0; i < maxAttempts; i++ {
-		last = CreatePtpConfigurations()
+		last = createPtpConfigurations(ctx)
 		if last == nil {
 			return nil
 		}
 		if i < maxAttempts-1 && k8sutil.IsTransientL2OrPrivilegedNamespaceError(last) {
-			logrus.Warnf("CreatePtpConfigurations attempt %d/%d failed (transient): %v; retrying after 45s", i+1, maxAttempts, last)
-			timer := time.NewTimer(45 * time.Second)
+			logrus.Warnf("CreatePtpConfigurations attempt %d/%d failed (transient): %v; retrying after %v", i+1, maxAttempts, last, retryDelay)
+			timer := time.NewTimer(retryDelay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
