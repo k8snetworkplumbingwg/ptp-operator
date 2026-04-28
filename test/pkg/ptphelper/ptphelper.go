@@ -620,11 +620,12 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 	ptpConfig.Spec.EventConfig.ApiVersion = apiVersion
 
 	// clean up configMap for subscription if update to a different version
+	var err error
 	if currentApiVersion != "" && currentApiVersion != apiVersion && configMapName != "" {
 		// Check if the ConfigMap exists
-		configMap, err := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
-		if err != nil {
-			logrus.Infof("ConfigMap %s does not exist: %v", configMapName, err)
+		configMap, getErr := client.Client.CoreV1().ConfigMaps(pkg.PtpLinuxDaemonNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
+		if getErr != nil {
+			logrus.Infof("ConfigMap %s does not exist: %v", configMapName, getErr)
 		} else {
 			// Empty the ConfigMap
 			configMap.Data = map[string]string{}
@@ -639,7 +640,7 @@ func EnablePTPEvent(apiVersion, configMapName string) error {
 			logrus.Infof("ConfigMap %s emptied successfully\n", configMapName)
 		}
 	}
-	_, err := client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
+	_, err = client.Client.PtpV1Interface.PtpOperatorConfigs(pkg.PtpLinuxDaemonNamespace).Update(context.Background(), ptpConfig, metav1.UpdateOptions{})
 	return err
 }
 

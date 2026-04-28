@@ -577,6 +577,12 @@ func CreatePtpConfigurations() error {
 // CreatePtpConfigurationsWithRetry runs CreatePtpConfigurations up to maxAttempts when the error
 // is likely transient (namespace stuck in Terminating during privileged-daemonset / L2 init).
 func CreatePtpConfigurationsWithRetry(maxAttempts int) error {
+	return CreatePtpConfigurationsWithRetryContext(context.Background(), maxAttempts)
+}
+
+// CreatePtpConfigurationsWithRetryContext is like CreatePtpConfigurationsWithRetry but allows
+// the caller to pass a context for cancellation-aware retry delays.
+func CreatePtpConfigurationsWithRetryContext(ctx context.Context, maxAttempts int) error {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
@@ -588,7 +594,14 @@ func CreatePtpConfigurationsWithRetry(maxAttempts int) error {
 		}
 		if i < maxAttempts-1 && k8sutil.IsTransientL2OrPrivilegedNamespaceError(last) {
 			logrus.Warnf("CreatePtpConfigurations attempt %d/%d failed (transient): %v; retrying after 45s", i+1, maxAttempts, last)
-			time.Sleep(45 * time.Second)
+			timer := time.NewTimer(45 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+				timer.Stop()
+			}
 			continue
 		}
 		break

@@ -11,6 +11,9 @@ import (
 	"github.com/golang/glog"
 )
 
+//nolint:gosec
+var jitterRng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
 const (
 	defaultMaxRetries   = 3
 	retryBaseDelay      = 500 * time.Millisecond
@@ -129,6 +132,6 @@ func backoffDelay(attempt int) time.Duration {
 	if delay > float64(retryMaxDelay) {
 		delay = float64(retryMaxDelay)
 	}
-	jitter := delay * retryJitterFraction * (rand.Float64()*2 - 1) //nolint:gosec
+	jitter := delay * retryJitterFraction * (jitterRng.Float64()*2 - 1)
 	return time.Duration(delay + jitter)
 }
