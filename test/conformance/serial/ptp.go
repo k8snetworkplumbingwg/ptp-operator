@@ -830,22 +830,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(slavePod).NotTo(BeNil())
 
 					nodeName := slavePod.Spec.NodeName
-					ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(
-						context.Background(),
-						metav1.ListOptions{
-							LabelSelector: "app=linuxptp-daemon",
-							FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
-						},
-					)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(ptpPods.Items).NotTo(BeEmpty(), "No linuxptp-daemon pod found on node %s", nodeName)
-					currentSlavePod := &ptpPods.Items[0]
-					fmt.Fprintf(GinkgoWriter, "Reading logs from slave pod %s on node %s\n", currentSlavePod.Name, nodeName)
+					fmt.Fprintf(GinkgoWriter, "Reading logs from slave pod %s on node %s\n", slavePod.Name, nodeName)
 
-					authBadRegex := `auth: bad message`
+					authBadRegex := "auth: bad message"
 					logMatches, err := pods.GetPodLogsRegex(
-						currentSlavePod.Namespace,
-						currentSlavePod.Name,
+						slavePod.Namespace,
+						slavePod.Name,
 						pkg.PtpContainerName,
 						authBadRegex,
 						true,
