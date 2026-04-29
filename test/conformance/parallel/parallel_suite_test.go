@@ -53,7 +53,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(testclient.Client).NotTo(BeNil())
 
 	// discovers valid ptp configurations based on clock type
-	err = testconfig.CreatePtpConfigurations()
+	err = testconfig.CreatePtpConfigurationsWithRetry(3)
 	Expect(err).To(BeNil(), "Could not create a ptp config")
 
 	By("Refreshing configuration", func() {

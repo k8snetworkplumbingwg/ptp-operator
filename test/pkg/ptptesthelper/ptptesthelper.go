@@ -13,6 +13,7 @@ import (
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/k8sutil"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	nodeshelper "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/nodes"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/pods"
@@ -213,6 +214,9 @@ func CreatePtpTestPrivilegedDaemonSet(daemonsetName, daemonsetNamespace, daemons
 		imageWithVersion = "quay.io/testnetworkfunction/debug-partner:latest"
 	)
 	k8sPriviledgedDs.SetDaemonSetClient(client.Client.Interface)
+	Expect(k8sutil.PreWaitPrivilegedDSNamespaceIfTerminating(
+		context.Background(), daemonsetNamespace, k8sutil.PrivilegedDaemonsetNamespaceStuckDeleteWait,
+	)).To(Succeed(), "namespace stuck in Terminating should clear before privileged-daemonset create for "+daemonsetNamespace)
 	dummyLabels := map[string]string{}
 	cpuLim := "100m"
 	cpuReq := "100m"
