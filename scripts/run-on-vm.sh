@@ -82,7 +82,7 @@ kubectl rollout status deployment ptp-operator -n openshift-ptp
 kubectl get pods -n openshift-ptp -o wide
 
 # run tests
-./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower \
+./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower --auth true \
   --linuxptp-daemon-image "$VM_IP/test:lptpd" \
   --must-gather-image "$VM_IP/test:ptpmg" \
   --debug-image "$VM_IP/test:debug"

@@ -601,7 +601,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
-			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
+			XIt("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
 				// Only run if authentication is enabled
 				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
 				if authEnabled != "true" {
@@ -705,28 +705,18 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 
 				By("Restoring authentication to test-grandmaster (cleanup)", func() {
-					// Restore the original config with auth settings intact
 					Expect(originalGMConfig).NotTo(BeNil(), "Original GM config should have been saved")
 
-					// Clear resource version for update
-					originalGMConfig.SetResourceVersion("")
-
-					// Delete the current config with spp 0
-					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.DeleteOptions{},
-					)
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
 
-					// Wait for deletion
-					time.Sleep(10 * time.Second)
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
 
-					// Recreate with the original config (spp 1)
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
-						originalGMConfig,
-						metav1.CreateOptions{},
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -752,6 +742,97 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				})
 			})
 
+			It("SPP mismatch on GM interface produces auth bad message logs (negative test)", func() {
+				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
+				if authEnabled != "true" {
+					Skip("SPP mismatch test requires PTP_AUTH_ENABLED=true")
+				}
+
+				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				}
+
+				var originalGMConfig *ptpv1.PtpConfig
+
+				DeferCleanup(func() {
+					if originalGMConfig == nil {
+						return
+					}
+
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
+					Expect(err).NotTo(HaveOccurred())
+
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
+
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					fmt.Fprintf(GinkgoWriter, "Restored GM with original spp 1 config\n")
+
+					time.Sleep(60 * time.Second)
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
+					time.Sleep(30 * time.Second)
+				})
+
+				By("Saving original GM config and changing interface spp from 1 to 0", func() {
+					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(),
+						pkg.PtpGrandMasterPolicyName,
+						metav1.GetOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					originalGMConfig = ptpConfig.DeepCopy()
+
+					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
+					modifiedConf := strings.Replace(ptp4lConf, "\nspp 1\n", "\nspp 0\n", -1)
+					Expect(modifiedConf).NotTo(Equal(ptp4lConf), "Expected to find spp 1 in GM interface config to replace with spp 0")
+					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(),
+						ptpConfig,
+						metav1.UpdateOptions{},
+					)
+					Expect(err).NotTo(HaveOccurred())
+
+					fmt.Fprintf(GinkgoWriter, "GM interface spp changed from 1 to 0; slave still expects spp 1\n")
+					time.Sleep(60 * time.Second)
+				})
+
+				By("Checking slave logs for 'auth: bad message' entries", func() {
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+
+					nodeName := slavePod.Spec.NodeName
+					fmt.Fprintf(GinkgoWriter, "Reading logs from slave pod %s on node %s\n", slavePod.Name, nodeName)
+
+					authBadRegex := "auth: bad message"
+					logMatches, err := pods.GetPodLogsRegex(
+						slavePod.Namespace,
+						slavePod.Name,
+						pkg.PtpContainerName,
+						authBadRegex,
+						true,
+						30*time.Second,
+					)
+					Expect(err).NotTo(HaveOccurred(),
+						"Failed to read slave pod logs for auth bad message check")
+					Expect(len(logMatches)).To(BeNumerically(">", 0),
+						"No 'auth: bad message' entries found; expected SPP mismatch to cause authentication rejection")
+					fmt.Fprintf(GinkgoWriter, "Found %d 'auth: bad message' log entries confirming SPP mismatch rejection\n", len(logMatches))
+				})
+			})
 			// Test That clock can sync in dual follower scenario when one port is down
 			It("Dual follower can sync when one follower port goes down", func() {
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
