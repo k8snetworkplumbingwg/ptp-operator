@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -365,6 +366,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		execute.BeforeAll(func() {
 			err := testconfig.CreatePtpConfigurationsWithRetry(3)
 			if err != nil {
+				if errors.Is(err, testconfig.ErrNoWPCHardware) {
+					Skip("No WPC NIC found on any cluster node; TGM tests will be skipped")
+				}
 				fullConfig.Status = testconfig.DiscoveryFailureStatus
 				Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
 			}

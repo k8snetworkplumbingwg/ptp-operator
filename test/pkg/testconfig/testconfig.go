@@ -3,8 +3,10 @@ package testconfig
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +72,8 @@ const (
 	SCHED_FIFO                  = "SCHED_FIFO"
 	L2_DISCOVERY_IMAGE          = "quay.io/redhat-cne/l2discovery:v15"
 )
+
+var ErrNoWPCHardware = errors.New("no WPC NIC found on any node in the cluster")
 
 func getL2DiscoveryImage() string {
 	if img := os.Getenv("L2_DISCOVERY_IMAGE"); img != "" {
@@ -593,6 +597,10 @@ func CreatePtpConfigurationsWithRetryContext(ctx context.Context, maxAttempts in
 		last = createPtpConfigurations(ctx)
 		if last == nil {
 			return nil
+		}
+		if errors.Is(last, ErrNoWPCHardware) {
+			logrus.Warn("No WPC hardware found on any cluster node; skipping retries")
+			break
 		}
 		if i < maxAttempts-1 && k8sutil.IsTransientL2OrPrivilegedNamespaceError(last) {
 			logrus.Warnf("CreatePtpConfigurations attempt %d/%d failed (transient): %v; retrying after %v", i+1, maxAttempts, last, retryDelay)
@@ -1620,37 +1628,62 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 }
 
 func PtpConfigTelcoGM(isExtGM bool) error {
-	var grandmaster int
-	BestSolution := ""
-	if len(*data.solutions[AlgoTelcoGMString]) != 0 {
-		BestSolution = AlgoTelcoGMString
+	nodeSet := make(map[string]bool)
+	for _, ptpIf := range GlobalConfig.L2Config.GetPtpIfList() {
+		nodeSet[ptpIf.NodeName] = true
 	}
-	switch BestSolution {
-	case AlgoTelcoGMString:
-
-		// Check GM interface available
-		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
-
-		// Check the Iface has a WPC NIC associated to it
-		IfList, err := ptphelper.GetWPCEnabledInterfaces(gmIf.NodeName)
-		if err != nil {
-			return fmt.Errorf("checking WPC interfaces on %s: %w", gmIf.NodeName, err)
-		}
-		if len(IfList) == 0 {
-			logrus.Error("WPC NIC not found in list of interfaces on the cluster")
-			return fmt.Errorf("WPC NIC not found in list of interfaces on the cluster %d", len(IfList))
-		}
-		deviceID, err := ptphelper.CheckGNSSForInterface(gmIf.NodeName, IfList[0])
-		if err != nil {
-			return fmt.Errorf("GNSS check on %s: %w", gmIf.NodeName, err)
-		}
-		err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID)
-		if err != nil {
-			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
-		}
+	nodeNames := make([]string, 0, len(nodeSet))
+	for nodeName := range nodeSet {
+		nodeNames = append(nodeNames, nodeName)
 	}
-	return nil
+	sort.Strings(nodeNames)
+
+	var lastErr error
+	for _, nodeName := range nodeNames {
+		ifList, err := ptphelper.GetWPCEnabledInterfaces(nodeName)
+		if err != nil {
+			logrus.Warnf("checking WPC interfaces on %s: %v", nodeName, err)
+			lastErr = err
+			continue
+		}
+		// CreatePtpConfigWPCGrandMaster requires at least 2 interfaces
+		if len(ifList) < 2 {
+			continue
+		}
+
+		var deviceID string
+		gmIfIdx := -1
+		for i, iface := range ifList {
+			dID, gnssErr := ptphelper.CheckGNSSForInterface(nodeName, iface)
+			if gnssErr != nil {
+				logrus.Warnf("checking GNSS for %s on %s: %v", iface, nodeName, gnssErr)
+				lastErr = gnssErr
+				continue
+			}
+			if dID != "" {
+				deviceID = dID
+				gmIfIdx = i
+				break
+			}
+		}
+		if gmIfIdx == -1 {
+			logrus.Warnf("no interface with GNSS found on %s", nodeName)
+			continue
+		}
+		if gmIfIdx != 0 {
+			ifList[0], ifList[gmIfIdx] = ifList[gmIfIdx], ifList[0]
+		}
+
+		return CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, nodeName, ifList, deviceID)
+	}
+
+	// If all nodes failed with transient errors, return the last error
+	// so the retry loop in CreatePtpConfigurationsWithRetryContext keeps retrying
+	if lastErr != nil {
+		return lastErr
+	}
+	logrus.Warn("No WPC NIC found on any node in the cluster")
+	return ErrNoWPCHardware
 }
 
 // helper function to add an interface to the ptp4l config
