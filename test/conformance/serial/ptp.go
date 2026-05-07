@@ -909,9 +909,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				var policyName string
 				var modifiedPtpConfig *ptpv1.PtpConfig
 				By("Creating a config with higher priority", func() {
-					if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-						Skip("standalone TGM mode is not supported for this test")
-					}
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+					Skip("standalone TGM mode is not supported for this test")
+				}
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+					Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
+				}
 					switch fullConfig.PtpModeDiscovered {
 					case testconfig.Discovery, testconfig.None:
 						Skip("Skipping because Discovery or None is not supported yet for this test")
