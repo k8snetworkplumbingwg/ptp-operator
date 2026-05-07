@@ -199,12 +199,11 @@ run_ginkgo_suite() {
 init_gnss_sim_env() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
-  # Start gnss-sim if not already running
-  if ! curl -sf "http://localhost:${GNSS_SIM_API_PORT}/health" >/dev/null 2>&1; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    echo "gnss-sim not running, starting via configGNSS.sh..."
-    bash "${SCRIPT_DIR}/configGNSS.sh"
-  fi
+  # Always restart gnss-sim so it targets the current /dev/gnss* device.
+  # A stale process may still pass the health check while writing to a
+  # device that no longer exists (e.g. after a module reload).
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bash "${SCRIPT_DIR}/configGNSS.sh"
 
   GNSS_KERNEL_DEV=""
   for g in /dev/gnss*; do
