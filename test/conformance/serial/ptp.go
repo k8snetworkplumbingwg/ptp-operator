@@ -2163,11 +2163,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return metrics.CheckClockRole(faultyRoles, slaveIf, &slavePodNodeName)
 				}, 5*time.Minute, 10*time.Second).Should(BeNil())
 
-				By("Checking clock class has degraded away from Locked (6)")
-				Eventually(func() bool {
-					return !checkClockClassStateReturnBool(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
-				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-					"expected clock class to degrade from Locked (6) after upstream link loss")
+			By("Checking clock class has degraded away from Locked (6)")
+			Eventually(func() bool {
+				return anyClockClassDifferent(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+				"expected clock class to degrade from Locked (6) after upstream link loss")
 
 				By("Setting all slave interfaces up")
 				err = portEngine.TurnAllPortsUp()
@@ -3994,6 +3994,26 @@ func checkClockClassStateReturnBool(fullConfig testconfig.TestConfig, expectedSt
 	return false
 }
 
+// anyClockClassDifferent returns true when at least one ptp4l instance on the
+// clock-under-test pod reports a clock class other than excludedClass. This is
+// needed for TGMBC where the pod runs two ptp4l processes (GM + BC); checking
+// !checkClockClassStateReturnBool would fail because the GM always reports 6.
+func anyClockClassDifferent(fullConfig testconfig.TestConfig, excludedClass string) bool {
+	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if matches := clockClassRe.FindStringSubmatch(line); matches != nil {
+			process := matches[2]
+			class := matches[3]
+			if strings.TrimSpace(process) == "ptp4l" && strings.TrimSpace(class) != excludedClass {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // waitForWPCGMReady blocks until the WPC T-GM's ptp4l advertises clock class 6.
 // The WPC GM does not hardcode clockClass; it converges dynamically through the
 // GNSS→ts2phc→DPLL→PMC pipeline.  Downstream slaves reject GMs with class > 7
@@ -4008,7 +4028,7 @@ func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
 	Eventually(func() bool {
 		buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 		return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
-	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+	}, pkg.TimeoutIn10Minutes, 5*time.Second).Should(BeTrue(),
 		"WPC T-GM did not reach clock class 6 — downstream clocks cannot leave LISTENING state")
 }
 
