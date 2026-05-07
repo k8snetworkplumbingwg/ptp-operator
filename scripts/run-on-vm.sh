@@ -87,23 +87,6 @@ kubectl get pods -n openshift-ptp -o wide
 # Start GNSS simulator for T-GM simulation tests
 ./configGNSS.sh
 
-# Export GNSS simulation env vars so the test framework can discover them.
-# When a kernel GNSS device is present, ts2phc reads from /dev/gnss0
-# instead of a PTY.
-# Auto-detect the first kernel GNSS char device.
-GNSS_KERNEL_DEV=""
-for g in /dev/gnss*; do
-    [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
-done
-if [ -n "$GNSS_KERNEL_DEV" ]; then
-    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
-else
-    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-ttyGNSS_TS2PHC}"
-fi
-export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
-export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
-export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
-
 # run tests
 ./run-tests.sh --kind serial --mode tgmoc \
   --linuxptp-daemon-image "$VM_IP/test:lptpd" \
