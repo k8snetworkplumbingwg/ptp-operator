@@ -909,12 +909,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				var policyName string
 				var modifiedPtpConfig *ptpv1.PtpConfig
 				By("Creating a config with higher priority", func() {
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-					Skip("standalone TGM mode is not supported for this test")
-				}
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
-					Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
-				}
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+						Skip("standalone TGM mode is not supported for this test")
+					}
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+						Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
+					}
 					switch fullConfig.PtpModeDiscovered {
 					case testconfig.Discovery, testconfig.None:
 						Skip("Skipping because Discovery or None is not supported yet for this test")
@@ -2050,6 +2050,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"clock-under-test pod missing after refresh; label node with "+pkg.PtpClockUnderTestNodeLabel)
 				Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).NotTo(BeNil(),
 					"clock-under-test PtpConfig missing after refresh")
+				// In TGMBC + gnss-sim mode the GM converges dynamically via the
+				// GNSS→ts2phc→DPLL pipeline. WaitForPtpDaemonToBeReady only confirms
+				// processes are running, not that the GM has reached clock class 6.
+				// Ensure the GM is locked before any outage test touches the topology.
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+					waitForWPCGMReady(fullConfig)
+				}
 			})
 
 			It("The slave node network interface is taken down and up", func() {
@@ -2058,6 +2065,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 				if fullConfig.PtpModeDesired == testconfig.DualFollowerClock {
 					Skip("Test not valid for dual follower scenario")
+				}
+				// In TGMBC + gnss-sim (netdevsim) mode the BC's PHC is constrained by
+				// MOCK_PHC_MAX_ADJ_PPB (32 ppm), so the BC cannot re-converge within the
+				// 5-minute waitingPeriod after the slave interface is restored.
+				// The dedicated "TGMBC - Cascading holdover" test covers the BC link-loss
+				// scenario in that topology.
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC && ptphelper.IsGnssSimulatedCI() {
+					Skip("interface-toggle test skipped for TGMBC gnss-sim: slow netdevsim PHC convergence; covered by cascading holdover test")
 				}
 
 				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
@@ -2166,11 +2181,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return metrics.CheckClockRole(faultyRoles, slaveIf, &slavePodNodeName)
 				}, 5*time.Minute, 10*time.Second).Should(BeNil())
 
-			By("Checking clock class has degraded away from Locked (6)")
-			Eventually(func() bool {
-				return anyClockClassDifferent(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
-			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-				"expected clock class to degrade from Locked (6) after upstream link loss")
+				By("Checking clock class has degraded away from Locked (6)")
+				Eventually(func() bool {
+					return anyClockClassDifferent(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+					"expected clock class to degrade from Locked (6) after upstream link loss")
 
 				By("Setting all slave interfaces up")
 				err = portEngine.TurnAllPortsUp()
@@ -2918,7 +2933,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			It("Testing simulated T-GM events on GNSS loss and recovery", func() {
 				By("Ensuring initial LOCKED state via clock class 6")
-				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 
 				const incomingEventsBuffer = 100
 				subs, cleanup := event.SubscribeToGMChangeEvents(incomingEventsBuffer, true, 60*time.Second)
@@ -2986,6 +3001,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(err).NotTo(HaveOccurred())
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
+				// Ensure the GM has converged to clock class 6 before triggering GNSS
+				// loss; on netdevsim the GM needs up to 10 minutes to lock after any
+				// previous disruption (MOCK_PHC_MAX_ADJ_PPB = 32 ppm).
+				waitForWPCGMReady(fullConfig)
 			})
 
 			It("Verifies cascading holdover on GNSS signal loss", func() {
@@ -3221,7 +3240,7 @@ func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 // checkStabilityOfSimGMUsingMetrics checks simulated T-GM stability
 // using only the processes and metrics available in the simulated environment.
 func checkStabilityOfSimGMUsingMetrics(fullConfig testconfig.TestConfig) {
-	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 	checkClockState(fullConfig, "1")
 	checkPTPNMEAStatus(fullConfig, "1")
 }
@@ -3970,7 +3989,10 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 
 		time.Sleep(pkg.TimeoutInterval2Seconds)
 
-		if time.Since(start) > pkg.TimeoutIn3Minutes {
+		// Use a 10-minute ceiling: on netdevsim (MOCK_PHC_MAX_ADJ_PPB = 32 ppm)
+		// the GM or BC can need up to ~5.5 minutes to slew back to class 6 after
+		// any disruption, so the previous 3-minute limit was too short.
+		if time.Since(start) > pkg.TimeoutIn10Minutes {
 			Fail(fmt.Sprintf("Timed out waiting for clock class %s", expectedState))
 			break
 		}

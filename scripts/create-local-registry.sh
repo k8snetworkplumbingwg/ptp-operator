@@ -13,6 +13,16 @@ openssl x509 -in ~/registry/registry.crt -out ~/registry/registry.pem -outform P
 sudo mv ~/registry/registry.pem /etc/pki/ca-trust/source/anchors/
 update-ca-trust
 
+# Create the containerd certificate trust bundle that Kind nodes will mount at
+# /etc/containerd/certs.d/$VM_IP/ (via kind-config.yaml extraMounts).
+cp ~/registry/registry.crt ~/registry/ca.crt
+cat > ~/registry/hosts.toml <<EOF
+server = "https://$VM_IP"
+
+[host."https://$VM_IP"]
+  ca = "/etc/containerd/certs.d/$VM_IP/ca.crt"
+EOF
+
 podman run -d \
   --restart=always \
   --name registry \
