@@ -172,9 +172,10 @@ var data solverData
 // indicates the clock roles in the algotithms
 type TestIfClockRoles int
 
-const NumTestClockRoles = 7
+const NumTestClockRoles = 8
 const (
 	Grandmaster TestIfClockRoles = iota
+	GrandmasterSibling
 	Slave1
 	Slave2
 	BC1Master
@@ -688,7 +689,9 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 1, 3, solver.Negative}}, // step5
 	}
 	data.problems[AlgoTelcoGMString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}}, // step1
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: first iface is WPC
+		{{int(solver.StepIsWPCNic), 1, 1}, // step2: second iface is WPC
+			{int(solver.StepSameNic), 2, 0, 1}}, //        and on the same NIC
 	}
 
 	// TGM + OC: WPC GM on slot 0, downstream OC slave on slot 1
@@ -819,6 +822,7 @@ func initAndSolveProblems() {
 
 	// GM
 	(*data.testClockRolesAlgoMapping[AlgoTelcoGMString])[Grandmaster] = 0
+	(*data.testClockRolesAlgoMapping[AlgoTelcoGMString])[GrandmasterSibling] = 1
 
 	// TGM + OC
 	(*data.testClockRolesAlgoMapping[AlgoTGMOCString])[Grandmaster] = 0
@@ -1687,17 +1691,18 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 }
 
 func PtpConfigTelcoGM(isExtGM bool) error {
-	var grandmaster int
 	BestSolution := ""
 	if len(*data.solutions[AlgoTelcoGMString]) != 0 {
 		BestSolution = AlgoTelcoGMString
 	}
 	switch BestSolution {
 	case AlgoTelcoGMString:
+		solution := (*data.solutions[BestSolution])[FirstSolution]
+		gm0 := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+		gm1 := (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 
-		// Check GM interface available
-		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
-		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
+		gmIf0 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm0]]
+		gmIf1 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm1]]
 
 		// Check the Iface has a WPC NIC associated to it
 		IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf.NodeName)
