@@ -1699,18 +1699,16 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 	case AlgoTelcoGMString:
 		solution := (*data.solutions[BestSolution])[FirstSolution]
 		gm0 := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
-		gm1 := (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 
 		gmIf0 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm0]]
-		gmIf1 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm1]]
 
 		// Check the Iface has a WPC NIC associated to it
-		IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf.NodeName)
+		IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf0.NodeName)
 		if len(IfList) == 0 {
 			logrus.Error("WPC NIC not found in list of interfaces on the cluster")
 			return fmt.Errorf("WPC NIC not found in list of interfaces on the cluster %d", len(IfList))
 		}
-		err := CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpClockUnderTestNodeLabel)
+		err := CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf0.NodeName, IfList, deviceID, pkg.PtpClockUnderTestNodeLabel)
 		if err != nil {
 			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
 		}
