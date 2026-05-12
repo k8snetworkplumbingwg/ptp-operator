@@ -1,5 +1,5 @@
 FROM docker.io/golang:1.25.7 AS builder
-RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y binutils-gold && rm -rf /var/lib/apt/lists/*
+RUN apt-get install -y --no-install-recommends binutils-gold && rm -rf /var/lib/apt/lists/*
 WORKDIR /go/src/github.com/k8snetworkplumbingwg/ptp-operator
 COPY .. .
 ENV GO111MODULE=off

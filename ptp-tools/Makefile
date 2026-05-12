@@ -30,21 +30,15 @@ podman-buildall: $(foreach v, $(VALUES), podman-build-$(v))
 
 podman-build-%:
 	@echo "Platform: $(PLATFORM)"
-	$(MAKE) clean-image VAR=$*;
-	$(MAKE) build-image VAR=$*
+	podman image rm ${IMG_PREFIX}:$* || true
+	podman manifest rm ${IMG_PREFIX}:$* || true
+	podman manifest create ${IMG_PREFIX}:$*
+	podman build --no-cache --platform $(PLATFORM) -f Dockerfile.$* --manifest ${IMG_PREFIX}:$* ..
 
 podman-pushall: $(foreach v, $(VALUES), podman-push-$(v))
 
 podman-push-%:
 	podman manifest push ${IMG_PREFIX}:$*
-
-build-image:
-	podman manifest create ${IMG_PREFIX}:$(VAR)
-	podman build --no-cache --platform $(PLATFORM) -f Dockerfile.$(VAR)  --manifest ${IMG_PREFIX}:$(VAR)  ..
-
-clean-image:
-	podman image rm ${IMG_PREFIX}:$(VAR) || true
-	podman manifest rm ${IMG_PREFIX}:$(VAR) || true
 
 podman-clean-%:
 	podman manifest rm ${IMG_PREFIX}:$* || true
