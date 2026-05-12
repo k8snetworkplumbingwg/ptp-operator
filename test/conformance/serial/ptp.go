@@ -2069,16 +2069,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired == testconfig.DualFollowerClock {
 					Skip("Test not valid for dual follower scenario")
 				}
-				// In TGMBC + gnss-sim (netdevsim) mode the BC's PHC is constrained by
-				// MOCK_PHC_MAX_ADJ_PPB (32 ppm), so the BC cannot re-converge within the
-				// 5-minute waitingPeriod after the slave interface is restored.
-				// The dedicated "TGMBC - Cascading holdover" test covers the BC link-loss
-				// scenario in that topology.
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC && ptphelper.IsGnssSimulatedCI() {
-					Skip("interface-toggle test skipped for TGMBC gnss-sim: slow netdevsim PHC convergence; covered by cascading holdover test")
-				}
-
-				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
+			skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
 				if !isSet {
 					Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
 				}
@@ -3004,10 +2995,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(err).NotTo(HaveOccurred())
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
-				// Ensure the GM has converged to clock class 6 before triggering GNSS
-				// loss; on netdevsim the GM needs up to 10 minutes to lock after any
-				// previous disruption (MOCK_PHC_MAX_ADJ_PPB = 32 ppm).
-				waitForWPCGMReady(fullConfig)
+			waitForWPCGMReady(fullConfig)
 			})
 
 			It("Verifies cascading holdover on GNSS signal loss", func() {
@@ -3992,10 +3980,7 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 
 		time.Sleep(pkg.TimeoutInterval2Seconds)
 
-		// Use a 10-minute ceiling: on netdevsim (MOCK_PHC_MAX_ADJ_PPB = 32 ppm)
-		// the GM or BC can need up to ~5.5 minutes to slew back to class 6 after
-		// any disruption, so the previous 3-minute limit was too short.
-		if time.Since(start) > pkg.TimeoutIn10Minutes {
+		if time.Since(start) > pkg.TimeoutIn3Minutes {
 			Fail(fmt.Sprintf("Timed out waiting for clock class %s", expectedState))
 			break
 		}
@@ -4056,7 +4041,7 @@ func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
 	Eventually(func() bool {
 		buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 		return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
-	}, pkg.TimeoutIn10Minutes, 5*time.Second).Should(BeTrue(),
+	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeTrue(),
 		"WPC T-GM did not reach clock class 6 — downstream clocks cannot leave LISTENING state")
 }
 

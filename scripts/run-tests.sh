@@ -218,13 +218,14 @@ init_gnss_sim_env() {
   export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
 }
 
+overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
   init_gnss_sim_env
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "serial"
+    run_ginkgo_suite "${mode}" "serial" || overall_exit=1
   fi
   if [[ "${RUN_KIND}" == "parallel" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "parallel"
+    run_ginkgo_suite "${mode}" "parallel" || overall_exit=1
   fi
 done
 
@@ -244,3 +245,5 @@ done
 # Run tests with authentication enabled
 # tests with auth will be enabled once the ci-github tests can last more than 1 hour
 # PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
+
+exit ${overall_exit}
