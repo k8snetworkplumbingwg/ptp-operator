@@ -2712,9 +2712,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						if err != nil {
 							return false
 						}
-						return ret["phc2sys"] && ret["ptp4l"] && ret["ts2phc"]
+						return ret["phc2sys"] && ret["ptp4l"] && ret["ts2phc"] && ret["dpll"]
 					}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
-						"Expected phc2sys, ptp4l, ts2phc to all report process_status 1 for simulated GM")
+						"Expected phc2sys, ptp4l, ts2phc, dpll to all report process_status 1 for simulated GM")
 				})
 			})
 
@@ -3056,6 +3056,130 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"Expected BC clock class to cascade-recover to 6")
 
 				logrus.Info("Successfully verified T-GM -> BC cascading holdover and recovery")
+			})
+		})
+
+		Context("TGMBC - Events verification (V2)", func() {
+			BeforeEach(func() {
+				if fullConfig.PtpModeDesired != testconfig.TelcoGMBC {
+					Skip("test valid only for TGMBC mode")
+				}
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				By("Refreshing configuration", func() {
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+				})
+				waitForWPCGMReady(fullConfig)
+
+				gmPod := getGMPod()
+				nodeName := gmPod.Spec.NodeName
+				if nodeName != "" {
+					logrus.Info("Deploy consumer app for TGMBC event API v2")
+					err := event.CreateConsumerApp(nodeName)
+					if err != nil {
+						logrus.Errorf("PTP events not available: consumer app err=%s", err)
+						Skip("Consumer app setup failed")
+					}
+					time.Sleep(10 * time.Second)
+					event.InitPubSub()
+				}
+			})
+
+			AfterEach(func() {
+				DeferCleanup(func() {
+					err := event.DeleteConsumerNamespace()
+					if err != nil {
+						logrus.Debugf("Deleting consumer namespace failed: err=%s", err)
+					}
+				})
+				if event.PubSub != nil {
+					event.PubSub.Close()
+				}
+			})
+
+			It("Verifies cascading events on GNSS loss and recovery", func() {
+				gmPod := getGMPod()
+
+				bcPtpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+				Expect(bcPtpConfig).ToNot(BeNil(), "BC PtpConfig was not discovered")
+				bcPod, err := ptphelper.GetPTPPodWithPTPConfig(bcPtpConfig)
+				Expect(err).ToNot(HaveOccurred())
+
+				By("Ensuring initial LOCKED state: GM and BC at CC6")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected GM clock class 6 before event test")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected BC clock class 6 before event test")
+
+				const incomingEventsBuffer = 100
+				subs, cleanup := event.SubscribeToGMChangeEvents(incomingEventsBuffer, true, 60*time.Second)
+				defer cleanup()
+
+				term, err := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term) }()
+				Expect(err).ToNot(HaveOccurred(), "could not start listening to events")
+
+				By("Triggering GNSS signal loss via gnss-sim API")
+				simErr := ptphelper.GNSSSimSignalLoss()
+				Expect(simErr).ToNot(HaveOccurred())
+				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
+
+				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				fmt.Fprintf(GinkgoWriter, "TGMBC GM loss events: %v\n", events)
+
+				By("Verifying GM ClockClass transitions to 7 (holdover)")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass7))
+				By("Verifying GM PTP state HOLDOVER")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.HOLDOVER)
+				stopMonitor(term)
+
+				By("Verifying BC clock class cascades to CC7 via metrics")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass7)))
+				}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected BC clock class to cascade to CC7 after GM holdover event")
+
+				By("Restoring GNSS signal via gnss-sim API")
+				simErr = ptphelper.GNSSSimSignalRestore()
+				Expect(simErr).ToNot(HaveOccurred())
+
+				By("Waiting for GM clock class recovery to CC6")
+				waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+
+				term2, err2 := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term2) }()
+				Expect(err2).ToNot(HaveOccurred())
+
+				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				fmt.Fprintf(GinkgoWriter, "TGMBC GM recovery events: %v\n", events)
+
+				By("Verifying GM GNSS state Synchronized")
+				verifyEvent(events[ptpEvent.GnssStateChange], ptpEvent.SYNCHRONIZED)
+				By("Verifying GM ClockClass returns to 6")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass6))
+				By("Verifying GM PTP state Locked")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.LOCKED)
+
+				By("Verifying BC clock class cascades back to CC6 via metrics")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected BC clock class to cascade-recover to CC6 after GM recovery event")
+
+				logrus.Info("Successfully verified TGMBC cascading events on GNSS loss and recovery")
 			})
 		})
 
@@ -3453,7 +3577,7 @@ func processRunningSimGM(input string, state string) (map[string]bool, error) {
 	processStatusPattern := `openshift_ptp_process_status\{config="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
 	processStatusRe := regexp.MustCompile(processStatusPattern)
 
-	result := map[string]bool{"phc2sys": false, "ptp4l": false, "ts2phc": false}
+	result := map[string]bool{"phc2sys": false, "ptp4l": false, "ts2phc": false, "dpll": false}
 
 	scanner := bufio.NewScanner(strings.NewReader(input))
 	timeout := 10 * time.Second
