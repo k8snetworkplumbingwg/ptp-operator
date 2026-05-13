@@ -213,6 +213,10 @@ func (r *PtpConfig) validate() error {
 					// Temporary allow upstreamPort setting - no specific validation required for string
 				case k == "leadingInterface":
 					// Temporary allow leadingInterface setting - no specific validation required for string
+				case k == "MaxInSpecOffset" || k == "LocalMaxHoldoverOffSet" || k == "LocalHoldoverTimeout":
+					if _, err := strconv.ParseUint(v, 10, 64); err != nil {
+						return errors.New(k + "='" + v + "' is invalid; must be an unsigned integer")
+					}
 				default:
 					return errors.New("profile.PtpSettings '" + k + "' is not a configurable setting")
 				}

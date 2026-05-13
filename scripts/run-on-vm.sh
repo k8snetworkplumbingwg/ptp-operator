@@ -21,6 +21,9 @@ source ~/.bashrc
 go mod tidy
 go mod vendor
 
+# Kill leftover gnss-sim from a previous run
+pkill -f gnss-sim || true
+
 # Clean containers
 kind delete cluster --name kind-netdevsim || true
 podman rm -f switch1 || true
@@ -81,8 +84,11 @@ kubectl rollout status deployment ptp-operator -n openshift-ptp
 
 kubectl get pods -n openshift-ptp -o wide
 
+# Start GNSS simulator for T-GM simulation tests
+./configGNSS.sh
+
 # run tests
-./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower \
+./run-tests.sh --kind serial --mode oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm,tgmoc,tgmbc \
   --linuxptp-daemon-image "$VM_IP/test:lptpd" \
   --must-gather-image "$VM_IP/test:ptpmg" \
   --debug-image "$VM_IP/test:debug"
