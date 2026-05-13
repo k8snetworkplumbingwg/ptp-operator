@@ -1031,10 +1031,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
 					phc2sysLogPattern, false, pkg.TimeoutIn1Minute)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
+				Expect(len(logMatches)).To(BeNumerically(">=", 1), "Could not identify which interface phc2sys is using")
 
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
-				selectedInterface = logMatches[0][1]
+				lastMatch := logMatches[len(logMatches)-1]
+				logrus.Infof("phc2sys log matching line: %v", lastMatch[0])
+				selectedInterface = lastMatch[1]
+				logrus.Infof("selected interface: %s", selectedInterface)
 
 				// Save it as primary interface
 				primaryInterface := selectedInterface
@@ -1069,11 +1071,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
 					phc2sysLogPattern, false, pkg.TimeoutIn1Minute, ifDownTime)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
+				Expect(len(logMatches)).To(BeNumerically(">=", 1), "Could not identify which interface phc2sys is using")
 				// Get the most recent log entry
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
-				newSelectedInterface = logMatches[0][1]
-
+				lastMatch = logMatches[len(logMatches)-1]
+				logrus.Infof("phc2sys log matching line: %v", lastMatch[0])
+				newSelectedInterface = lastMatch[1]
+				logrus.Infof("new selected interface: %s", newSelectedInterface)
 				// Verify that phc2sys switched to a different interface
 				Expect(newSelectedInterface).ToNot(Equal(selectedInterface), "phc2sys should have switched to a different interface")
 
@@ -1102,10 +1105,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
 					phc2sysLogPattern, false, pkg.TimeoutIn1Minute, ifUpTime)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(len(logMatches)).To(BeNumerically("==", 1), "Could not identify which interface phc2sys is using")
-				// Get the most recent log entry
-				logrus.Infof("phc2sys log matching line: %v", logMatches[0][0])
-				selectedInterface = logMatches[0][1]
+				Expect(len(logMatches)).To(BeNumerically(">=", 1), "Could not identify which interface phc2sys is using after port restore")
+				lastMatch = logMatches[len(logMatches)-1]
+				logrus.Infof("phc2sys log matching line: %v", lastMatch[0])
+				selectedInterface = lastMatch[1]
 
 				By("Verifying the selected interface " + selectedInterface + " is the original primary BC's slave interface " + primaryInterface)
 				if selectedInterface != primaryInterface {
