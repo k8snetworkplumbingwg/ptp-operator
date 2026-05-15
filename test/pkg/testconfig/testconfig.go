@@ -1354,6 +1354,10 @@ func createPtpConfigPhc2SysHA(policyName string, nodeName string, haProfiles []s
 	}
 
 	phc2sysOpts := phc2sysDualNicBCHA
+	testParameters, errTestParam := ptptestconfig.GetPtpTestConfig()
+	if errTestParam == nil && testParameters.GlobalConfig.DisableAllSlaveRTUpdate {
+		phc2sysOpts = strings.Join(strings.Fields(strings.ReplaceAll(phc2sysOpts, "-r", "")), " ")
+	}
 	ptp4lOpts := "" // no ptp4l options
 
 	ptpProfile := ptpv1.PtpProfile{
@@ -1706,8 +1710,9 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 	thresholds.HoldOverTimeout = int64(testParameters.GlobalConfig.HoldOverTimeout)
 
 	if testParameters.GlobalConfig.DisableAllSlaveRTUpdate && nodeLabel != pkg.PtpGrandmasterNodeLabel && phc2sysOpts != nil {
-		temp := "-v"
-		phc2sysOpts = &temp
+		noRT := strings.ReplaceAll(*phc2sysOpts, "-r", "")
+		noRT = strings.Join(strings.Fields(noRT), " ")
+		phc2sysOpts = &noRT
 	}
 
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
