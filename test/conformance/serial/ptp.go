@@ -606,12 +606,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// applyNodePTPProfiles() call. This creates a deterministic window where ptp4l emits
 			// port-state transitions while CEP cannot process them. Without the daemon fix (PR #213),
 			// CEP misses events and masterOffsetIface remains empty, leaving clock_state at FREERUN.
-			It("Clock state returns to LOCKED after all ports recover from FAULTY (OCPBUGS-85092)", func() {
-				// OCPBUGS-85092: On dual-port OC configs, when all ports go FAULTY and the
-				// holdover timer expires (FREERUN), subsequent "master offset ... s2" log
-				// lines from ptp4l must transition clock_state back to LOCKED. The bug is
-				// that ByRole(SLAVE) returns no interface when all ports are FAULTY, causing
-				// the metric update to be skipped entirely.
+			It("Clock state returns to LOCKED after config change with ports FAULTY (OCPBUGS-85092)", func() {
+				// OCPBUGS-85092: Reproduces the real-HW scenario where a config change
+				// triggers applyNodePTPProfiles (ptp4l restart + sendSidecarRestart) while
+				// all ports are FAULTY. The fresh CEP's TriggerLogs re-emits stale FAULTY
+				// portRole data. After holdover expires (FREERUN), ptp4l eventually
+				// transitions to SLAVE and reports "master offset s2", but ByRole(SLAVE)
+				// may fail if the stale FAULTY re-emit overwrites the live SLAVE event.
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
 					Skip("Test requires dual-follower mode with 2 ports")
 				}
@@ -629,7 +630,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					nil, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil(), "precondition: clock should be LOCKED before test")
 
-				By("Setting short holdover timeout (5s)")
+				By(fmt.Sprintf("Bringing BOTH interfaces down: %s and %s", slaveIf, secondIf))
+				portEngine.TurnOffAndWaitFaulty(slaveIf, nodeName)
+				portEngine.TurnOffAndWaitFaulty(secondIf, nodeName)
+
+				DeferCleanup(func() {
+					_ = portEngine.TurnPortUp(slaveIf)
+					_ = portEngine.TurnPortUp(secondIf)
+				})
+
+				By("Triggering config change while ports are FAULTY (causes ptp4l restart + CEP restart)")
 				ptpConfig, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
 					context.Background(), policyName, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred())
@@ -644,6 +654,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 					context.Background(), ptpConfig, metav1.UpdateOptions{})
 				Expect(err).NotTo(HaveOccurred())
+				logrus.Infof("OCPBUGS-85092: config change applied while ports are FAULTY — " +
+					"daemon will restart ptp4l + sendSidecarRestart (CEP restart). " +
+					"TriggerLogs will re-emit FAULTY portRole since interfaces are down.")
 
 				DeferCleanup(func() {
 					current, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
@@ -664,18 +677,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					}
 				})
 
-				By("Waiting for config to be applied")
-				time.Sleep(10 * time.Second)
-
-				By(fmt.Sprintf("Bringing BOTH interfaces down: %s and %s", slaveIf, secondIf))
-				portEngine.TurnOffAndWaitFaulty(slaveIf, nodeName)
-				portEngine.TurnOffAndWaitFaulty(secondIf, nodeName)
-
-				DeferCleanup(func() {
-					_ = portEngine.TurnPortUp(slaveIf)
-					_ = portEngine.TurnPortUp(secondIf)
-				})
-
 				By("Waiting for holdover to expire and FREERUN state")
 				Eventually(func() error {
 					return metrics.CheckClockState(metrics.MetricClockStateFreeRun, slaveIf, &nodeName)
@@ -683,7 +684,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"clock_state should transition to FREERUN after holdover expires with both ports FAULTY")
 				logrus.Infof("OCPBUGS-85092: clock_state is FREERUN (both ports FAULTY, holdover expired)")
 
-				By("Bringing BOTH interfaces back up")
+				By("Bringing BOTH interfaces back up (ptp4l will transition FAULTY->SLAVE)")
 				err = portEngine.TurnPortUp(slaveIf)
 				Expect(err).NotTo(HaveOccurred())
 				err = portEngine.TurnPortUp(secondIf)
@@ -694,7 +695,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
 				}, 5*time.Minute, 10*time.Second).Should(BeNil(),
 					"OCPBUGS-85092: clock_state must return to LOCKED when ptp4l recovers; "+
-						"stays FREERUN if ByRole(SLAVE) fails when all ports were FAULTY")
+						"stays FREERUN if stale FAULTY re-emit from TriggerLogs overwrites live SLAVE state")
 			})
 
 			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
