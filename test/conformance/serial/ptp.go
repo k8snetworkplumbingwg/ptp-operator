@@ -606,13 +606,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// applyNodePTPProfiles() call. This creates a deterministic window where ptp4l emits
 			// port-state transitions while CEP cannot process them. Without the daemon fix (PR #213),
 			// CEP misses events and masterOffsetIface remains empty, leaving clock_state at FREERUN.
-			It("Clock state returns to LOCKED after config change with ports FAULTY (OCPBUGS-85092)", func() {
-				// OCPBUGS-85092: Reproduces the real-HW scenario where a config change
-				// triggers applyNodePTPProfiles (ptp4l restart + sendSidecarRestart) while
-				// all ports are FAULTY. The fresh CEP's TriggerLogs re-emits stale FAULTY
-				// portRole data. After holdover expires (FREERUN), ptp4l eventually
-				// transitions to SLAVE and reports "master offset s2", but ByRole(SLAVE)
-				// may fail if the stale FAULTY re-emit overwrites the live SLAVE event.
+			It("Clock state returns to LOCKED after double config restart with ports FAULTY (OCPBUGS-85092)", func() {
+				// OCPBUGS-85092: Match the real-hardware failing sequence:
+				// 1) narrow thresholds (restart #1), 2) restore thresholds (restart #2),
+				// while both ports are FAULTY. This produces multiple CEP reconnects and
+				// TriggerLogs re-emits before links come back up.
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
 					Skip("Test requires dual-follower mode with 2 ports")
 				}
@@ -639,24 +637,25 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					_ = portEngine.TurnPortUp(secondIf)
 				})
 
-				By("Triggering config change while ports are FAULTY (causes ptp4l restart + CEP restart)")
+				By("Preparing threshold changes used in the real failing sequence")
 				ptpConfig, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
 					context.Background(), policyName, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred())
 				originalConfig := ptpConfig.DeepCopy()
 
+				By("Config change #1 while ports are FAULTY: narrow thresholds (restart #1)")
 				for i := range ptpConfig.Spec.Profile {
 					if ptpConfig.Spec.Profile[i].PtpClockThreshold == nil {
 						ptpConfig.Spec.Profile[i].PtpClockThreshold = &ptpv1.PtpClockThreshold{}
 					}
 					ptpConfig.Spec.Profile[i].PtpClockThreshold.HoldOverTimeout = 5
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MaxOffsetThreshold = 1
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MinOffsetThreshold = -1
 				}
 				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 					context.Background(), ptpConfig, metav1.UpdateOptions{})
 				Expect(err).NotTo(HaveOccurred())
-				logrus.Infof("OCPBUGS-85092: config change applied while ports are FAULTY — " +
-					"daemon will restart ptp4l + sendSidecarRestart (CEP restart). " +
-					"TriggerLogs will re-emit FAULTY portRole since interfaces are down.")
+				logrus.Infof("OCPBUGS-85092: applied narrowed thresholds while ports are FAULTY")
 
 				DeferCleanup(func() {
 					current, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
@@ -684,7 +683,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"clock_state should transition to FREERUN after holdover expires with both ports FAULTY")
 				logrus.Infof("OCPBUGS-85092: clock_state is FREERUN (both ports FAULTY, holdover expired)")
 
-				By("Bringing BOTH interfaces back up (ptp4l will transition FAULTY->SLAVE)")
+				By("Config change #2 while ports are still FAULTY: restore thresholds (restart #2)")
+				ptpConfig, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), policyName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				for i := range ptpConfig.Spec.Profile {
+					if i < len(originalConfig.Spec.Profile) {
+						ptpConfig.Spec.Profile[i].PtpClockThreshold = originalConfig.Spec.Profile[i].PtpClockThreshold
+					}
+				}
+				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), ptpConfig, metav1.UpdateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				logrus.Infof("OCPBUGS-85092: restored thresholds while ports are FAULTY")
+
+				By("Bringing BOTH interfaces back up during second restart window (ptp4l FAULTY->SLAVE)")
 				err = portEngine.TurnPortUp(slaveIf)
 				Expect(err).NotTo(HaveOccurred())
 				err = portEngine.TurnPortUp(secondIf)
