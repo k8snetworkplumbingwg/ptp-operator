@@ -43,8 +43,8 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "images" ]]; then
     export IMG_PREFIX="$VM_IP/test"
 
     cd ../ptp-tools
-    make podman-cleanall
-    make podman-buildall
+    make -j 8 podman-cleanall
+    make -j 8 podman-buildall
     cd -
 
     cd ..

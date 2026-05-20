@@ -13,6 +13,16 @@ else
 fi
 
 if [[ "${DKMS_MODE:-}" == "true" ]]; then
+    if ! podman --version 2>/dev/null | grep -q 'podman version 5'; then
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL "https://download.opensuse.org/repositories/devel:kubic:libcontainers:unstable/xUbuntu_24.04/Release.key" \
+            | gpg --dearmor \
+            | tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+            https://download.opensuse.org/repositories/devel:kubic:libcontainers:unstable/xUbuntu_24.04/ /" \
+            | tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list
+    fi
     apt-get update
     apt-get install -y podman pciutils openvswitch-switch git openssl
 
