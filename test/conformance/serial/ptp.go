@@ -601,6 +601,141 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
+			// OCPBUGS-85092: Verify clock recovery when cloud-event-proxy is frozen during reconfiguration.
+			// Uses cgroup.freeze to freeze the CEP container at the kernel level during the
+			// applyNodePTPProfiles() call. This creates a deterministic window where ptp4l emits
+			// port-state transitions while CEP cannot process them. Without the daemon fix (PR #213),
+			// CEP misses events and masterOffsetIface remains empty, leaving clock_state at FREERUN.
+			It("Clock state returns to LOCKED after threshold restore with frozen sidecar (OCPBUGS-85092)", func() {
+				if fullConfig.PtpModeDesired != testconfig.OrdinaryClock &&
+					fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
+					Skip("Test requires OC or dual-follower mode")
+				}
+
+				policyName := pkg.PtpSlave1PolicyName
+				slaveIf := fullConfig.DiscoveredFollowerInterfaces[0]
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+				By("Verifying initial LOCKED state")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig,
+					(*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig),
+					nil, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+				Expect(err).To(BeNil(), "precondition: clock should be LOCKED before test")
+
+				By("Finding CEP container cgroup path for freeze")
+				var cepContainerID string
+				for _, cs := range fullConfig.DiscoveredClockUnderTestPod.Status.ContainerStatuses {
+					if cs.Name == pkg.EventProxyContainerName {
+						cepContainerID = strings.TrimPrefix(cs.ContainerID, "containerd://")
+						break
+					}
+				}
+				Expect(cepContainerID).NotTo(BeEmpty(), "could not find cloud-event-proxy container ID")
+				logrus.Infof("OCPBUGS-85092: CEP container ID = %s", cepContainerID)
+
+				cgroupScript := fmt.Sprintf(
+					`PID=$(crictl inspect --output go-template --template '{{.info.pid}}' %s) && `+
+						`CGROUP=$(cat /proc/$PID/cgroup | head -1 | cut -d: -f3) && `+
+						`echo /sys/fs/cgroup${CGROUP}/cgroup.freeze`,
+					cepContainerID)
+				stdout, stderr, err := pods.ExecCommand(client.Client, true, portEngine.ClockPod,
+					pkg.RecoveryNetworkOutageDaemonSetContainerName,
+					[]string{"chroot", "/host", "bash", "-c", cgroupScript})
+				Expect(err).NotTo(HaveOccurred(), "failed to find cgroup.freeze path: %s", stderr.String())
+				freezePath := strings.TrimSpace(stdout.String())
+				Expect(freezePath).To(ContainSubstring("cgroup.freeze"),
+					"unexpected cgroup freeze path: %s", freezePath)
+				logrus.Infof("OCPBUGS-85092: cgroup.freeze path = %s", freezePath)
+
+				freezeCmd := []string{"chroot", "/host", "bash", "-c",
+					fmt.Sprintf("echo 1 > %s", freezePath)}
+				unfreezeCmd := []string{"chroot", "/host", "bash", "-c",
+					fmt.Sprintf("echo 0 > %s", freezePath)}
+
+				DeferCleanup(func() {
+					_, _, _ = pods.ExecCommand(client.Client, true, portEngine.ClockPod,
+						pkg.RecoveryNetworkOutageDaemonSetContainerName, unfreezeCmd)
+				})
+
+				By("Narrowing offset threshold to force FREERUN")
+				ptpConfig, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), policyName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				originalConfig := ptpConfig.DeepCopy()
+
+				for i := range ptpConfig.Spec.Profile {
+					if ptpConfig.Spec.Profile[i].PtpClockThreshold == nil {
+						ptpConfig.Spec.Profile[i].PtpClockThreshold = &ptpv1.PtpClockThreshold{}
+					}
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MaxOffsetThreshold = 1
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MinOffsetThreshold = -1
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.HoldOverTimeout = 5
+				}
+				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), ptpConfig, metav1.UpdateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				DeferCleanup(func() {
+					current, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), policyName, metav1.GetOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to get config: %s", err)
+						return
+					}
+					for i := range current.Spec.Profile {
+						if i < len(originalConfig.Spec.Profile) {
+							current.Spec.Profile[i].PtpClockThreshold = originalConfig.Spec.Profile[i].PtpClockThreshold
+						}
+					}
+					_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(), current, metav1.UpdateOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to restore config: %s", err)
+					}
+				})
+
+				By("Waiting for FREERUN state after threshold narrowing")
+				Eventually(func() error {
+					return metrics.CheckClockState(metrics.MetricClockStateFreeRun, slaveIf, &nodeName)
+				}, 3*time.Minute, 5*time.Second).Should(BeNil(),
+					"clock_state should transition to FREERUN with ±1ns threshold")
+
+				By("Freezing CEP container via cgroup.freeze")
+				_, stderr, err = pods.ExecCommand(client.Client, true, portEngine.ClockPod,
+					pkg.RecoveryNetworkOutageDaemonSetContainerName, freezeCmd)
+				Expect(err).NotTo(HaveOccurred(), "failed to freeze CEP: %s", stderr.String())
+				logrus.Infof("OCPBUGS-85092: CEP container frozen")
+
+				By("Restoring original offset thresholds (triggers applyNodePTPProfiles while CEP is frozen)")
+				ptpConfig, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), policyName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				for i := range ptpConfig.Spec.Profile {
+					if i < len(originalConfig.Spec.Profile) {
+						ptpConfig.Spec.Profile[i].PtpClockThreshold = originalConfig.Spec.Profile[i].PtpClockThreshold
+					}
+				}
+				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), ptpConfig, metav1.UpdateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Waiting 30s for ptp4l to emit events while CEP is frozen")
+				time.Sleep(30 * time.Second)
+
+				By("Unfreezing CEP container")
+				_, stderr, err = pods.ExecCommand(client.Client, true, portEngine.ClockPod,
+					pkg.RecoveryNetworkOutageDaemonSetContainerName, unfreezeCmd)
+				Expect(err).NotTo(HaveOccurred(), "failed to unfreeze CEP: %s", stderr.String())
+				logrus.Infof("OCPBUGS-85092: CEP container unfrozen")
+
+				By("Verifying clock_state returns to LOCKED after CEP processes buffered events")
+				Eventually(func() error {
+					return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
+				}, 5*time.Minute, 10*time.Second).Should(BeNil(),
+					"OCPBUGS-85092: clock_state must return to LOCKED after unfreezing sidecar; "+
+						"stays FREERUN if sidecar misses port-state events due to frozen restart")
+			})
+
 			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
 				// Only run if authentication is enabled
 				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
