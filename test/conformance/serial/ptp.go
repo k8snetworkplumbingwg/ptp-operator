@@ -684,7 +684,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"clock should return to LOCKED after pod restart with replay delay")
 
 				By("Initializing port engine for interface control")
-				portEngine := ptptesthelper.PortEngine{}
 				portEngine.Initialize(fullConfig.DiscoveredClockUnderTestPod, []string{slaveIf, secondIf})
 
 				By(fmt.Sprintf("Bringing BOTH interfaces down: %s and %s", slaveIf, secondIf))
