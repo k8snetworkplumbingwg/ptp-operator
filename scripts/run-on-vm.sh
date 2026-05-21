@@ -44,7 +44,7 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "images" ]]; then
 
     cd ../ptp-tools
     make -j 8 podman-cleanall
-    make -j 8 podman-buildall
+    make podman-buildall
     cd -
 
     cd ..
@@ -136,7 +136,12 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
           for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
                        --field-selector=status.phase=Running -o name 2>/dev/null); do
             kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
-              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do ln -sf nsim_ptp\$i /dev/ptp\$i 2>/dev/null; done" \
+              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do
+                if [ -e /sys/class/ptp/ptp\$i/dev ]; then
+                  rm -f /dev/ptp\$i
+                  mknod /dev/ptp\$i c 246 \$i 2>/dev/null
+                fi
+              done" \
               2>/dev/null || true
           done
           sleep 5
@@ -146,6 +151,13 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
         echo "Symlink maintainer PID: $SYMLINK_PID"
         cleanup_symlink() { [[ -n "$SYMLINK_PID" ]] && kill "$SYMLINK_PID" 2>/dev/null || true; }
         trap cleanup_symlink EXIT
+    else
+        for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
+                     --field-selector=status.phase=Running -o name 2>/dev/null); do
+            kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
+              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do rm -f /dev/ptp\$i 2>/dev/null; done" \
+              2>/dev/null || true
+        done
     fi
 
     ./run-tests.sh --kind serial --mode "$TEST_MODES" \

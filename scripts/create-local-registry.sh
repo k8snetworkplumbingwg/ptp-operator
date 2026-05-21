@@ -11,12 +11,14 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes  -keyout ~/registry
 
 openssl x509 -in ~/registry/registry.crt -out ~/registry/registry.pem -outform PEM
 
-if [[ "${DKMS_MODE:-}" == "true" ]]; then
+if [ -d /usr/local/share/ca-certificates ]; then
     cp ~/registry/registry.pem /usr/local/share/ca-certificates/registry.crt
     update-ca-certificates
-else
-    sudo mv ~/registry/registry.pem /etc/pki/ca-trust/source/anchors/
+elif [ -d /etc/pki/ca-trust/source/anchors ]; then
+    cp ~/registry/registry.pem /etc/pki/ca-trust/source/anchors/registry.pem
     update-ca-trust
+else
+    echo "WARNING: Could not find CA certificate directory"
 fi
 
 podman run -d \

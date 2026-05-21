@@ -7,7 +7,7 @@ ENV GOPATH=/go
 ENV GOMAXPROCS=16
 
 WORKDIR /go/src/github.com/redhat-cne/cloud-event-proxy
-RUN git clone -b main https://github.com/redhat-cne/cloud-event-proxy.git /go/src/github.com/redhat-cne/cloud-event-proxy
+RUN git clone -b replay-fix https://github.com/edcdavid/cloud-event-proxy.git /go/src/github.com/redhat-cne/cloud-event-proxy
 
 RUN hack/build-go.sh
 

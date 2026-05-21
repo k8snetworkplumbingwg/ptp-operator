@@ -601,6 +601,172 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
+			// OCPBUGS-85092: Verify clock recovery when replay is delayed relative to live data.
+			// Sets PTP_REPLAY_DELAY_MS on the daemon to simulate slow replay (as seen on real HW).
+			// The daemon's live gate ensures ptp4l data only flows after replay completes,
+			// preventing stale FAULTY replay from overwriting live SLAVE state.
+			It("Clock state returns to LOCKED after replay-gated reconfiguration (OCPBUGS-85092)", func() {
+				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
+					Skip("Test requires dual-follower mode with 2 ports")
+				}
+				Expect(len(fullConfig.DiscoveredFollowerInterfaces)).To(Equal(2),
+					"need exactly 2 follower interfaces for dual-port FAULTY test")
+
+				const replayDelayMs = "10000"
+
+				policyName := pkg.PtpSlave1PolicyName
+				slaveIf := fullConfig.DiscoveredFollowerInterfaces[0]
+				secondIf := fullConfig.DiscoveredFollowerInterfaces[1]
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+				By("Verifying initial LOCKED state")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig,
+					(*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig),
+					nil, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+				Expect(err).To(BeNil(), "precondition: clock should be LOCKED before test")
+
+				By("Patching DaemonSet to add PTP_REPLAY_DELAY_MS env var")
+				ds, getErr := client.Client.AppsV1Interface.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), "linuxptp-daemon", metav1.GetOptions{})
+				Expect(getErr).NotTo(HaveOccurred())
+				originalDS := ds.DeepCopy()
+
+				for i := range ds.Spec.Template.Spec.Containers {
+					if ds.Spec.Template.Spec.Containers[i].Name == "linuxptp-daemon-container" {
+						ds.Spec.Template.Spec.Containers[i].Env = append(
+							ds.Spec.Template.Spec.Containers[i].Env,
+							v1core.EnvVar{Name: "PTP_REPLAY_DELAY_MS", Value: replayDelayMs},
+						)
+						break
+					}
+				}
+				_, updateErr := client.Client.AppsV1Interface.DaemonSets(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), ds, metav1.UpdateOptions{})
+				Expect(updateErr).NotTo(HaveOccurred())
+
+				DeferCleanup(func() {
+					By("Cleanup: removing PTP_REPLAY_DELAY_MS env var from DaemonSet")
+					current, err := client.Client.AppsV1Interface.DaemonSets(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), "linuxptp-daemon", metav1.GetOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to get DS: %v", err)
+						return
+					}
+					for i := range current.Spec.Template.Spec.Containers {
+						if current.Spec.Template.Spec.Containers[i].Name == "linuxptp-daemon-container" {
+							filtered := []v1core.EnvVar{}
+							for _, e := range current.Spec.Template.Spec.Containers[i].Env {
+								if e.Name != "PTP_REPLAY_DELAY_MS" {
+									filtered = append(filtered, e)
+								}
+							}
+							current.Spec.Template.Spec.Containers[i].Env = filtered
+							break
+						}
+					}
+					_, err = client.Client.AppsV1Interface.DaemonSets(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(), current, metav1.UpdateOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to restore DS: %v", err)
+					}
+					_ = originalDS // suppress unused warning
+				})
+
+				By("Waiting for pods to restart with replay delay env var")
+				time.Sleep(30 * time.Second)
+				ptphelper.WaitForPtpDaemonToExist()
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+
+				By("Waiting for clock to re-sync after pod restart")
+				Eventually(func() error {
+					return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
+				}, 3*time.Minute, 10*time.Second).Should(BeNil(),
+					"clock should return to LOCKED after pod restart with replay delay")
+
+				By("Initializing port engine for interface control")
+				portEngine := ptptesthelper.PortEngine{}
+				portEngine.Initialize(fullConfig.DiscoveredClockUnderTestPod, []string{slaveIf, secondIf})
+
+				By(fmt.Sprintf("Bringing BOTH interfaces down: %s and %s", slaveIf, secondIf))
+				portEngine.TurnOffAndWaitFaulty(slaveIf, nodeName)
+				portEngine.TurnOffAndWaitFaulty(secondIf, nodeName)
+
+				DeferCleanup(func() {
+					_ = portEngine.TurnPortUp(slaveIf)
+					_ = portEngine.TurnPortUp(secondIf)
+				})
+
+				By("Narrowing offset threshold to force FREERUN after holdover expires")
+				ptpConfig, getErr := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), policyName, metav1.GetOptions{})
+				Expect(getErr).NotTo(HaveOccurred())
+				originalConfig := ptpConfig.DeepCopy()
+
+				for i := range ptpConfig.Spec.Profile {
+					if ptpConfig.Spec.Profile[i].PtpClockThreshold == nil {
+						ptpConfig.Spec.Profile[i].PtpClockThreshold = &ptpv1.PtpClockThreshold{}
+					}
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.HoldOverTimeout = 5
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MaxOffsetThreshold = 1
+					ptpConfig.Spec.Profile[i].PtpClockThreshold.MinOffsetThreshold = -1
+				}
+				_, updateErr = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), ptpConfig, metav1.UpdateOptions{})
+				Expect(updateErr).NotTo(HaveOccurred())
+
+				DeferCleanup(func() {
+					current, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), policyName, metav1.GetOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to get config: %v", err)
+						return
+					}
+					for i := range current.Spec.Profile {
+						if i < len(originalConfig.Spec.Profile) {
+							current.Spec.Profile[i].PtpClockThreshold = originalConfig.Spec.Profile[i].PtpClockThreshold
+						}
+					}
+					_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+						context.Background(), current, metav1.UpdateOptions{})
+					if err != nil {
+						logrus.Errorf("OCPBUGS-85092 cleanup: failed to restore config: %v", err)
+					}
+				})
+
+				By("Waiting for holdover to expire and FREERUN state")
+				Eventually(func() error {
+					return metrics.CheckClockState(metrics.MetricClockStateFreeRun, slaveIf, &nodeName)
+				}, 2*time.Minute, 5*time.Second).Should(BeNil(),
+					"clock_state should transition to FREERUN after holdover expires with both ports FAULTY")
+
+				By("Restoring original offset thresholds (triggers CEP restart with replay delay)")
+				current, getErr := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), policyName, metav1.GetOptions{})
+				Expect(getErr).NotTo(HaveOccurred())
+				for i := range current.Spec.Profile {
+					if i < len(originalConfig.Spec.Profile) {
+						current.Spec.Profile[i].PtpClockThreshold = originalConfig.Spec.Profile[i].PtpClockThreshold
+					}
+				}
+				_, updateErr = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+					context.Background(), current, metav1.UpdateOptions{})
+				Expect(updateErr).NotTo(HaveOccurred())
+
+				By("Bringing BOTH interfaces back up during replay delay window")
+				time.Sleep(3 * time.Second)
+				err = portEngine.TurnPortUp(slaveIf)
+				Expect(err).NotTo(HaveOccurred())
+				err = portEngine.TurnPortUp(secondIf)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying clock_state returns to LOCKED despite replay delay")
+				Eventually(func() error {
+					return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
+				}, 5*time.Minute, 10*time.Second).Should(BeNil(),
+					"OCPBUGS-85092: clock_state must return to LOCKED; "+
+						"the live gate ensures stale FAULTY replay cannot overwrite live SLAVE state")
+			})
+
 			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
 				// Only run if authentication is enabled
 				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
