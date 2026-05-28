@@ -12,6 +12,11 @@ else
     exit 1
 fi
 
+# Auto-detect distro when DKMS_MODE is not explicitly set
+if [[ "${DKMS_MODE:-}" != "true" ]] && command -v apt-get &>/dev/null && ! command -v yum &>/dev/null; then
+    export DKMS_MODE=true
+fi
+
 # Detect OS family
 if [ -f /etc/os-release ]; then
     . /etc/os-release
