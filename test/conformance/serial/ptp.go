@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"regexp"
@@ -43,6 +44,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
 	exports "github.com/redhat-cne/ptp-listener-exports"
 	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
+	"k8s.io/apimachinery/pkg/util/wait"
 	k8sv1 "k8s.io/api/core/v1"
 )
 
@@ -2169,6 +2171,82 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				logrus.Info("Successfully verified T-BC clock class recovery after upstream link outage")
 			})
+
+			It("Should recover ptp-state-change LOCKED event after killing ptp4l related to phc2sys", func() {
+				if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClockHA {
+					Skip("HA mode runs phc2sys under a separate config with no dedicated ptp4l")
+				}
+				pod := fullConfig.DiscoveredClockUnderTestPod
+				Expect(pod).NotTo(BeNil())
+
+				By("Finding phc2sys config number")
+				stdout, _, err := pods.ExecCommand(client.Client, false, pod,
+					pkg.PtpContainerName, []string{"sh", "-c",
+						"cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep '^/var/run/phc2sys\\.' | sed 's|.*/phc2sys\\.\\([0-9]*\\)\\.config|\\1|' | head -1"})
+				Expect(err).NotTo(HaveOccurred())
+				phc2sysConfigNum := strings.TrimSpace(stdout.String())
+				if phc2sysConfigNum == "" {
+					Skip("no phc2sys process found — test requires phc2sys")
+				}
+				logrus.Infof("phc2sys config number: %s", phc2sysConfigNum)
+
+				By("Finding ptp4l PID sharing the same config number")
+				stdout, _, err = pods.ExecCommand(client.Client, false, pod,
+					pkg.PtpContainerName, []string{"sh", "-c",
+						fmt.Sprintf("for d in /proc/[0-9]*; do test -f $d/cmdline && cat $d/cmdline 2>/dev/null | tr '\\0' ' ' | grep -q 'ptp4l.*ptp4l\\.%s\\.config' && basename $d; done | head -1", phc2sysConfigNum)})
+				Expect(err).NotTo(HaveOccurred())
+				ptp4lPid := strings.TrimSpace(stdout.String())
+				Expect(ptp4lPid).NotTo(BeEmpty(), "could not find ptp4l PID for config %s", phc2sysConfigNum)
+				logrus.Infof("Target ptp4l PID: %s (ptp4l.%s.config)", ptp4lPid, phc2sysConfigNum)
+
+				By("Recording phc2sys PID before kill")
+				stdout, _, err = pods.ExecCommand(client.Client, false, pod,
+					pkg.PtpContainerName, []string{"sh", "-c",
+						"for d in /proc/[0-9]*; do test -f $d/cmdline && cat $d/cmdline 2>/dev/null | tr '\\0' ' ' | grep -q '/usr/sbin/phc2sys' && basename $d; done | sort -n | head -1"})
+				Expect(err).NotTo(HaveOccurred())
+				oldPhc2sysPid := strings.TrimSpace(stdout.String())
+
+				startTime := time.Now()
+
+				By(fmt.Sprintf("Killing ptp4l PID %s on node %s", ptp4lPid, pod.Spec.NodeName))
+				_, _, err = pods.ExecCommand(client.Client, true, pod,
+					pkg.PtpContainerName, []string{"kill", "-9", ptp4lPid})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying phc2sys process is not affected")
+				time.Sleep(5 * time.Second)
+				stdout, _, err = pods.ExecCommand(client.Client, false, pod,
+					pkg.PtpContainerName, []string{"sh", "-c",
+						"for d in /proc/[0-9]*; do test -f $d/cmdline && cat $d/cmdline 2>/dev/null | tr '\\0' ' ' | grep -q '/usr/sbin/phc2sys' && basename $d; done | sort -n | head -1"})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.TrimSpace(stdout.String())).To(Equal(oldPhc2sysPid),
+					"phc2sys PID changed — process should not have been affected")
+
+				By("Verifying a new ptp4l process is started")
+				var newPtp4lPid string
+				Eventually(func(g Gomega) {
+					stdout, _, err := pods.ExecCommand(client.Client, false, pod,
+						pkg.PtpContainerName, []string{"sh", "-c",
+							fmt.Sprintf("for d in /proc/[0-9]*; do test -f $d/cmdline && cat $d/cmdline 2>/dev/null | tr '\\0' ' ' | grep -q 'ptp4l.*ptp4l\\.%s\\.config' && basename $d; done | head -1", phc2sysConfigNum)})
+					g.Expect(err).NotTo(HaveOccurred())
+					newPtp4lPid = strings.TrimSpace(stdout.String())
+					g.Expect(newPtp4lPid).NotTo(BeEmpty(), "new ptp4l process has not started yet")
+					g.Expect(newPtp4lPid).NotTo(Equal(ptp4lPid), "ptp4l PID did not change after kill")
+				}, 1*time.Minute, 2*time.Second).Should(Succeed())
+				logrus.Infof("New ptp4l PID: %s", newPtp4lPid)
+
+				By("Verifying ptp-state-change FREERUN event on /master")
+				err = waitForEventInLogs(pod, pkg.EventProxyContainerName,
+					"ptp-state-change", "FREERUN", "/master", startTime, 5*time.Minute)
+				Expect(err).NotTo(HaveOccurred(), "FREERUN ptp-state-change event not found")
+
+				By("Verifying ptp-state-change LOCKED event on /master after recovery")
+				err = waitForEventInLogs(pod, pkg.EventProxyContainerName,
+					"ptp-state-change", "LOCKED", "/master", startTime, 5*time.Minute)
+				Expect(err).NotTo(HaveOccurred(), "LOCKED ptp-state-change event not found — OCPBUGS-85330 regression")
+
+				logrus.Info("ptp4l kill recovery event test passed")
+			})
 		})
 
 		Context("WPC GM Verification Tests", func() {
@@ -3721,4 +3799,46 @@ func verifyClockClassViaEvent(evCtx bcEventContext, expectedClass int) {
 	}
 	events := getGMEvents(evCtx.subs.GNSS, evCtx.subs.CLOCKCLASS, evCtx.subs.LOCKSTATE, 10*time.Second)
 	verifyMetric(events[ptpEvent.PtpClockClassChange], float64(expectedClass))
+}
+
+// waitForEventInLogs polls the cloud-event-proxy container logs using
+// SinceSeconds (relative duration) to find a ptp-state-change event with the
+// given value and resource suffix. Ported from the QE WaitForEvent helper
+// which avoids clock drift issues by using relative time instead of absolute.
+func waitForEventInLogs(pod *v1core.Pod, container, eventType, eventValue,
+	resourceSuffix string, startTime time.Time, timeout time.Duration) error {
+
+	return wait.PollImmediate(5*time.Second, timeout, func() (bool, error) {
+		sinceSeconds := int64(time.Since(startTime).Seconds()) + 1
+		opts := &v1core.PodLogOptions{
+			Container:    container,
+			SinceSeconds: &sinceSeconds,
+		}
+		req := client.Client.Pods(pkg.PtpLinuxDaemonNamespace).GetLogs(pod.Name, opts)
+		stream, err := req.Stream(context.Background())
+		if err != nil {
+			logrus.Warnf("failed to get logs: %v", err)
+			return false, nil
+		}
+		defer stream.Close()
+
+		logContent, err := io.ReadAll(stream)
+		if err != nil {
+			return false, nil
+		}
+
+		logs := strings.ReplaceAll(string(logContent), "\\n", "")
+		for _, line := range strings.Split(logs, "\n") {
+			if !strings.Contains(line, "event sent") {
+				continue
+			}
+			if strings.Contains(line, eventType) &&
+				strings.Contains(line, eventValue) &&
+				strings.Contains(line, resourceSuffix) {
+				logrus.Infof("Found %s %s event for %s", eventType, eventValue, resourceSuffix)
+				return true, nil
+			}
+		}
+		return false, nil
+	})
 }
