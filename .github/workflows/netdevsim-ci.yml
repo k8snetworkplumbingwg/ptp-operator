@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: main
+  DKMS_BRANCH: add-gnss
 
 jobs:
   # ------------------------------------------------------------------
@@ -195,7 +195,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
+        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |

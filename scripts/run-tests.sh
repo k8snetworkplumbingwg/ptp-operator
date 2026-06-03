@@ -195,7 +195,32 @@ run_ginkgo_suite() {
   fi
 }
 
+# Ensure gnss-sim is running and export GNSS env vars so the test framework
+# discovers the simulator even when run-tests.sh is invoked directly.
+init_gnss_sim_env() {
+  export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
+
+  # Always restart gnss-sim so it targets the current /dev/gnss* device.
+  # A stale process may still pass the health check while writing to a
+  # device that no longer exists (e.g. after a module reload).
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bash "${SCRIPT_DIR}/configGNSS.sh"
+
+  GNSS_KERNEL_DEV=""
+  for g in /dev/gnss*; do
+    [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
+  done
+  if [ -n "$GNSS_KERNEL_DEV" ]; then
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
+  else
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-ttyGNSS_TS2PHC}"
+  fi
+  export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
+  export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
+}
+
 for mode in "${TEST_MODES[@]}"; do
+  init_gnss_sim_env
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
     run_ginkgo_suite "${mode}" "serial"
   fi
