@@ -26,25 +26,21 @@ d = time.clock_gettime(11) - time.clock_gettime(0)
 print(f'TAI offset set: {d:.0f}s')
 " 2>/dev/null || true
 
+# Always do a full unload/reload cycle so updated DKMS modules
+# on disk are picked up by the running kernel.
+modprobe -r netdevsim 2>/dev/null || true
+modprobe -r nsim_dpll 2>/dev/null || true
+modprobe -r nsim_ptp_mock 2>/dev/null || true
+modprobe -r nsim_ptp 2>/dev/null || true
+modprobe -r gnss 2>/dev/null || true
+
+modprobe gnss
 if [[ "${DKMS_MODE:-}" == "true" ]]; then
-    modprobe -r netdevsim || true
-    modprobe -r nsim_dpll || true
-    modprobe -r nsim_ptp_mock || true
-    modprobe -r nsim_ptp || true
-    # Reload gnss module to reset the GNSS IDA minor allocator so new
-    # devices start from gnss0.
-    modprobe -r gnss 2>/dev/null || true
-    modprobe gnss
     modprobe nsim_ptp
     modprobe nsim_dpll
-    modprobe netdevsim pci_bus_nr=0x1f
-    chmod 666 /dev/nsim_ptp* 2>/dev/null || true
-    udevadm trigger --subsystem-match=gnss 2>/dev/null || true
-    udevadm settle
-else
-    modprobe -r netdevsim
-    modprobe -r gnss 2>/dev/null || true
-    modprobe gnss
-    modprobe netdevsim pci_bus_nr=0x1f
 fi
+modprobe netdevsim pci_bus_nr=0x1f
+chmod 666 /dev/nsim_ptp* 2>/dev/null || true
+udevadm trigger --subsystem-match=gnss 2>/dev/null || true
+udevadm settle
 modprobe openvswitch
