@@ -131,8 +131,6 @@ spec:
               mountPath: /etc/leap
             - name: socket-dir
               mountPath: /var/run
-            - name: host-dev
-              mountPath: /dev
             {{ if (eq .EnableEventPublisher true) }}
             - name: event-bus-socket
               mountPath: /cloud-native
@@ -157,9 +155,6 @@ spec:
           hostPath:
             path: /var/run/ptp
             type: DirectoryOrCreate
-        - name: host-dev
-          hostPath:
-            path: /dev
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
