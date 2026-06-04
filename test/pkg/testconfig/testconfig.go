@@ -961,10 +961,6 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	const yamlData = `
   e810:
     enableDefaultConfig: false
-    settings:
-      LocalMaxHoldoverOffSet: 12000
-      LocalHoldoverTimeout: 14400
-      MaxInSpecOffset: 100
     pins:
       "$iface_master":
          "U.FL2": "0 2"
