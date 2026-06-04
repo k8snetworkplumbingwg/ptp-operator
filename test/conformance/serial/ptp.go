@@ -582,7 +582,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.L2Config != nil && !isExternalMaster {
 					aLabel := pkg.PtpGrandmasterNodeLabel
 					gmPolicyName := pkg.PtpGrandMasterPolicyName
-					if fullConfig.DiscoveredGrandMasterPtpConfig != nil {
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGMOC || fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
 						gmPolicyName = pkg.PtpWPCGrandMasterPolicyName
 					}
 					aString, err := ptphelper.GetClockIDMaster(gmPolicyName, &aLabel, nil, true)
@@ -4020,7 +4020,9 @@ func anyClockClassDifferent(fullConfig testconfig.TestConfig, excludedClass stri
 // (clock_class_threshold), so we must wait before any slave sync assertion.
 // The function is a no-op when there is no WPC GM in the topology.
 func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
-	if fullConfig.DiscoveredGrandMasterPtpConfig == nil {
+	if fullConfig.PtpModeDiscovered != testconfig.TelcoGMOC &&
+		fullConfig.PtpModeDiscovered != testconfig.TelcoGMBC &&
+		fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 		return
 	}
 	By("Waiting for WPC T-GM to reach clock class 6 (LOCKED)")
