@@ -1104,7 +1104,6 @@ func checkGNMRCString(deviceName string, nodeName string) bool {
 	return false
 }
 
-
 func execPodCommand(nodeName string, cmd []string) (stdoutBuf, stderrBuf bytes.Buffer, err error) {
 
 	WaitForPtpDaemonToExist()

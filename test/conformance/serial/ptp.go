@@ -909,12 +909,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				var policyName string
 				var modifiedPtpConfig *ptpv1.PtpConfig
 				By("Creating a config with higher priority", func() {
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-					Skip("standalone TGM mode is not supported for this test")
-				}
-				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
-					Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
-				}
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+						Skip("standalone TGM mode is not supported for this test")
+					}
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+						Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
+					}
 					switch fullConfig.PtpModeDiscovered {
 					case testconfig.Discovery, testconfig.None:
 						Skip("Skipping because Discovery or None is not supported yet for this test")
@@ -2163,11 +2163,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return metrics.CheckClockRole(faultyRoles, slaveIf, &slavePodNodeName)
 				}, 5*time.Minute, 10*time.Second).Should(BeNil())
 
-			By("Checking clock class has degraded away from Locked (6)")
-			Eventually(func() bool {
-				return anyClockClassDifferent(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
-			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-				"expected clock class to degrade from Locked (6) after upstream link loss")
+				By("Checking clock class has degraded away from Locked (6)")
+				Eventually(func() bool {
+					return anyClockClassDifferent(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+					"expected clock class to degrade from Locked (6) after upstream link loss")
 
 				By("Setting all slave interfaces up")
 				err = portEngine.TurnAllPortsUp()
