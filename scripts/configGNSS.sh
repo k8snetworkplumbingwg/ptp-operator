@@ -47,8 +47,11 @@ if [ -c "$GNSS_KERNEL_DEV" ]; then
     echo "Kernel GNSS device found at $GNSS_KERNEL_DEV — using hybrid mode"
 
     DPLL_SYSFS_ARGS=""
-    DPLL_SYSFS="/sys/class/nsim_dpll/dpll0/lock_status"
-    if [ -f "$DPLL_SYSFS" ]; then
+    DPLL_SYSFS=""
+    for pci_dev in /sys/bus/pci/devices/*/dpll/lock_status; do
+        [ -f "$pci_dev" ] && DPLL_SYSFS="$pci_dev" && break
+    done
+    if [ -n "$DPLL_SYSFS" ]; then
         DPLL_SYSFS_ARGS="--dpll-sysfs $DPLL_SYSFS"
         echo "DPLL sysfs bridge enabled at $DPLL_SYSFS"
     fi

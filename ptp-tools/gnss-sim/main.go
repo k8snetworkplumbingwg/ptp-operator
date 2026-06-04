@@ -45,7 +45,7 @@ func main() {
 	flag.StringVar(&ptyLinks, "pty-links", "", "Comma-separated symlink paths; creates a PTY pair per path and writes to the master")
 	flag.StringVar(&apiPort, "api-port", "9200", "HTTP API listen port")
 	flag.IntVar(&holdoverTimeout, "holdover-timeout", 5, "DPLL holdover timeout in seconds before transitioning to FREERUN")
-	flag.StringVar(&dpllSysfsPath, "dpll-sysfs", "", "Path to DPLL lock_status sysfs file (e.g. /sys/class/nsim_dpll/dpll0/lock_status)")
+	flag.StringVar(&dpllSysfsPath, "dpll-sysfs", "", "Path to DPLL lock_status sysfs file (e.g. /sys/bus/pci/devices/0001:1f:01.0/dpll/lock_status)")
 	flag.Parse()
 
 	state := DefaultState()
