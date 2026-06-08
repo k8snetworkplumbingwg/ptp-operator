@@ -2235,10 +2235,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}, 1*time.Minute, 2*time.Second).Should(Succeed())
 				logrus.Infof("New ptp4l PID: %s", newPtp4lPid)
 
-				By("Verifying ptp-state-change FREERUN event on /master")
+				By("Verifying ptp-state-change HOLDOVER event on /master")
 				err = waitForEventInLogs(pod, pkg.EventProxyContainerName,
-					"ptp-state-change", "FREERUN", "/master", startTime, 5*time.Minute)
-				Expect(err).NotTo(HaveOccurred(), "FREERUN ptp-state-change event not found")
+					"ptp-state-change", "HOLDOVER", "/master", startTime, 5*time.Minute)
+				Expect(err).NotTo(HaveOccurred(), "HOLDOVER ptp-state-change event not found — TR ptp4l kill should enter holdover (DPLL stays locked)")
 
 				By("Verifying ptp-state-change LOCKED event on /master after recovery")
 				err = waitForEventInLogs(pod, pkg.EventProxyContainerName,
