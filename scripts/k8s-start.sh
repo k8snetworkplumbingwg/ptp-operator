@@ -10,12 +10,11 @@ kind delete cluster --name kind-netdevsim
 # Delete and re-create netdevsim and openvswitch devices
 ./reset-devices.sh
 
-# restore template and substitute registry IP
-git checkout -- kind-config.yaml 2>/dev/null || true
-sed -i "s/IP/$VM_IP/g" kind-config.yaml
+# Stamp registry IP into a temp copy so the template file is never mutated
+sed "s/IP/$VM_IP/g" kind-config.yaml > /tmp/kind-config-resolved.yaml
 
 # Create new cluster
-kind create cluster --name kind-netdevsim --config=kind-config.yaml
+kind create cluster --name kind-netdevsim --config=/tmp/kind-config-resolved.yaml
 
 # Wait a bit until the cluster API becomes reacheable
 ./retry.sh 30 3 kubectl get nodes
