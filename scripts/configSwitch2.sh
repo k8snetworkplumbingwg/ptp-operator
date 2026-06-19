@@ -23,21 +23,21 @@ podman run -d --privileged --volume /dev:/dev --replace --pull always --name swi
 podman exec switch1 yum install iputils iproute ptp4l ethtool ps -y
 
 # Configure netdevsim interface pairs connected with veth (ptp1 <----> ptp1)
-# ./configpair.sh < port1 netdevsim ID (unique)> <port 2 netdevsim ID (unique)> <name of the interface on both side of the link (ptp1)>
-# <port1 ptp clock ID A (/dev/ptpA)> < port2 ptp clock ID B (/dev/ptpB)> <port1 container name > <port2 container name> <port1 pci ID> <port2 pci ID>
+# ./configpair.sh <id1> <id2> <ifname> <clk1> <clk2> <container1> <container2> <pci1> <pci2> [wpc]
+#   wpc=1 enables DPLL + GNSS emulation on the worker-side NIC (WPC NIC).
 
-# TODO: netdevsim needs to implement real PCI address, right now we are reusing the address of existing devices
-# Server 1 nic 1
-./configpair.sh 1 2 ens1f0 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:07.0
-./configpair.sh 3 4 ens1f1 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:08.0
+# Server 1 nic 1 (WPC — grandmaster with DPLL + GNSS)
+./configpair.sh 1 2 ens1f0 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:07.0 1
+./configpair.sh 3 4 ens1f1 1 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:08.0 1
 
 # Server 1 nic 2
 ./configpair.sh 5 6 ens2f0 2 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.0 ${PCI_PREFIX}:09.0
 ./configpair.sh 7 8 ens2f1 2 0 kind-netdevsim-worker switch1 ${PCI_PREFIX}:02.1 ${PCI_PREFIX}:0a.0
 
-# Server 2 nic 1
+# Server 2 nic 1 (3 ports: ens3f0/ens3f1 on VLAN 1500, ens3f2 on VLAN 1502 for cross-VLAN BC)
 ./configpair.sh 9 10 ens3f0 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.0 ${PCI_PREFIX}:0b.0
 ./configpair.sh 11 12 ens3f1 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.1 ${PCI_PREFIX}:0c.0
+./configpair.sh 19 20 ens3f2 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.2 ${PCI_PREFIX}:10.0
 
 # Server 3 nic 1
 ./configpair.sh 13 14 ens4f0 4 0 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:04.0 ${PCI_PREFIX}:0d.0
@@ -70,6 +70,7 @@ podman exec switch1 ovs-vsctl add-port br0 ens3f0 tag=1500
 podman exec switch1 ovs-vsctl add-port br0 ens3f1 tag=1500
 # vlan 1503
 podman exec switch1 ovs-vsctl add-port br0 ens2f1 tag=1502
+podman exec switch1 ovs-vsctl add-port br0 ens3f2 tag=1502
 podman exec switch1 ovs-vsctl add-port br0 ens5f0 tag=1502
 podman exec switch1 ovs-vsctl add-port br0 ens6f0 tag=1502
 
@@ -81,6 +82,7 @@ podman exec switch1 ip link set dev ens2f0 up
 podman exec switch1 ip link set dev ens2f1 up
 podman exec switch1 ip link set dev ens3f0 up
 podman exec switch1 ip link set dev ens3f1 up
+podman exec switch1 ip link set dev ens3f2 up
 podman exec switch1 ip link set dev ens4f0 up
 podman exec switch1 ip link set dev ens5f0 up
 podman exec switch1 ip link set dev ens6f0 up

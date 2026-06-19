@@ -112,3 +112,8 @@ catalog.Dockerfile
 config/manager/env.yaml.bak
 # Per-run temp artifacts created by scripts/run-on-vm.sh
 .local-runs
+
+# Artifacts that should not be committed
+scripts/ca.crt
+scripts/*.tar.gz
+.cursor/

@@ -41,8 +41,8 @@ podman-buildall: $(foreach v, $(VALUES), podman-build-$(v))
 
 podman-build-%:
 	@echo "Platform: $(PLATFORM)"
-	$(MAKE) clean-image VAR=$*
-	$(MAKE) build-image VAR=$*
+	podman image rm ${IMG_PREFIX}:$* || true
+	podman build --no-cache --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
 
 podman-pushall: $(foreach v, $(VALUES), podman-push-$(v))
 
@@ -51,8 +51,19 @@ podman-push-%:
 	podman push ${IMG_PREFIX}:$* docker://${IMG_PREFIX}:$*
 else
 podman-push-%:
-	podman manifest push ${IMG_PREFIX}:$* docker://${IMG_PREFIX}:$*
+	podman push ${IMG_PREFIX}:$* docker://${IMG_PREFIX}:$*
 endif
+
+# Build then immediately push each image sequentially.
+# Using -t (plain image tag) instead of --manifest avoids podman 5.x bugs
+# where manifest-list entries become unresolvable in local storage.
+podman-buildpushall: $(foreach v, $(VALUES), podman-buildpush-$(v))
+
+podman-buildpush-%:
+	@echo "Platform: $(PLATFORM)"
+	podman image rm ${IMG_PREFIX}:$* || true
+	podman build --no-cache --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
+	podman push ${IMG_PREFIX}:$* docker://${IMG_PREFIX}:$*
 
 podman-saveall: $(foreach v, $(VALUES), podman-save-$(v))
 
@@ -100,13 +111,13 @@ clean-image:
 	podman manifest rm ${IMG_PREFIX}:$(VAR) || true
 
 podman-clean-%:
-	podman manifest rm ${IMG_PREFIX}:$* || true
+	podman image rm ${IMG_PREFIX}:$* || true
 endif
 
 podman-cleanall: $(foreach v, $(VALUES), podman-clean-$(v))
 
 .PHONY: podman-buildall podman-pushall podman-saveall podman-cleanall
-.PHONY: podman-build-and-pushall podman-build-and-saveall
+.PHONY: podman-build-and-pushall podman-build-and-saveall podman-buildpushall
 .PHONY: build-image clean-image deploy-all
 
 deploy-all: 
