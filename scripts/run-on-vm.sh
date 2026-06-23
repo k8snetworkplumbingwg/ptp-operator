@@ -321,8 +321,9 @@ if [[ "$RUN_PHASE" == "all" ]]; then
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
     cd ../ptp-tools
+    step "Pushing ptp-tools images"
+    run_ptp_tools_parallel_make_step_rows PUSH podman-push push "${_ptp_tool_images[@]}"
     make podman-cleanall
-    make podman-buildpushall
     cd -
 
 fi
