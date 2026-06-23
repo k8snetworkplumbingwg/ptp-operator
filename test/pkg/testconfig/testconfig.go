@@ -1056,13 +1056,13 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	if err == nil && configureFifo {
 		ptpSchedulingPolicy = SCHED_FIFO
 	}
-	// Sleep for a second to allow previous label on the same node to complete
-	time.Sleep(time.Second)
-	if _, err = nodes.LabelNode(nodeName, label, ""); err != nil {
-		logrus.Errorf("Error setting WPC GM node role label %s: %s", label, err)
+	_, err = nodes.LabelNode(nodeName, label, "")
+	if err != nil {
+		return fmt.Errorf("error setting WPC GM node role label %s: %w", label, err)
 	}
-	if _, err = nodes.LabelNode(nodeName, pkg.PtpGrandmasterNodeLabel, ""); err != nil {
-		logrus.Errorf("Error setting WPC GM grandmaster label: %s", err)
+	_, err = nodes.LabelNode(nodeName, pkg.PtpGrandmasterNodeLabel, "")
+	if err != nil {
+		return fmt.Errorf("error setting WPC GM grandmaster node role label: %w", err)
 	}
 
 	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  %s\n", gnssSerialPort(deviceID))

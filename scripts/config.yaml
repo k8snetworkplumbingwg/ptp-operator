@@ -1,5 +1,0 @@
-global:
-  maxoffset: 10000
-  minoffset: -10000
-  holdover_timeout: 5
-  DisableAllSlaveRTUpdate: true

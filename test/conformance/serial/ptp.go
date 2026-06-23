@@ -884,7 +884,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA &&
-				fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.TelcoGMBC {
 					Skip("test only valid for Boundary clock or TGMBC in multi-node clusters")
 				}
@@ -893,7 +893,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesExtGMString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] &&
-				!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesString] &&
+					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesExtGMString] &&
 					!fullConfig.FoundSolutions[testconfig.AlgoTGMBCWithSlavesString] {
 					Skip("test only valid for Boundary clock in multi-node clusters with slaves")
@@ -3067,17 +3067,20 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(simErr).ToNot(HaveOccurred())
 				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
 
-				By("waiting for GM clock class to degrade from Locked (6)")
-				Eventually(func() bool {
-					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-					return !checkClockClassInMetrics(buf.String(), "6")
-				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-					"Expected GM clock class to degrade after GNSS loss")
+				By("waiting for GM DPLL to transition to HOLDOVER after GNSS loss")
+				Eventually(func() string {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					if err != nil {
+						return ""
+					}
+					return dpll.State
+				}, 5*time.Minute, 5*time.Second).Should(Equal("HOLDOVER"),
+					"Expected GM DPLL to enter HOLDOVER after GNSS signal loss")
 
-				By("waiting for BC clock class to degrade from Locked (6)")
+				By("waiting for BC clock class to cascade-degrade from Locked (6)")
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-					return !checkClockClassInMetrics(buf.String(), "6")
+					return checkClockClassInMetrics(buf.String(), "7") || checkClockClassInMetrics(buf.String(), "248")
 				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
 					"Expected BC clock class to cascade-degrade after upstream GM GNSS loss")
 
@@ -3085,14 +3088,17 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				simErr = ptphelper.GNSSSimSignalRestore()
 				Expect(simErr).ToNot(HaveOccurred())
 
-				By("waiting for GM clock class to recover to Locked (6)")
-				Eventually(func() bool {
-					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-					return checkClockClassInMetrics(buf.String(), "6")
-				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
-					"Expected GM clock class to recover to 6")
+				By("waiting for GM DPLL to recover to LOCKED")
+				Eventually(func() string {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					if err != nil {
+						return ""
+					}
+					return dpll.State
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(Equal("LOCKED"),
+					"Expected GM DPLL to recover to LOCKED after signal restore")
 
-				By("waiting for BC clock class to recover to Locked (6)")
+				By("waiting for BC clock class to cascade-recover to Locked (6)")
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 					return checkClockClassInMetrics(buf.String(), "6")
