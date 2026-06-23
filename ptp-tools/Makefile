@@ -83,6 +83,7 @@ deploy-all:
 	./scripts/customize-env.sh ${IMG_PREFIX} ../config/manager
 	cd ../config/manager && $(KUSTOMIZE) edit set image controller=${IMG_PREFIX}:ptpop
 	$(KUSTOMIZE) build ../config/default | kubectl apply -f -
+	git -C .. checkout -- config/manager/env.yaml config/manager/kustomization.yaml
 	$(KUSTOMIZE) build ../config/custom | kubectl apply -f -
 	# Operator creates default asynchronously; ensure it exists before patch.
 	kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml
