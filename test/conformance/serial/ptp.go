@@ -3031,6 +3031,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
 				}
+				waitForWPCGMReady(fullConfig)
 			})
 
 			It("Testing simulated T-GM holdover through GNSS signal loss via API", func() {
@@ -3137,6 +3138,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
 					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
 				}
+				waitForWPCGMReady(fullConfig)
 
 				gmPod := getGMPod()
 				nodeName := gmPod.Spec.NodeName
@@ -3181,7 +3183,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(simErr).ToNot(HaveOccurred())
 				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
 
-				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				By("Waiting for GM clock class to degrade in metrics before collecting events")
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass7)), pkg.TimeoutIn5Minutes)
+
+				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
 				fmt.Fprintf(GinkgoWriter, "Sim T-GM loss events: %v\n", events)
 
 				By("Verifying ClockClass transitions to 7 (holdover)")
@@ -3201,7 +3206,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Waiting for GNSS recovery via clock class metrics")
 				waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
-				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
 				fmt.Fprintf(GinkgoWriter, "Sim T-GM recovery events: %v\n", events)
 
 				By("Verifying GNSS state Synchronized")
@@ -3272,11 +3277,18 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}, 5*time.Minute, 5*time.Second).Should(Equal("HOLDOVER"),
 					"Expected GM DPLL to enter HOLDOVER after GNSS signal loss")
 
+				By("waiting for GM clock class to degrade in metrics (confirms DPLL→ptp4l pipeline)")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "7") || checkClockClassInMetrics(buf.String(), "248")
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected GM clock class to degrade to CC7/CC248 in Prometheus metrics after DPLL HOLDOVER")
+
 				By("waiting for BC clock class to cascade-degrade from Locked (6)")
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 					return checkClockClassInMetrics(buf.String(), "7") || checkClockClassInMetrics(buf.String(), "248")
-				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+				}, pkg.TimeoutIn5Minutes, 10*time.Second).Should(BeTrue(),
 					"Expected BC clock class to cascade-degrade after upstream GM GNSS loss")
 
 				By("restoring GNSS signal via gnss-sim API")
@@ -3380,7 +3392,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(simErr).ToNot(HaveOccurred())
 				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
 
-				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				By("Waiting for GM clock class to degrade in metrics before collecting events")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "7") || checkClockClassInMetrics(buf.String(), "248")
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+					"Expected GM clock class to degrade before collecting events")
+
+				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
 				fmt.Fprintf(GinkgoWriter, "TGMBC GM loss events: %v\n", events)
 
 				By("Verifying GM ClockClass transitions to 7 (holdover)")
@@ -3393,7 +3412,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass7)))
-				}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeTrue(),
+				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
 					"Expected BC clock class to cascade to CC7 after GM holdover event")
 
 				term2, err2 := event.MonitorPodLogsRegex()
@@ -3407,7 +3426,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Waiting for GM clock class recovery to CC6")
 				waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
-				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
 				fmt.Fprintf(GinkgoWriter, "TGMBC GM recovery events: %v\n", events)
 
 				By("Verifying GM GNSS state Synchronized")
