@@ -34,6 +34,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -99,7 +100,6 @@ func main() {
 	setupLog.Info("TLS security profile resolved",
 		"minTLSVersion", tlsProfileSpec.MinTLSVersion,
 		"ciphers", tlsProfileSpec.Ciphers,
-		"groups", tlsProfileSpec.Groups,
 		"tlsAdherence", tlsAdherencePolicy,
 		"honorClusterTLSProfile", honorClusterTLS)
 
@@ -108,19 +108,9 @@ func main() {
 	if honorClusterTLS {
 		tlsProfileSpecPtr = &tlsProfileSpec
 		var unsupportedCiphers []string
-		baseTLSOption, unsupportedCiphers := openshifttls.NewTLSConfigFromProfile(tlsProfileSpec)
+		tlsOption, unsupportedCiphers = openshifttls.NewTLSConfigFromProfile(tlsProfileSpec)
 		if len(unsupportedCiphers) > 0 {
 			setupLog.Info("some ciphers from the TLS profile are not supported", "unsupportedCiphers", unsupportedCiphers)
-		}
-		curvePrefs, unsupportedGroups := tlsGroupsToCurveIDs(tlsProfileSpec.Groups)
-		if len(unsupportedGroups) > 0 {
-			setupLog.Info("some groups from the TLS profile are not supported by this Go version", "unsupportedGroups", unsupportedGroups)
-		}
-		tlsOption = func(c *tls.Config) {
-			baseTLSOption(c)
-			if len(curvePrefs) > 0 {
-				c.CurvePreferences = curvePrefs
-			}
 		}
 	} else {
 		setupLog.Info("TLS adherence is legacy, using default TLS configuration")
@@ -328,6 +318,17 @@ func createDefaultOperatorConfig(ctx context.Context, cfg *rest.Config) error {
 	return nil
 }
 
+func setupChecks(mgr ctrl.Manager, checker healthz.Checker) {
+	if err := mgr.AddReadyzCheck("webhook", checker); err != nil {
+		setupLog.Error(err, "unable to create ready check")
+		os.Exit(1)
+	}
+	if err := mgr.AddHealthzCheck("webhook", checker); err != nil {
+		setupLog.Error(err, "unable to create health check")
+		os.Exit(1)
+	}
+}
+
 // fetchTLSConfig creates a temporary client to read the APIServer TLS profile
 // and adherence policy at startup, before the manager's cache is available.
 func fetchTLSConfig(cfg *rest.Config) (configv1.TLSProfileSpec, configv1.TLSAdherencePolicy, error) {
@@ -356,28 +357,6 @@ func fetchTLSConfig(cfg *rest.Config) (configv1.TLSProfileSpec, configv1.TLSAdhe
 		return configv1.TLSProfileSpec{}, "", fmt.Errorf("failed to fetch TLS adherence policy: %v", err)
 	}
 	return profileSpec, adherencePolicy, nil
-}
-
-// tlsGroupsToCurveIDs converts openshift/api TLSGroup identifiers to Go crypto/tls CurveID values.
-// Returns the mapped curve preferences and any group names not supported by this Go version.
-func tlsGroupsToCurveIDs(groups []configv1.TLSGroup) ([]tls.CurveID, []string) {
-	groupMap := map[configv1.TLSGroup]tls.CurveID{
-		configv1.TLSGroupX25519:         tls.X25519,
-		configv1.TLSGroupSecP256r1:      tls.CurveP256,
-		configv1.TLSGroupSecP384r1:      tls.CurveP384,
-		configv1.TLSGroupSecP521r1:      tls.CurveP521,
-		configv1.TLSGroupX25519MLKEM768: tls.X25519MLKEM768,
-	}
-	var curves []tls.CurveID
-	var unsupported []string
-	for _, g := range groups {
-		if id, ok := groupMap[g]; ok {
-			curves = append(curves, id)
-		} else {
-			unsupported = append(unsupported, string(g))
-		}
-	}
-	return curves, unsupported
 }
 
 // waitForWebhookServer waits until the local webhook server is listening and

@@ -35,9 +35,7 @@ func init() {
 func TestTest(t *testing.T) {
 	logging.InitLogLevel()
 	RegisterFailHandler(Fail)
-	suiteCfg, repCfg := GinkgoConfiguration()
-	repCfg.SilenceSkips = true
-	RunSpecs(t, "PTP e2e tests : Parallel", suiteCfg, repCfg)
+	RunSpecs(t, "PTP e2e tests : Parallel")
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {

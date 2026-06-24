@@ -11,19 +11,15 @@ CGO_ENABLED=${CGO_ENABLED:-1}
 GOOS=$(go env GOOS)
 GOARCH=$(go env GOARCH)
 
-# Go to the root of the repo (skip if .git is absent, e.g. remote builder)
-cdup="$(git rev-parse --show-cdup 2>/dev/null)" && test -n "$cdup" && cd "$cdup"
+# Go to the root of the repo
+cdup="$(git rev-parse --show-cdup)" && test -n "$cdup" && cd "$cdup"
 
 if [ -z ${VERSION_OVERRIDE+a} ]; then
-	if git rev-parse --git-dir >/dev/null 2>&1; then
-		echo "Using version from git..."
-		VERSION_OVERRIDE=$(git describe --abbrev=8 --dirty --always)
-	else
-		VERSION_OVERRIDE="unknown"
-	fi
+	echo "Using version from git..."
+	VERSION_OVERRIDE=$(git describe --abbrev=8 --dirty --always)
 fi
 
-GLDFLAGS+="-X ${REPO}/version.Version=${VERSION_OVERRIDE}"
+GLDFLAGS+="-X ${REPO}/pkg/version.Raw=${VERSION_OVERRIDE}"
 
 export BIN_PATH=build/_output/bin/
 export BIN_NAME=ptp-operator

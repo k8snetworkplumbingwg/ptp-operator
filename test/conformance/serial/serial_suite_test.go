@@ -38,9 +38,7 @@ func TestTest(t *testing.T) {
 	logging.InitLogLevel()
 	RegisterFailHandler(Fail)
 	InitDeletePtpConfig()
-	suiteCfg, repCfg := GinkgoConfiguration()
-	repCfg.SilenceSkips = true
-	RunSpecs(t, "PTP e2e integration tests", suiteCfg, repCfg)
+	RunSpecs(t, "PTP e2e integration tests")
 }
 
 var _ = BeforeSuite(func() {
