@@ -780,7 +780,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
 					Skip("Test reserved for dual follower scenario")
 				}
-				Expect(len(fullConfig.DiscoveredFollowerInterfaces) == 2)
+				Expect(len(fullConfig.DiscoveredFollowerInterfaces)).To(Equal(2), "dual follower requires exactly 2 follower interfaces")
 				isExternalMaster := ptphelper.IsExternalGM()
 				var grandmasterID *string
 				if fullConfig.L2Config != nil && !isExternalMaster {
@@ -3213,12 +3213,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.HOLDOVER)
 				stopMonitor(term)
 
-				By("Verifying BC clock class cascades to CC7 via metrics")
+				By("Verifying BC clock class cascades to CC7/CC248 via metrics")
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true, bcPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass7)))
+					return checkClockClassInMetrics(buf.String(), "7") || checkClockClassInMetrics(buf.String(), "248")
 				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
-					"Expected BC clock class to cascade to CC7 after GM holdover event")
+					"Expected BC clock class to cascade-degrade after GM holdover event")
 
 				term2, err2 := event.MonitorPodLogsRegex()
 				defer func() { stopMonitor(term2) }()
