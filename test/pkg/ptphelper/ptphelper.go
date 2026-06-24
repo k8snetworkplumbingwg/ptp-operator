@@ -1245,7 +1245,7 @@ func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 		logrus.Infof("Could not get PTP Operator version, assuming version check passes: %v", err)
 		return true
 	}
-	logrus.Infof("Found version %s; checking %s <= %s", foundVersion, foundVersion, minVersion)
+	logrus.Infof("Found version %s; checking %s < %s", foundVersion, foundVersion, minVersion)
 	ver, err := semver.NewVersion(foundVersion)
 	if err != nil {
 		logrus.Infof("Could not parse PTP Operator version %s, assuming version check passes: %v", foundVersion, err)

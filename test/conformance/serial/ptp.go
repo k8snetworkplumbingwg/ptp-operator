@@ -1410,6 +1410,74 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"Threshold metrics are not detected")
 			})
 
+			It("Should recover clockClass via event API after cloud-event-proxy crash", func() {
+				if ptphelper.PtpEventEnabled() != 2 {
+					Skip("Skipping: test applies to event API v2 only")
+				}
+
+				// Determine expected clock class based on PTP mode
+				// In 4.21+, OC correctly reports its local clock class (255/SlaveOnly)
+				// instead of the upstream GM's class (6).
+				expectedClockClass := fbprotocol.ClockClass6
+				if fullConfig.PtpModeDiscovered == testconfig.OrdinaryClock && ptphelper.IsPTPOperatorVersionAtLeast("4.21") {
+					expectedClockClass = fbprotocol.ClockClassSlaveOnly
+				}
+				expectedClockClassStr := strconv.Itoa(int(expectedClockClass))
+				logrus.Infof("PtpModeDiscovered: %s, expected clockClass: %s", fullConfig.PtpModeDiscovered, expectedClockClassStr)
+
+				By("Deploying consumer app for event API v2")
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+				Expect(nodeName).ToNot(BeEmpty(), "clock-under-test pod node is empty")
+				err := event.CreateConsumerApp(nodeName)
+				if err != nil {
+					Skip(fmt.Sprintf("Consumer app setup failed: %v", err))
+				}
+				DeferCleanup(func() {
+					_ = event.DeleteConsumerNamespace()
+					if event.PubSub != nil {
+						event.PubSub.Close()
+					}
+				})
+				if waitErr := event.WaitForConsumerReady(nodeName); waitErr != nil {
+					Skip(fmt.Sprintf("Consumer app not ready: %v", waitErr))
+				}
+				event.InitPubSub()
+
+				By(fmt.Sprintf("Verifying initial clockClass is %s via metrics", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
+
+				// PMC gm.ClockClass always reports the upstream GM's class (6),
+				// regardless of whether this node is BC or OC.
+				By("Verifying initial gm.ClockClass is 6 via PMC")
+				ptptesthelper.VerifyClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config", int(fbprotocol.ClockClass6))
+
+				By(fmt.Sprintf("Verifying initial clockClass is %s via Event API", expectedClockClassStr))
+				verifyClockClassCurrentState(int(expectedClockClass), 60*time.Second)
+
+				By("Killing cloud-event-proxy process in sidecar container")
+				_, _, killErr := pods.ExecCommand(
+					client.Client,
+					true,
+					fullConfig.DiscoveredClockUnderTestPod,
+					pkg.EventProxyContainerName,
+					[]string{"sh", "-c", "pkill -9 -f ^./cloud-event-proxy || true"},
+				)
+				Expect(killErr).To(BeNil(), "failed to kill cloud-event-proxy process")
+
+				By("Waiting for cloud-event-proxy to be ready")
+				Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
+					"cloud-event-proxy did not become ready after restart")
+
+				By(fmt.Sprintf("Verifying clockClass remains %s via metrics after cloud-event-proxy restart", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
+
+				By("Verifying gm.ClockClass remains 6 via PMC after cloud-event-proxy restart")
+				ptptesthelper.VerifyClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config", int(fbprotocol.ClockClass6))
+
+				By(fmt.Sprintf("Verifying clockClass is %s via Event API after cloud-event-proxy restart", expectedClockClassStr))
+				verifyClockClassCurrentState(int(expectedClockClass), 90*time.Second)
+			})
+
 			Context("Event API version validation", func() {
 				BeforeEach(func() {
 					if !ptphelper.IsPTPOperatorVersionAtLeast("4.19") {
@@ -3944,7 +4012,10 @@ func setupBCClockClassEvents(nodeName string) bcEventContext {
 		logrus.Warnf("PTP events not available: %s; skipping event checks", createErr)
 		return ctx
 	}
-	time.Sleep(10 * time.Second)
+	if waitErr := event.WaitForConsumerReady(nodeName); waitErr != nil {
+		logrus.Warnf("Consumer app not ready: %s; skipping event checks", waitErr)
+		return ctx
+	}
 	event.InitPubSub()
 	var eventCleanup func()
 	ctx.subs, eventCleanup = event.SubscribeToGMChangeEvents(100, true, 60*time.Second)
@@ -3975,4 +4046,41 @@ func verifyClockClassViaEvent(evCtx bcEventContext, expectedClass int) {
 	}
 	events := getGMEvents(evCtx.subs.GNSS, evCtx.subs.CLOCKCLASS, evCtx.subs.LOCKSTATE, 10*time.Second)
 	verifyMetric(events[ptpEvent.PtpClockClassChange], float64(expectedClass))
+}
+
+// verifyClockClassCurrentState creates a fresh event subscription with pushInitial=true
+// to query the current clock class state from the Event API's getCurrentState endpoint.
+// Unlike verifyClockClassViaEvent (which drains an existing long-lived subscription),
+// this function is safe to call after disruptions such as a cloud-event-proxy restart,
+// where the previous subscription may be stale or disconnected.
+func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration) {
+	const incomingEventsBuffer = 100
+	ccTopic := string(ptpEvent.PtpClockClassChange)
+
+	ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
+	defer event.PubSub.Unsubscribe(ccTopic, cID)
+
+	if err := event.PushInitialEvent(ccTopic, timeout); err != nil {
+		Fail(fmt.Sprintf("Failed to push initial clock class event: %v", err))
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API", expectedClockClass))
+			return
+		case ev := <-ccCh:
+			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
+				for _, val := range res.Values {
+					if v, ok2 := val.(float64); ok2 && int(v) == expectedClockClass {
+						fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+						return
+					}
+				}
+			}
+		}
+	}
 }
