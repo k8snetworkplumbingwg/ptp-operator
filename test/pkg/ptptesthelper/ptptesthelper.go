@@ -441,9 +441,10 @@ func (p *PortEngine) TurnPortUp(port string) error {
 		[]string{"ip", "link", "set", port, "up"})
 
 	logrus.Infof("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
-	if err == nil {
-		p.nmSetManaged(port, true)
-	}
+	// NM is NOT re-enabled here: the DeferCleanup registered in TurnPortDown
+	// handles that after the test completes. Re-enabling NM eagerly can cause
+	// it to re-activate the interface (DHCP, link detection) and interfere
+	// with ptp4l's port state machine, preventing SLAVE recovery.
 	return err
 }
 
