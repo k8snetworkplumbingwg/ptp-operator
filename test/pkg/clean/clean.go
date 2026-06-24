@@ -60,14 +60,14 @@ func Configs() {
 	for _, ptpConfig := range ptpconfigList.Items {
 		if ptpConfig.Name == pkg.PtpGrandMasterPolicyName ||
 			ptpConfig.Name == pkg.PtpWPCGrandMasterPolicyName ||
+			ptpConfig.Name == pkg.PtpSimGrandMasterPolicyName ||
 			ptpConfig.Name == pkg.PtpBcMaster1PolicyName ||
 			ptpConfig.Name == pkg.PtpSlave1PolicyName ||
 			ptpConfig.Name == pkg.PtpBcMaster2PolicyName ||
 			ptpConfig.Name == pkg.PtpSlave2PolicyName ||
 			ptpConfig.Name == pkg.PtpTempPolicyName ||
 			ptpConfig.Name == pkg.PtpDualNicBCHAPolicyName ||
-			ptpConfig.Name == pkg.PtpVolumeMountCleanPolicyName ||
-			ptpConfig.Name == pkg.PTPWPCTBCPolicyName {
+			ptpConfig.Name == pkg.PtpVolumeMountCleanPolicyName {
 			err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(context.Background(), ptpConfig.Name, metav1.DeleteOptions{})
 			if err != nil {
 				logrus.Infof("clean.All: Failed to delete ptp config %s %v", ptpConfig.Name, err)

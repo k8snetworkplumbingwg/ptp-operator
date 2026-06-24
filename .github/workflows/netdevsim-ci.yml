@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: main
+  DKMS_BRANCH: add-gnss
 
 jobs:
   # ------------------------------------------------------------------
@@ -148,7 +148,7 @@ jobs:
           echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
           echo "Kernel: $(uname -r)"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install podman 5.x
         run: |
@@ -176,12 +176,10 @@ jobs:
           VM_IP=$(hostname -I | awk '{print $1}')
           cd /root/ptp-operator/scripts
           ./run-on-vm.sh --dkms --images "${VM_IP}"
-
-          rm -rf /tmp/go-build* /root/.cache/go-build
           BUILD
 
       - name: Upload image tarball
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ptp-images
           path: /tmp/ptp-images.tar
@@ -197,7 +195,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
+        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |
@@ -205,7 +203,7 @@ jobs:
           echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
           echo "Kernel: $(uname -r)"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install podman 5.x
         run: |
@@ -253,7 +251,7 @@ jobs:
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
       - name: Download image tarball
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v4
         with:
           name: ptp-images
           path: /tmp
@@ -271,15 +269,6 @@ jobs:
           ./run-on-vm.sh --dkms --load /tmp/ptp-images.tar "${VM_IP}"
           LOAD
 
-      - name: "Free disk space before tests"
-        run: |
-          sudo bash -l <<'CLEANUP'
-          set -euo pipefail
-          rm -rf /tmp/ptp-images.tar /tmp/ptp-images-load
-          rm -rf /tmp/go-build* /var/cache/apt /root/.cache
-          df -h
-          CLEANUP
-
       - name: "Run scenario: ${{ matrix.mode }}"
         run: |
           sudo bash -l <<'DEPLOY'
@@ -295,7 +284,7 @@ jobs:
 
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ptp-artifacts-${{ matrix.mode }}
           path: /tmp/artifacts/

@@ -98,6 +98,12 @@ func ShouldWriteTestMarkers() bool {
 	return value == "true" || value == "1"
 }
 
+func WriteStep(step string) {
+	if collector != nil && ShouldWriteTestMarkers() {
+		collector.writers.writeToAll(createStepMarker(step))
+	}
+}
+
 func GetLogArtifactsDir() string {
 	if dir := os.Getenv("LOG_ARTIFACTS_DIR"); dir != "" {
 		return dir
@@ -234,13 +240,6 @@ func WriteTestStart(report ginkgo.SpecReport) {
 func WriteTestEnd(report ginkgo.SpecReport) {
 	if collector != nil && ShouldWriteTestMarkers() {
 		collector.writers.writeToAll(createTestEndMarker(report))
-	}
-}
-
-// WriteStep writes a test step marker to all pod log files
-func WriteStep(step string) {
-	if collector != nil && ShouldWriteTestMarkers() {
-		collector.writers.writeToAll(createStepMarker(step))
 	}
 }
 

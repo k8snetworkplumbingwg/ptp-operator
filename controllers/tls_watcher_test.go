@@ -47,5 +47,4 @@ func TestSetTLSTemplateData_ModernProfile(t *testing.T) {
 
 	assert.Equal(t, "VersionTLS13", data.Data["TLSMinVersion"])
 	// TLS 1.3 ciphers are not configurable in Go, so cipher list may be empty
-
 }
