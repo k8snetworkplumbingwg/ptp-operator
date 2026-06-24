@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -81,6 +82,7 @@ type DPLLSimulator struct {
 	holdoverTimeout time.Duration // how long to stay in holdover before freerun
 	signalLostAt    time.Time     // when GNSS signal was lost (zero if not lost)
 	parentState     *SimState     // reads GNSS signal state
+	dpllSysfsPath   string        // kernel sysfs path for lock_status control
 	stop            chan struct{}
 	done            chan struct{}
 }
@@ -97,14 +99,20 @@ type DPLLStateView struct {
 // NewDPLLSimulator creates a DPLL simulator that derives state from the
 // parent GNSS SimState. The holdoverTimeout controls how long the DPLL
 // stays in HOLDOVER before transitioning to FREERUN.
-func NewDPLLSimulator(parent *SimState, holdoverTimeout time.Duration) *DPLLSimulator {
-	return &DPLLSimulator{
+func NewDPLLSimulator(parent *SimState, holdoverTimeout time.Duration, dpllSysfsPath string) *DPLLSimulator {
+	d := &DPLLSimulator{
 		state:           DPLLLocked,
 		holdoverTimeout: holdoverTimeout,
 		parentState:     parent,
+		dpllSysfsPath:   dpllSysfsPath,
 		stop:            make(chan struct{}),
 		done:            make(chan struct{}),
 	}
+	if dpllSysfsPath != "" {
+		d.writeSysfs("locked")
+		log.Printf("DPLL: sysfs bridge enabled at %s", dpllSysfsPath)
+	}
+	return d
 }
 
 // Snapshot returns the current DPLL state as a JSON-safe view.
@@ -153,6 +161,25 @@ func (d *DPLLSimulator) Stop() {
 	<-d.done
 }
 
+func (d *DPLLSimulator) writeSysfs(val string) {
+	if err := os.WriteFile(d.dpllSysfsPath, []byte(val+"\n"), 0644); err != nil {
+		log.Printf("DPLL: failed to write %q to sysfs %s: %v", val, d.dpllSysfsPath, err)
+	}
+}
+
+func (d *DPLLSimulator) sysfsValue(s DPLLState) string {
+	switch s {
+	case DPLLLocked:
+		return "locked"
+	case DPLLHoldover:
+		return "holdover"
+	case DPLLFreerun:
+		return "freerun"
+	default:
+		return ""
+	}
+}
+
 func (d *DPLLSimulator) update(now time.Time) {
 	gnssSnap := d.parentState.Snapshot()
 	gnssActive := gnssSnap.SignalActive
@@ -191,5 +218,10 @@ func (d *DPLLSimulator) update(now time.Time) {
 	if d.state != prevState {
 		log.Printf("DPLL state: %s (CC%d, freq=%d, phase=%d)",
 			d.state, d.state.ClockClass(), d.state.FrequencyStatus(), d.state.PhaseStatus())
+		if d.dpllSysfsPath != "" {
+			if v := d.sysfsValue(d.state); v != "" {
+				d.writeSysfs(v)
+			}
+		}
 	}
 }
