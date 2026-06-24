@@ -148,7 +148,7 @@ func TestDPLLFullCycleWithSimulator(t *testing.T) {
 	buf := &syncBuffer{}
 	state := DefaultState()
 	sim := NewSimulator(state, buf)
-	dpllSim := NewDPLLSimulator(state, 1*time.Second)
+	dpllSim := NewDPLLSimulator(state, 1*time.Second, "")
 
 	go sim.Run()
 	go dpllSim.Run()
@@ -216,7 +216,7 @@ func assertDPLLState(t *testing.T, snap DPLLStateView, state string, cc, freq, p
 
 func TestAPIHealth(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -236,7 +236,7 @@ func TestAPIHealth(t *testing.T) {
 
 func TestAPIStatusReflectsState(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -266,7 +266,7 @@ type GNSSSimStatusView = SimStateView
 
 func TestAPIDPLLStatusReflectsState(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(600 * time.Millisecond)
@@ -295,7 +295,7 @@ func TestAPIDPLLStatusReflectsState(t *testing.T) {
 
 func TestAPISignalLossTriggersHoldover(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(600 * time.Millisecond)
@@ -334,7 +334,7 @@ func TestAPISignalLossTriggersHoldover(t *testing.T) {
 func TestAPISignalRestoreRecovers(t *testing.T) {
 	state := DefaultState()
 	state.SetSignal(false)
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(700 * time.Millisecond)
@@ -370,7 +370,7 @@ func TestAPISignalRestoreRecovers(t *testing.T) {
 
 func TestAPIConfigUpdate(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -403,7 +403,7 @@ func TestAPIConfigUpdate(t *testing.T) {
 
 func TestAPIConfigPartialUpdate(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -432,7 +432,7 @@ func TestAPIConfigPartialUpdate(t *testing.T) {
 
 func TestAPIMethodNotAllowed(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -497,7 +497,7 @@ func TestSimStateConcurrentAccess(t *testing.T) {
 
 func TestDPLLSnapshotJSON(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(600 * time.Millisecond)
@@ -527,7 +527,7 @@ func TestDPLLSnapshotJSON(t *testing.T) {
 
 func TestDPLLProducesExpectedLogPatterns(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 5*time.Second)
+	dpllSim := NewDPLLSimulator(state, 5*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(600 * time.Millisecond)
@@ -560,7 +560,7 @@ func TestDPLLProducesExpectedLogPatterns(t *testing.T) {
 
 func TestAPIFullRoundTrip(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 1*time.Second)
+	dpllSim := NewDPLLSimulator(state, 1*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 	time.Sleep(600 * time.Millisecond)

@@ -35,7 +35,7 @@ func TestDPLLStateString(t *testing.T) {
 
 func TestDPLLTransitionLockedToHoldoverToFreerun(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 2*time.Second)
+	dpllSim := NewDPLLSimulator(state, 2*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -70,7 +70,7 @@ func TestDPLLTransitionLockedToHoldoverToFreerun(t *testing.T) {
 
 func TestDPLLRecoveryFromHoldover(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 10*time.Second)
+	dpllSim := NewDPLLSimulator(state, 10*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -99,7 +99,7 @@ func TestDPLLRecoveryFromHoldover(t *testing.T) {
 func TestDPLLRecoveryFromFreerun(t *testing.T) {
 	state := DefaultState()
 	state.SetSignal(false)
-	dpllSim := NewDPLLSimulator(state, 1*time.Second)
+	dpllSim := NewDPLLSimulator(state, 1*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 
@@ -121,7 +121,7 @@ func TestDPLLRecoveryFromFreerun(t *testing.T) {
 
 func TestDPLLPPSStatus(t *testing.T) {
 	state := DefaultState()
-	dpllSim := NewDPLLSimulator(state, 1*time.Second)
+	dpllSim := NewDPLLSimulator(state, 1*time.Second, "")
 	go dpllSim.Run()
 	defer dpllSim.Stop()
 

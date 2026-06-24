@@ -46,10 +46,22 @@ echo "=== Starting GNSS simulator on host ==="
 
 if [ -c "$GNSS_KERNEL_DEV" ]; then
     echo "Kernel GNSS device found at $GNSS_KERNEL_DEV — using hybrid mode"
+
+    DPLL_SYSFS_ARGS=""
+    DPLL_SYSFS=""
+    for pci_dev in /sys/bus/pci/devices/*/dpll/lock_status; do
+        [ -f "$pci_dev" ] && DPLL_SYSFS="$pci_dev" && break
+    done
+    if [ -n "$DPLL_SYSFS" ]; then
+        DPLL_SYSFS_ARGS="--dpll-sysfs $DPLL_SYSFS"
+        echo "DPLL sysfs bridge enabled at $DPLL_SYSFS"
+    fi
+
     "$GNSS_SIM_BIN" \
         --gnss-dev "$GNSS_KERNEL_DEV" \
         --pty-links /var/run/ptp/ttyGNSS_GNSS0 \
-        --api-port "${GNSS_SIM_API_PORT}" &
+        --api-port "${GNSS_SIM_API_PORT}" \
+        $DPLL_SYSFS_ARGS &
     GNSS_PID=$!
     NMEA_SOURCE="$GNSS_KERNEL_DEV"
 else
