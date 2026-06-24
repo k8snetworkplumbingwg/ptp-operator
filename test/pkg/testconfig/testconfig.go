@@ -1074,28 +1074,10 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	ts2phcOpts := " "
 	ph2sysOpts := fmt.Sprintf("-r -u 0 -m -N 8 -R 16 -s %s -n 24", ifList[0])
 
-	// Get test configuration values for E810 plugin settings
-	testParameters, err := ptptestconfig.GetPtpTestConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get test config: %v", err)
-	}
-
-	// Get E810 plugin settings from environment variables (following existing pattern)
-	// MAX_OFFSET_IN_NS = LocalMaxHoldoverOffset, MIN_OFFSET_IN_NS = -LocalMaxHoldoverOffset
-	// HOLDOVER_TIMEOUT_S = LocalHoldoverTimeout (keep from YAML for now)
-	// MAX_IN_SPEC_OFFSET_NS = MaxInSpecOffset
-	localMaxHoldoverOffset := metrics.MaxOffsetNs
-	localHoldoverTimeout := testParameters.GlobalConfig.HoldOverTimeout // Keep this from YAML for now
-	maxInSpecOffset := metrics.MaxInSpecOffsetNs
-
 	var plugins map[string]*apiextensions.JSON
-	yamlData := fmt.Sprintf(`
+	yamlData := `
   e810:
     enableDefaultConfig: false
-    settings:
-      LocalMaxHoldoverOffSet: %d
-      LocalHoldoverTimeout: %d
-      MaxInSpecOffset: %d
     pins:
       "$iface_master":
          "U.FL2": "0 2"
@@ -1162,7 +1144,7 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
           - "-p"
           - "CFG-MSG,1,38,248"
         reportOutput: true
-`, localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset)
+`
 
 	// Unmarshal the YAML data into a generic map
 	var genericMap map[string]interface{}
