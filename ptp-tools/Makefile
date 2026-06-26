@@ -24,6 +24,9 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 
 IMG_PREFIX ?= quay.io/<your user id here>/<your image name>
 SAVE_DIR ?= /tmp/ptp-images
+CONTAINER_TOOL ?= podman
+GHCR_PREFIX ?= ghcr.io/k8snetworkplumbingwg
+GHCR_IMAGES = lptpd cep ptpop krp
 
 ifdef GITHUB_ACTIONS
 CACHE_FLAG ?=
@@ -108,6 +111,23 @@ podman-cleanall: $(foreach v, $(VALUES), podman-clean-$(v))
 .PHONY: podman-buildall podman-pushall podman-saveall podman-cleanall
 .PHONY: podman-build-and-pushall podman-build-and-saveall
 .PHONY: build-image clean-image deploy-all
+
+GHCR_IMAGE_MAP_lptpd = linuxptp-daemon
+GHCR_IMAGE_MAP_cep = cloud-event-proxy
+GHCR_IMAGE_MAP_ptpop = ptp-operator
+GHCR_IMAGE_MAP_krp = kube-rbac-proxy
+
+.PHONY: ghcr-buildall
+ghcr-buildall: $(foreach v, $(GHCR_IMAGES), ghcr-build-$(v))
+
+ghcr-build-%:
+	$(CONTAINER_TOOL) build -f Dockerfile.$* -t $(GHCR_PREFIX)/$(GHCR_IMAGE_MAP_$*):latest ..
+
+.PHONY: ghcr-pushall
+ghcr-pushall: $(foreach v, $(GHCR_IMAGES), ghcr-push-$(v))
+
+ghcr-push-%:
+	$(CONTAINER_TOOL) push $(GHCR_PREFIX)/$(GHCR_IMAGE_MAP_$*):latest
 
 deploy-all: 
 	./scripts/customize-env.sh ${IMG_PREFIX} ../config/manager
