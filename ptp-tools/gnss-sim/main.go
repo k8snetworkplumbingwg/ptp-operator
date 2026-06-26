@@ -139,11 +139,31 @@ func openAllWriters(outputs, gnssDev, ptyLinks string) ([]io.Writer, []closer) {
 	return writers, closers
 }
 
+// gnssDevWriter opens the kernel GNSS char device for each write and
+// closes it immediately afterward. This prevents holding a persistent
+// file descriptor on /dev/gnssN, which would conflict with gpsd's
+// exclusive-open detection in the linuxptp-daemon pod (which uses
+// hostPID and can see our process's open fds).
+type gnssDevWriter struct {
+	path string
+}
+
+func (g *gnssDevWriter) Write(p []byte) (int, error) {
+	f, err := os.OpenFile(g.path, os.O_WRONLY, 0)
+	if err != nil {
+		return 0, err
+	}
+	n, writeErr := f.Write(p)
+	f.Close()
+	return n, writeErr
+}
+
+func (g *gnssDevWriter) Close() error { return nil }
+
 // openGNSSDev waits for a kernel GNSS character device to appear and
-// opens it for writing. The kernel GNSS core routes writes through the
-// driver's write_raw callback; for netdevsim's virtual GNSS this calls
-// gnss_insert_raw(), making the data readable by other processes.
-func openGNSSDev(path string) (*os.File, error) {
+// returns a writer that uses per-write open/close to avoid holding the
+// device fd open permanently (which conflicts with gpsd's lock detection).
+func openGNSSDev(path string) (*gnssDevWriter, error) {
 	for i := 0; i < 30; i++ {
 		if _, err := os.Stat(path); err == nil {
 			break
@@ -154,11 +174,10 @@ func openGNSSDev(path string) (*os.File, error) {
 		time.Sleep(1 * time.Second)
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("device %s not found: %w", path, err)
 	}
-	return f, nil
+	return &gnssDevWriter{path: path}, nil
 }
 
 func splitPaths(s string) []string {
