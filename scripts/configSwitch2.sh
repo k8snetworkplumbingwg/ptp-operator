@@ -87,30 +87,7 @@ podman exec switch1 ip link set dev ens4f0 up
 podman exec switch1 ip link set dev ens5f0 up
 podman exec switch1 ip link set dev ens6f0 up
 
-# Disable ptp4l frame forwarding
-podman exec switch1 ovs-ofctl add-flow br0 "dl_type=0x88f7, actions=drop"
-
-# Configure and start ptp4l boundary clock on the bridge ports
-podman cp ptpswitchconfig.cfg switch1:/etc/ptp4l.conf
-
-$(podman exec switch1 systemctl enable --now ptp4l) || {
-    status=$?
-    echo "❌ command failed with code $status"
-    podman exec switch1 systemctl start ptp4l || true
-    podman exec switch1 systemctl status ptp4l
-    podman exec switch1 journalctl -u ptp4l
-    exit $status
-}
-
-if [[ "${DKMS_MODE:-}" == "true" ]]; then
-    podman exec switch1 bash -c '
-    mkdir -p /etc/systemd/system/ptp4l.service.d
-    cat > /etc/systemd/system/ptp4l.service.d/nsim-ptp.conf <<UNIT
-[Service]
-DeviceAllow=char-* rw
-DevicePolicy=auto
-UNIT
-    systemctl daemon-reload
-    '
-    podman exec switch1 systemctl restart ptp4l || true
-fi
+# Forward PTP frames normally across VLAN ports (transparent L2 switch).
+# Workers' ptp4l instances exchange Announce/Sync directly through the bridge,
+# so the real GM identity propagates without a local boundary clock.
+podman exec switch1 ovs-ofctl add-flow br0 "dl_type=0x88f7, actions=NORMAL"

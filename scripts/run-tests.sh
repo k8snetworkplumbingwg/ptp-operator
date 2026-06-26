@@ -217,29 +217,31 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
-# Ensure gnss-sim is running and export GNSS env vars so the test framework
+# Ensure gnss-sim pod is running and export GNSS env vars so the test framework
 # discovers the simulator even when run-tests.sh is invoked directly.
 init_gnss_sim_env() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
-  # Always restart gnss-sim so it targets the current /dev/gnss* device.
-  # A stale process may still pass the health check while writing to a
-  # device that no longer exists (e.g. after a module reload).
+  # Derive GNSS_SIM_IMAGE from the linuxptp-daemon image if not already set,
+  # by replacing the tag. This handles direct invocation of run-tests.sh.
+  if [ -z "${GNSS_SIM_IMAGE:-}" ] && [ -n "${LINUXPTP_DAEMON_IMAGE:-}" ]; then
+    export GNSS_SIM_IMAGE="${LINUXPTP_DAEMON_IMAGE%:*}:gnss-sim"
+  fi
+
+  # Deploy gnss-sim pod (idempotent — recreates if already running).
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   bash "${SCRIPT_DIR}/configGNSS.sh"
+
+  # Read the gnss-sim pod's node IP for test framework API access
+  export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
 
   GNSS_KERNEL_DEV=""
   for g in /dev/gnss*; do
     [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
   done
   if [ -n "$GNSS_KERNEL_DEV" ]; then
-    # Kernel GNSS device (e.g. gnss0): pass bare name; gnssSerialPort() in
-    # testconfig.go prepends /dev/ to form /dev/gnss0 inside the pod.
     export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
   else
-    # PTY mode: the host's /var/run/ptp is mounted at /var/run inside the pod.
-    # Pass the full in-pod path so testconfig.go uses it verbatim without
-    # prepending /dev/ (gnssSerialPort() passes through any absolute path).
     export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
   fi
   export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
