@@ -7,7 +7,7 @@ RUN git clone -b main https://github.com/k8snetworkplumbingwg/linuxptp-daemon.gi
 RUN make clean && make -j 16
 
 FROM quay.io/centos/centos:stream9
-RUN yum install -y gpsd-minimal glibc gpsd-minimal-clients linuxptp ethtool hwdata synce4l  && yum clean all
+RUN yum install -y gpsd-minimal glibc gpsd-minimal-clients linuxptp ethtool hwdata synce4l iproute && yum clean all
 
 # Create symlinks for executables to match references
 RUN ln -s /usr/bin/gpspipe /usr/local/bin/gpspipe

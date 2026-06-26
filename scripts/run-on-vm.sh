@@ -431,13 +431,14 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
         trap cleanup_symlink EXIT
     fi
 
-    # Start GNSS simulator for T-GM simulation tests
+    # Start GNSS simulator as a pod for T-GM simulation tests
+    export GNSS_SIM_IMAGE="${IMG_PREFIX}:gnss-sim"
     ./configGNSS.sh
 
+    # Read the gnss-sim pod's node IP for test framework API access
+    export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
+
     # Export GNSS simulation env vars so the test framework can discover them.
-    # When a kernel GNSS device is present, ts2phc reads from /dev/gnss0
-    # instead of a PTY.
-    # Auto-detect the first kernel GNSS char device.
     GNSS_KERNEL_DEV=""
     for g in /dev/gnss*; do
         [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
@@ -445,9 +446,6 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     if [ -n "$GNSS_KERNEL_DEV" ]; then
         export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
     else
-        # PTY mode: the host's /var/run/ptp is mounted at /var/run inside the pod.
-        # Pass the full in-pod path so gnssSerialPort() uses it verbatim without
-        # prepending /dev/ (it passes through any absolute path).
         export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
     fi
     export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
