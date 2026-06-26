@@ -612,44 +612,61 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
-			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
-				// Only run if authentication is enabled
+			It("SPP mismatch on GM interface produces auth bad message logs (negative test)", func() {
 				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
 				if authEnabled != "true" {
-					Skip("Authentication negative test requires PTP_AUTH_ENABLED=true")
+					Skip("SPP mismatch test requires PTP_AUTH_ENABLED=true")
 				}
 
 				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
 					Skip("Skipping as slave interface is not available with a WPC-GM profile")
 				}
 
-				// Save original GM config for restoration
 				var originalGMConfig *ptpv1.PtpConfig
 
-				By("Creating attacker secret with different SPP (simulates key mismatch)", func() {
-					// Delete if already exists
-					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpSecurityMismatchSecretName,
-						metav1.DeleteOptions{},
-					)
-					time.Sleep(2 * time.Second)
+				// Safety net: only runs if the test failed before the explicit restore step.
+				DeferCleanup(func() {
+					if originalGMConfig == nil {
+						return
+					}
 
-					// Create secret with spp 0 but DIFFERENT KEYS than ptp-security-conf
-					// GM signs with these keys, BC has different keys for spp 0 → signature mismatch
-					mismatchSecret := testconfig.CreateSecurityMismatchSecret(pkg.PtpLinuxDaemonNamespace)
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
+					Expect(err).NotTo(HaveOccurred())
 
-					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
+
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
-						mismatchSecret,
-						metav1.CreateOptions{},
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
-					fmt.Fprintf(GinkgoWriter, "Created mismatch secret with only spp 0\n")
+					fmt.Fprintf(GinkgoWriter, "DeferCleanup: restored GM with original spp 1 config\n")
+
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+
+					if fullConfig.DiscoveredClockUnderTestPod != nil && len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+						slaveIf := fullConfig.DiscoveredFollowerInterfaces[0]
+						nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+						Eventually(func() error {
+							return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
+						}, 3*time.Minute, 10*time.Second).Should(BeNil(),
+							"DeferCleanup: clock-under-test did not reach LOCKED state")
+					}
+
+					if fullConfig.DiscoveredClockUnderTestPod != nil {
+						_, err = ptphelper.ReplaceTestPod(fullConfig.DiscoveredClockUnderTestPod, 1*time.Minute)
+						Expect(err).NotTo(HaveOccurred())
+						fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					}
 				})
 
-				By("Changing test-grandmaster to use spp 0 secret", func() {
-					// Get current PtpConfig
+				By("Saving original GM config and changing interface spp from 1 to 0", func() {
 					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
 						context.Background(),
 						pkg.PtpGrandMasterPolicyName,
@@ -657,19 +674,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					// Save the original config for restoration
 					originalGMConfig = ptpConfig.DeepCopy()
 
-					// Change sa_file to point to mismatch secret
-					// Also change interface spp from 1 to 0
 					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
-					modifiedConf := strings.Replace(ptp4lConf,
-						"sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf",
-						"sa_file /etc/ptp-secret-mount/ptp-security-mismatch/ptp-security.conf", 1)
-					modifiedConf = strings.Replace(modifiedConf, "spp 1", "spp 0", 1) // Change first spp 1 to spp 0
+					modifiedConf := strings.Replace(ptp4lConf, "\nspp 1\n", "\nspp 0\n", -1)
+					Expect(modifiedConf).NotTo(Equal(ptp4lConf), "Expected to find spp 1 in GM interface config to replace with spp 0")
 					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
 
-					// Update the PtpConfig
 					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
 						ptpConfig,
@@ -677,92 +688,135 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					fmt.Fprintf(GinkgoWriter, "GM now uses spp 0 (slaves use spp 1 - mismatch!)\n")
-					// Wait for controller to reconcile and pods to restart
-					time.Sleep(60 * time.Second)
+					fmt.Fprintf(GinkgoWriter, "GM interface spp changed from 1 to 0; slave still expects spp 1\n")
+
+					gmNodes, err := client.Client.Nodes().List(context.Background(),
+						metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=", pkg.PtpGrandmasterNodeLabel)})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(len(gmNodes.Items)).To(BeNumerically(">", 0), "No nodes with grandmaster label found")
+					gmNodeName := gmNodes.Items[0].Name
+
+					err = ptphelper.WaitForConfigMapProfile(gmNodeName, "spp 0", 1*time.Minute)
+					Expect(err).NotTo(HaveOccurred(), "operator did not reconcile spp 0 into configmap in time")
+
+					// The configmap change triggers a daemon pod restart.
+					// Wait for the new pod and re-discover fullConfig so
+					// DiscoveredClockUnderTestPod points to the current pod.
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 				})
 
-				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
-					// For negative test: expect sync to FAIL
-					// Check that slave does NOT reach LOCKED state for 2 minutes
-
-					// Wait 2 minutes and continuously verify slave is NOT in LOCKED state
+				By("Checking slave logs for 'auth: bad message' entries", func() {
 					slavePod := fullConfig.DiscoveredClockUnderTestPod
 					Expect(slavePod).NotTo(BeNil())
 
-					// Use a simple metric check in a loop
-					failedToSync := false
-					for i := 0; i < 12; i++ { // 12 iterations × 10 seconds = 2 minutes
-						// Try to check if it's in LOCKED state (this will return error if not LOCKED)
-						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
-							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
-							nodeNameStr := slavePod.Spec.NodeName
+					nodeName := slavePod.Spec.NodeName
+					fmt.Fprintf(GinkgoWriter, "Reading logs from slave pod %s on node %s\n", slavePod.Name, nodeName)
 
-							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
-							if err != nil {
-								// Error means NOT in LOCKED state - good for negative test
-								failedToSync = true
-							} else {
-								// No error means it IS in LOCKED state - bad for negative test!
-								Fail("Slave unexpectedly reached LOCKED state despite SPP mismatch")
-								return
-							}
-						}
-						time.Sleep(10 * time.Second)
-					}
-
-					Expect(failedToSync).To(BeTrue(), "Slave should fail to sync for 2 minutes due to authentication mismatch")
-					fmt.Fprintf(GinkgoWriter, "✓ PASS: Authentication mismatch prevented sync (slave did not lock for 2 minutes)\n")
+					authBadRegex := "auth: bad message"
+					logMatches, err := pods.GetPodLogsRegex(
+						slavePod.Namespace,
+						slavePod.Name,
+						pkg.PtpContainerName,
+						authBadRegex,
+						true,
+						2*time.Minute,
+					)
+					Expect(err).NotTo(HaveOccurred(),
+						"Failed to read slave pod logs for auth bad message check")
+					Expect(len(logMatches)).To(BeNumerically(">", 0),
+						"No 'auth: bad message' entries found; expected SPP mismatch to cause authentication rejection")
+					fmt.Fprintf(GinkgoWriter, "Found %d 'auth: bad message' log entries confirming SPP mismatch rejection\n", len(logMatches))
 				})
 
-				By("Restoring authentication to test-grandmaster (cleanup)", func() {
-					// Restore the original config with auth settings intact
+				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
+					slavePod := fullConfig.DiscoveredClockUnderTestPod
+					Expect(slavePod).NotTo(BeNil())
+					Expect(len(fullConfig.DiscoveredFollowerInterfaces)).To(BeNumerically(">", 0))
+
+					slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
+					nodeNameStr := slavePod.Spec.NodeName
+
+					// The slave may still be LOCKED from before the SPP change.
+					// Wait up to 2 minutes for it to lose lock due to the mismatch.
+					Eventually(func() error {
+						return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+					}, 2*time.Minute, 10*time.Second).ShouldNot(BeNil(),
+						"Slave should have lost LOCKED state due to SPP mismatch")
+					fmt.Fprintf(GinkgoWriter, "Slave lost LOCKED state after SPP mismatch\n")
+
+					// Now verify the slave stays out of LOCKED for 2 minutes
+					for i := 0; i < 12; i++ { // 12 iterations × 10 seconds = 2 minutes
+						err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
+						Expect(err).To(HaveOccurred(),
+							"Slave unexpectedly reached LOCKED state despite SPP mismatch")
+						time.Sleep(10 * time.Second)
+					}
+					fmt.Fprintf(GinkgoWriter, "PASS: Authentication mismatch prevented sync (slave did not re-lock for 2 minutes)\n")
+				})
+
+				By("Restoring GM config to original spp 1", func() {
 					Expect(originalGMConfig).NotTo(BeNil(), "Original GM config should have been saved")
 
-					// Clear resource version for update
-					originalGMConfig.SetResourceVersion("")
-
-					// Delete the current config with spp 0
-					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.DeleteOptions{},
-					)
+					ptpConfigToRestore, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+						context.Background(), pkg.PtpGrandMasterPolicyName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred())
 
-					// Wait for deletion
-					time.Sleep(10 * time.Second)
+					ptpConfigToRestore.Spec = originalGMConfig.Spec
 
-					// Recreate with the original config (spp 1)
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
-						originalGMConfig,
-						metav1.CreateOptions{},
+						ptpConfigToRestore,
+						metav1.UpdateOptions{},
 					)
 					Expect(err).NotTo(HaveOccurred())
+					// Mark as restored so DeferCleanup skips
+					originalGMConfig = nil
 
-					// Delete mismatch secret
-					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpSecurityMismatchSecretName,
-						metav1.DeleteOptions{},
-					)
+					fmt.Fprintf(GinkgoWriter, "Restored GM with original spp 1 config\n")
+				})
 
-					fmt.Fprintf(GinkgoWriter, "Restored test-grandmaster with original authentication settings\n")
+				By("Waiting for pods to restart and reach stable sync", func() {
+					gmNodes, err := client.Client.Nodes().List(context.Background(),
+						metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=", pkg.PtpGrandmasterNodeLabel)})
+					Expect(err).NotTo(HaveOccurred())
+					if len(gmNodes.Items) > 0 {
+						err = ptphelper.WaitForConfigMapProfile(gmNodes.Items[0].Name, "spp 1", 1*time.Minute)
+						Expect(err).NotTo(HaveOccurred(), "operator did not reconcile spp 1 into configmap in time")
+					}
 
-					// Wait for pods to restart and stabilize
-					time.Sleep(60 * time.Second)
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
 					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
 					Expect(err).NotTo(HaveOccurred())
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
 
-					// Additional wait for clock sync to complete in multi-hop topologies (GM → BC → Slave)
-					time.Sleep(30 * time.Second)
+					// Wait for the daemon to fully apply the restored config
+					// before replacing the pod, so no further process restarts
+					// occur after the replacement.
+					if fullConfig.DiscoveredClockUnderTestPod != nil && len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
+						slaveIf := fullConfig.DiscoveredFollowerInterfaces[0]
+						nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+						Eventually(func() error {
+							return metrics.CheckClockState(metrics.MetricClockStateLocked, slaveIf, &nodeName)
+						}, 3*time.Minute, 10*time.Second).Should(BeNil(),
+							"Clock-under-test did not reach LOCKED state after restoring spp 1")
+					}
+
+					// Replace the pod now that the config is fully applied.
+					// This clears accumulated phc2sys "selecting" log entries
+					// from the SPP mismatch disruption/recovery cycle.
+					if fullConfig.DiscoveredClockUnderTestPod != nil {
+						_, err = ptphelper.ReplaceTestPod(fullConfig.DiscoveredClockUnderTestPod, 1*time.Minute)
+						Expect(err).NotTo(HaveOccurred())
+						fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					}
+					fmt.Fprintf(GinkgoWriter, "Environment restored and stable for next test\n")
 				})
 			})
-
 			// Test That clock can sync in dual follower scenario when one port is down
 			It("Dual follower can sync when one follower port goes down", func() {
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {

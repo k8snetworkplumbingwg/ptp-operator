@@ -408,7 +408,7 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     step "Listing openshift-ptp pods"
     run_ind kubectl get pods -n openshift-ptp -o wide
 
-    ./run-tests.sh --kind serial --mode "$TEST_MODES" \
+    ./run-tests.sh --kind serial --mode "$TEST_MODES" --auth true \
       --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
       --must-gather-image "$IMG_PREFIX:ptpmg" \
       --debug-image "$IMG_PREFIX:debug"

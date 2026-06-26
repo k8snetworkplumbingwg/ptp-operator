@@ -12,6 +12,7 @@
 #                                   When omitted, pmc pod tests are skipped.
 #   --must-gather-image <url>       Full image URL for the ptp must-gather image.
 #                                   When provided, must-gather runs for oc mode and on failure.
+#   --auth <true|false>              Enable PTP authentication TLV tests (default: false)
 #
 set -euo pipefail
 
@@ -19,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GINKGO_HEADLINE_REWRITE="${SCRIPT_DIR}/ginkgo-headline-rewrite.sh"
 
 usage() {
-  echo "Usage: $0 --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>] [--must-gather-image <url>]"
+  echo "Usage: $0 --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>] [--must-gather-image <url>] [--auth <true|false>]"
   exit 1
 }
 
@@ -28,6 +29,7 @@ TEST_MODES_RAW=""
 PTP_LOG_LEVEL="info"
 LINUXPTP_DAEMON_IMAGE=""
 MUST_GATHER_IMAGE=""
+PTP_AUTH_ENABLED="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +45,8 @@ while [[ $# -gt 0 ]]; do
       MUST_GATHER_IMAGE="$2"; shift 2 ;;
     --debug-image)
       DEBUG_IMAGE="$2"; shift 2 ;;
+    --auth)
+      PTP_AUTH_ENABLED="$2"; shift 2 ;;
     *)
       echo "Unknown flag: $1"
       usage ;;
@@ -77,6 +81,7 @@ EOF
 export USE_CONTAINER_CMDS=
 export PTP_TEST_CONFIG_FILE="$(pwd)/config.yaml"
 export PTP_LOG_LEVEL
+export PTP_AUTH_ENABLED
 export GOFLAGS=-mod=vendor
 export KEEP_PTPCONFIG="${KEEP_PTPCONFIG:-true}"
 
@@ -160,10 +165,10 @@ enable_switch_auth() {
 
     # 3. Restart ptp4l with authentication enabled
     podman exec switch1 systemctl restart ptp4l || {
-    echo "WARNING: systemctl restart failed, trying pkill..."
-    podman exec switch1 pkill ptp4l 2>/dev/null || true
-    sleep 2
-}
+        echo "WARNING: systemctl restart failed, trying pkill..."
+        podman exec switch1 pkill ptp4l 2>/dev/null || true
+        sleep 2
+    }
 
     echo "✓ Switch1 configured with authentication"
 }
@@ -217,6 +222,12 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
+if [[ "${PTP_AUTH_ENABLED}" == "true" ]]; then
+  echo "PTP authentication TLV tests enabled (--auth flag set)"
+  kubectl apply -f test-config/ptp-security.yaml
+  enable_switch_auth
+fi
+
 for mode in "${TEST_MODES[@]}"; do
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
     run_ginkgo_suite "${mode}" "serial"
@@ -234,11 +245,3 @@ for mode in "${TEST_MODES[@]}"; do
     break
   fi
 done
-
-# Configure switch1 for authentication testing
-# kubectl apply -f test-config/ptp-security.yaml
-# enable_switch_auth
-
-# Run tests with authentication enabled
-# tests with auth will be enabled once the ci-github tests can last more than 1 hour
-# PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
