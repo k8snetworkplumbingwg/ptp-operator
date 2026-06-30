@@ -67,7 +67,8 @@ export MIN_OFFSET_IN_NS="${MIN_OFFSET_IN_NS:--10000}"
 export COLLECT_POD_LOGS="${COLLECT_POD_LOGS:-true}"
 export LOG_ARTIFACTS_DIR="${LOG_ARTIFACTS_DIR:-${JUNIT_OUTPUT_DIR}/pod-logs}"
 
-cat <<EOF >config.yaml
+CONFIG_YAML="$(mktemp "${PTP_RUN_DIR:-/tmp}/ptp-config.XXXXXX.yaml")"
+cat <<EOF >"${CONFIG_YAML}"
 global:
   maxoffset: $MAX_OFFSET_IN_NS
   minoffset: $MIN_OFFSET_IN_NS
@@ -75,7 +76,7 @@ global:
   DisableAllSlaveRTUpdate: true
 EOF
 export USE_CONTAINER_CMDS=
-export PTP_TEST_CONFIG_FILE="$(pwd)/config.yaml"
+export PTP_TEST_CONFIG_FILE="${CONFIG_YAML}"
 export PTP_LOG_LEVEL
 export GOFLAGS=-mod=vendor
 export KEEP_PTPCONFIG="${KEEP_PTPCONFIG:-true}"
@@ -132,6 +133,7 @@ run_must_gather() {
 
 on_exit() {
   local exit_code=$?
+  rm -f "${CONFIG_YAML:-}"
   if [[ ${exit_code} -ne 0 ]]; then
     echo "Script failed with exit code ${exit_code}, collecting must-gather..."
     run_must_gather
