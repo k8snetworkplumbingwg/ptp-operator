@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-# configGNSS.sh — Deploys the GNSS simulator as a Kubernetes Pod.
+# configGNSS.sh — Deploys the GNSS simulator as a Kubernetes Deployment.
 #
-# gnss-sim runs as a Pod in the openshift-ptp namespace with hostNetwork,
-# privileged access, and host device mounts. Kubernetes manages its lifecycle
-# with restartPolicy: Always, so it survives test script exits.
+# gnss-sim runs as a Deployment in the openshift-ptp namespace with hostNetwork,
+# privileged access, and host device mounts. As a Deployment, Kubernetes will
+# automatically recreate the pod if it is deleted or crashes.
 #
 # The pod auto-detects the kernel GNSS device (/dev/gnss0) and DPLL sysfs
 # path at startup. Falls back to PTY-only mode when no kernel GNSS device
@@ -24,32 +24,37 @@ if [ -z "${GNSS_SIM_IMAGE:-}" ]; then
     exit 1
 fi
 
-echo "=== Setting up GNSS simulator pod ==="
+echo "=== Setting up GNSS simulator deployment ==="
 
 # Remove any leftover host gnss-sim processes from older runs
 pkill -f 'gnss-sim.*--api-port' || true
 
-# Delete existing pod if present (idempotent re-deploy)
+# Delete existing deployment/pod if present (idempotent re-deploy)
+kubectl delete deployment gnss-sim -n openshift-ptp --ignore-not-found --wait=false 2>/dev/null || true
 kubectl delete pod gnss-sim -n openshift-ptp --ignore-not-found --wait=false 2>/dev/null || true
-kubectl wait --for=delete pod/gnss-sim -n openshift-ptp --timeout=30s 2>/dev/null || true
+kubectl wait --for=delete pod -l app=gnss-sim -n openshift-ptp --timeout=30s 2>/dev/null || true
 
 # Substitute the image placeholder in the manifest and apply
-sed "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g" "${SCRIPT_DIR}/gnss-sim-pod.yaml" \
+sed "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g" "${SCRIPT_DIR}/gnss-sim-deployment.yaml" \
     | kubectl apply -f -
 
-echo "Waiting for gnss-sim pod to become ready..."
-if ! kubectl wait --for=condition=ready pod/gnss-sim -n openshift-ptp --timeout=60s; then
-    echo "ERROR: gnss-sim pod did not become ready after 60 seconds"
-    kubectl describe pod gnss-sim -n openshift-ptp 2>/dev/null || true
-    kubectl logs gnss-sim -n openshift-ptp --tail=20 2>/dev/null || true
+echo "Waiting for gnss-sim deployment to become ready..."
+if ! kubectl wait --for=condition=available deployment/gnss-sim -n openshift-ptp --timeout=60s; then
+    echo "ERROR: gnss-sim deployment did not become available after 60 seconds"
+    kubectl describe deployment gnss-sim -n openshift-ptp 2>/dev/null || true
+    GNSS_POD=$(kubectl get pods -n openshift-ptp -l app=gnss-sim -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "$GNSS_POD" ]; then
+        kubectl describe pod "$GNSS_POD" -n openshift-ptp 2>/dev/null || true
+        kubectl logs "$GNSS_POD" -n openshift-ptp --tail=20 2>/dev/null || true
+    fi
     exit 1
 fi
-echo "gnss-sim pod is running and ready"
+echo "gnss-sim deployment is running and ready"
 
 # Get the Kind node IP where gnss-sim is running (for test framework API access).
 # With hostNetwork: true, the pod listens on the node's IP.
-GNSS_NODE_IP=$(kubectl get pod gnss-sim -n openshift-ptp \
-    -o jsonpath='{.status.hostIP}')
+GNSS_POD=$(kubectl get pods -n openshift-ptp -l app=gnss-sim -o jsonpath='{.items[0].metadata.name}')
+GNSS_NODE_IP=$(kubectl get pod "$GNSS_POD" -n openshift-ptp -o jsonpath='{.status.hostIP}')
 echo "gnss-sim node IP: $GNSS_NODE_IP"
 
 # Verify health endpoint is reachable from the host via the node IP
@@ -69,7 +74,6 @@ if [ $retries -ge 15 ]; then
 fi
 
 # Write the API host to a well-known file so callers can source it.
-# (exports from a subprocess don't propagate to the parent shell)
 echo "$GNSS_NODE_IP" > /tmp/gnss-sim-api-host
 
 # Verify NMEA output
@@ -85,7 +89,8 @@ else
     NMEA_SOURCE="/var/run/ptp/ttyGNSS_TS2PHC"
 fi
 
-echo "=== GNSS simulator pod setup complete ==="
-echo "  Pod:           gnss-sim (openshift-ptp)"
+echo "=== GNSS simulator deployment setup complete ==="
+echo "  Deployment:    gnss-sim (openshift-ptp)"
+echo "  Pod:           $GNSS_POD"
 echo "  API:           http://${GNSS_NODE_IP}:${GNSS_SIM_API_PORT}"
 echo "  NMEA source:   $NMEA_SOURCE"
