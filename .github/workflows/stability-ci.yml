@@ -1,0 +1,415 @@
+# Test stability CI for ptp-operator.
+# Runs each selected mode N times and produces a stability report
+# identifying stable, flaky, intermittent, and broken tests.
+#
+# Triggers:
+#   - Add the "run-stability" label to a PR  (uses PR branch)
+#   - Manual workflow_dispatch                (works once on default branch)
+
+name: Test Stability
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      stability_mode:
+        description: "Test mode"
+        required: true
+        type: choice
+        options:
+          - oc
+          - bc
+          - dualnicbc
+          - dualnicbcha
+          - dualfollower
+          - all
+        default: all
+      stability_runs:
+        description: "Number of runs per mode (default: 5)"
+        required: false
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DKMS_PKG: netdevsim
+  DKMS_VER: "6.9.5"
+  DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
+  DKMS_BRANCH: main
+  STABILITY_MODE: ${{ github.event.inputs.stability_mode || 'all' }}
+  STABILITY_RUNS: ${{ github.event.inputs.stability_runs || '5' }}
+
+jobs:
+  # ------------------------------------------------------------------
+  # Gate: only proceed if triggered by the "run-stability" label or dispatch
+  # ------------------------------------------------------------------
+  gate:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'run-stability')
+    steps:
+      - run: echo "Stability tests triggered (mode=${{ env.STABILITY_MODE }}, runs=${{ env.STABILITY_RUNS }})"
+
+  # ------------------------------------------------------------------
+  # Resolve mode input into a JSON matrix array
+  # ------------------------------------------------------------------
+  resolve-matrix:
+    needs: gate
+    runs-on: ubuntu-24.04
+    outputs:
+      modes: ${{ steps.set.outputs.modes }}
+    steps:
+      - name: Compute mode list
+        id: set
+        run: |
+          RAW="${{ env.STABILITY_MODE }}"
+          if [[ "$RAW" == "all" ]]; then
+            echo 'modes=["oc","bc","dualnicbc","dualnicbcha","dualfollower"]' >> "$GITHUB_OUTPUT"
+          else
+            # Support comma-separated modes: "oc,bc" -> ["oc","bc"]
+            JSON=$(echo "$RAW" | tr ',' '\n' | sed 's/^/"/;s/$/"/' | paste -sd ',' | sed 's/^/[/;s/$/]/')
+            echo "modes=${JSON}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------
+  # Build images (mirrors netdevsim-ci ptp-images job)
+  # ------------------------------------------------------------------
+  ptp-images:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Runner info
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+          echo "Kernel: $(uname -r)"
+
+      - uses: actions/checkout@v5
+
+      - name: Install podman 5.x
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
+            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
+            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+
+      - name: Install DKMS dependencies
+        run: |
+          sudo apt-get install -y dkms gcc make ethtool linuxptp \
+            linux-headers-$(uname -r) \
+            linux-modules-extra-$(uname -r)
+
+      - name: Clone and install DKMS modules
+        run: |
+          git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
+          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
+          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
+            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
+            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
+            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
+            /usr/src/${DKMS_PKG}-${DKMS_VER}/
+          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms build ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
+          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
+          sudo udevadm control --reload-rules
+
+      - name: Copy checkout to /root/ptp-operator
+        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+
+      - name: Build images and export tarball
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
+          set -euo pipefail
+          set -x
+          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          cd /root/ptp-operator/scripts
+          ./run-on-vm.sh --dkms --images "${VM_IP}"
+
+          rm -rf /tmp/go-build* /root/.cache/go-build
+          BUILD
+
+      - name: Upload image tarball
+        uses: actions/upload-artifact@v5
+        with:
+          name: ptp-images-stability
+          path: /tmp/ptp-images.tar
+          retention-days: 1
+
+  # ------------------------------------------------------------------
+  # One parallel runner per mode — deploy cluster, run N times
+  # ------------------------------------------------------------------
+  stability-test:
+    needs: [ptp-images, resolve-matrix]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ${{ fromJson(needs.resolve-matrix.outputs.modes) }}
+    steps:
+      - name: "Runner info (${{ matrix.mode }})"
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+          echo "Kernel: $(uname -r)"
+          echo "Mode: ${{ matrix.mode }}"
+          echo "Runs: ${{ env.STABILITY_RUNS }}"
+
+      - uses: actions/checkout@v5
+
+      - name: Install podman 5.x
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
+            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
+            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+
+      - name: Install OpenShift CLI (oc)
+        run: |
+          if ! command -v oc &>/dev/null; then
+            curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+            sudo tar xzf openshift-client-linux.tar.gz -C /usr/local/bin oc kubectl
+            rm -f openshift-client-linux.tar.gz
+          fi
+          oc version --client
+
+      - name: Install DKMS dependencies
+        run: |
+          sudo apt-get install -y dkms gcc make ethtool linuxptp \
+            linux-headers-$(uname -r) \
+            linux-modules-extra-$(uname -r)
+
+      - name: Clone and install DKMS modules
+        run: |
+          git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
+          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
+          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
+            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
+            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
+            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
+            /usr/src/${DKMS_PKG}-${DKMS_VER}/
+          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms build ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
+          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
+          sudo udevadm control --reload-rules
+
+      - name: Copy checkout to /root/ptp-operator
+        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+
+      - name: Download image tarball
+        uses: actions/download-artifact@v5
+        with:
+          name: ptp-images-stability
+          path: /tmp
+
+      - name: Load images and deploy cluster
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'SETUP'
+          set -euo pipefail
+          set -x
+          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          cd /root/ptp-operator/scripts
+
+          ./run-on-vm.sh --dkms --load /tmp/ptp-images.tar "${VM_IP}"
+
+          export IMG_PREFIX="${VM_IP}/test"
+          export DKMS_MODE=true
+
+          kind delete cluster --name kind-netdevsim || true
+          podman rm -f switch1 || true
+
+          ./k8s-start.sh "$VM_IP"
+
+          cd ../ptp-tools
+          make deploy-all || true
+          sleep 5
+          kubectl get crd ptpconfigs.ptp.openshift.io -o name
+          kubectl get crd ptpoperatorconfigs.ptp.openshift.io -o name
+          kubectl get deployment ptp-operator -n openshift-ptp -o name
+          cd -
+
+          kubectl apply -f certs.yaml
+          ./retry.sh 60 5 ./fix-certs.sh
+          sleep 5
+
+          kubectl delete pods -l name=ptp-operator -n openshift-ptp
+          kubectl rollout status deployment ptp-operator -n openshift-ptp
+
+          ./retry.sh 60 5 kubectl patch ptpoperatorconfig default -nopenshift-ptp \
+            --type=merge --patch '{"spec": {"ptpEventConfig": {"enableEventPublisher": true, "transportHost": "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043", "storageType": "local-sc"}, "daemonNodeSelector": {"node-role.kubernetes.io/worker": ""}}}'
+
+          ./retry.sh 30 3 kubectl rollout status ds linuxptp-daemon -n openshift-ptp
+
+          ./fix-ptp-prometheus-monitoring.sh
+
+          kubectl get pods -n openshift-ptp -o wide
+
+          bash -c '
+          while true; do
+            for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
+                         --field-selector=status.phase=Running -o name 2>/dev/null); do
+              kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
+                bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do ln -sf nsim_ptp\$i /dev/ptp\$i 2>/dev/null; done" \
+                2>/dev/null || true
+            done
+            sleep 5
+          done
+          ' &
+          echo $! > /tmp/symlink-pid
+
+          rm -rf /tmp/ptp-images.tar /tmp/go-build* /root/.cache/go-build
+          df -h
+
+          echo "Cluster deployed and ready for stability testing."
+          SETUP
+
+      - name: "Run stability tests: ${{ matrix.mode }} x${{ env.STABILITY_RUNS }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'TEST'
+          set -uo pipefail
+          set -x
+          export PATH=/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+          export DKMS_MODE=true
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          export IMG_PREFIX="${VM_IP}/test"
+
+          cd /root/ptp-operator/scripts
+
+          ./stability-test.sh \
+            --mode "${{ matrix.mode }}" \
+            --runs "${{ env.STABILITY_RUNS }}" \
+            --output-dir /tmp/stability-results \
+            --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
+            --must-gather-image "$IMG_PREFIX:ptpmg" \
+            --debug-image "$IMG_PREFIX:debug" \
+            || true
+          TEST
+
+      - name: Upload stability results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: stability-results-${{ matrix.mode }}
+          path: /tmp/stability-results/${{ matrix.mode }}/
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [[ -f /tmp/symlink-pid ]]; then
+            sudo kill "$(cat /tmp/symlink-pid)" 2>/dev/null || true
+          fi
+          for id in $(ls /sys/bus/netdevsim/devices/ 2>/dev/null | sed 's/netdevsim//'); do
+            echo "$id" | sudo tee /sys/bus/netdevsim/del_device 2>/dev/null || true
+          done
+          sudo rmmod netdevsim nsim_dpll nsim_ptp_mock nsim_ptp 2>/dev/null || true
+          sudo dkms remove ${DKMS_PKG}/${DKMS_VER} --all 2>/dev/null || true
+
+  # ------------------------------------------------------------------
+  # Aggregate per-mode results into a single stability report
+  # ------------------------------------------------------------------
+  stability-report:
+    needs: [resolve-matrix, stability-test]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all stability results
+        uses: actions/download-artifact@v5
+        with:
+          pattern: stability-results-*
+          path: /tmp/stability-results
+          merge-multiple: false
+
+      - name: Rearrange artifacts into expected layout
+        run: |
+          mkdir -p /tmp/stability-merged
+          for dir in /tmp/stability-results/stability-results-*/; do
+            mode=$(basename "$dir" | sed 's/^stability-results-//')
+            cp -a "$dir" "/tmp/stability-merged/${mode}"
+          done
+          echo "Merged layout:"
+          find /tmp/stability-merged -maxdepth 2 -type d | head -30
+
+      - name: Generate stability report
+        run: |
+          MODES='${{ join(fromJson(needs.resolve-matrix.outputs.modes), ' ') }}'
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          REPORT="/tmp/stability-merged/stability-report-${TIMESTAMP}.md"
+
+          python3 scripts/aggregate-stability.py \
+            --results-dir /tmp/stability-merged \
+            --output "$REPORT" \
+            --modes "$MODES"
+
+          echo "REPORT_FILE=${REPORT}" >> "$GITHUB_ENV"
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [[ -n "${REPORT_FILE:-}" && -f "${REPORT_FILE}" ]]; then
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "No report generated. Check the stability-results artifacts for raw data." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload combined report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: stability-report-combined
+          path: /tmp/stability-merged/stability-report-*.md
+          if-no-files-found: ignore
+
+      - name: Remove label
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.label.name == 'run-stability'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --remove-label run-stability \
+            --repo ${{ github.repository }} || true

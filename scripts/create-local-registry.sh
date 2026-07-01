@@ -28,5 +28,5 @@ podman run -d \
   -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.crt \
   -e REGISTRY_HTTP_TLS_KEY=/certs/registry.key \
   -p 443:443 \
-  registry:2
+  ghcr.io/distribution/distribution:latest
 
