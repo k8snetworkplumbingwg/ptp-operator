@@ -2319,6 +2319,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 
 			It("Should restart phc2sys with no socket errors after SIGTERM", func() {
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+					Skip("In TGMBC, phc2sys on the BC depends on the full GNSS→GM→BC sync chain and may not reach status 1 in time")
+				}
 				verifyProcessRestartNoSocketErrors(fullConfig, "phc2sys")
 			})
 
