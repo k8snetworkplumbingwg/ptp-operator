@@ -334,15 +334,16 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     mkdir -p /tmp/ptp-images-load
     tar xf "$TARBALL" -C /tmp/ptp-images-load
 
+    read_ptp_tool_images
+
     step "Retagging images for local registry"
-    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug)
-    for t in "${TAGS[@]}"; do
+    for t in "${_ptp_tool_images[@]}"; do
         podman load -i "/tmp/ptp-images-load/$t.tar"
     done
 
-    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${TAGS[0]}$" | head -1 | sed "s/:${TAGS[0]}$//")
+    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${_ptp_tool_images[0]}$" | head -1 | sed "s/:${_ptp_tool_images[0]}$//")
     if [[ "$OLD_PREFIX" != "$IMG_PREFIX" ]]; then
-        for t in "${TAGS[@]}"; do
+        for t in "${_ptp_tool_images[@]}"; do
             podman tag "$OLD_PREFIX:$t" "$IMG_PREFIX:$t"
         done
     fi
@@ -355,7 +356,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     step "Creating local registry"
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
-    for t in "${TAGS[@]}"; do
+    for t in "${_ptp_tool_images[@]}"; do
         podman push --quiet "$IMG_PREFIX:$t" "docker://$IMG_PREFIX:$t"
     done
 
