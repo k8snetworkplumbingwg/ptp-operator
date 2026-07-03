@@ -698,7 +698,7 @@ func initAndSolveProblems() {
 	data.problems[AlgoDualFollowerString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
 		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2
-		{{int(solver.StepSameLan2), 2, 1, 2},  // step3
+		{{int(solver.StepSameLan2), 2, 1, 2}, // step3
 			{int(solver.StepSameNic), 2, 0, 2}}, // step3: both followers share the same NIC/PHC
 	}
 
