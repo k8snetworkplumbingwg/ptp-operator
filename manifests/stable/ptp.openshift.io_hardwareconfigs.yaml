@@ -269,6 +269,111 @@ spec:
                                     identify the subsystem and the DPLL pin receiving
                                     the source
                                   type: string
+                                gnssConfig:
+                                  description: |-
+                                    GNSSConfig specifies the configuration for the GNSS source
+                                    (required if the sourceType is set to 'gnss')
+                                  properties:
+                                    init:
+                                      description: GNSSInit defines all user-configurable
+                                        UBLX configuration commands for this GNSS
+                                        source
+                                      properties:
+                                        antennaVoltage:
+                                          default: true
+                                          description: AntennaVoltage controls whether
+                                            the antenna voltage is enabled or not
+                                            (CFG-HW-ANT_CFG_VOLTCTRL)
+                                          type: boolean
+                                        constellations:
+                                          default:
+                                          - GPS
+                                          description: Constellations is the list
+                                            of constellations to apply
+                                          items:
+                                            description: ConstellationID is a single
+                                              GPS constellation identifier string
+                                            enum:
+                                            - GPS
+                                            - Galileo
+                                            - GLONASS
+                                            - BeiDou
+                                            - SBAS
+                                            type: string
+                                          type: array
+                                          x-kubernetes-list-type: set
+                                        extraCommands:
+                                          description: ExtraCommands allows user addition
+                                            of arbitrary ubxtool commands
+                                          items:
+                                            description: UBLXCommand allows arbitrary
+                                              addition of ubxtool commands.
+                                            properties:
+                                              args:
+                                                description: 'Args are the actual
+                                                  commandline arguments to pass to
+                                                  ubxtool  Note: Protocol ''-P'' is
+                                                  autodetected'
+                                                items:
+                                                  type: string
+                                                type: array
+                                              reportOutput:
+                                                description: Record will record the
+                                                  resulting output in the object status
+                                                  when true
+                                                type: boolean
+                                            required:
+                                            - args
+                                            type: object
+                                          type: array
+                                        survey:
+                                          description: SurveyIn encodes the SURVEYIN
+                                            parameters to begin the initial GNSS survey
+                                            at initialization
+                                          properties:
+                                            accuracy:
+                                              description: Accuracy is the accuracy
+                                                threshold, in meters, that will end
+                                                the survey
+                                              minimum: 0
+                                              type: integer
+                                            observationTime:
+                                              description: |-
+                                                ObservationTime specifies the maximum time in seconds we run the GPS SURVEY operation
+                                                Setting to 0 disables GPS survey
+                                              minimum: 0
+                                              type: integer
+                                          required:
+                                          - accuracy
+                                          - observationTime
+                                          type: object
+                                      required:
+                                      - antennaVoltage
+                                      - survey
+                                      type: object
+                                    match:
+                                      description: Match defines a mechanism to find
+                                        a GNSS device on the system.  If omitted,
+                                        autodetects the best-available GNSS source
+                                      properties:
+                                        ethernetInterface:
+                                          description: EthernetInterface defines the
+                                            GNSS device as the one attached to the
+                                            physical ethernet device name listed
+                                          type: string
+                                        ttyDevice:
+                                          description: TTYDevice defines the GNSS
+                                            device by its /dev/xxxx character device
+                                            path
+                                          type: string
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: Exactly one of ttyDevice or ethernetInterface
+                                          must be provided.
+                                        rule: has(self.ttyDevice) != has(self.ethernetInterface)
+                                  required:
+                                  - init
+                                  type: object
                                 name:
                                   description: Name is the source name that must be
                                     unique system-wide
@@ -284,6 +389,11 @@ spec:
                                   description: |-
                                     SourceType identifies the source type. Valid values: "ptpTimeReceiver", "gnss", "dpllPhaseLocked"
                                     If sourceType is ptpTimeReceiver, ptpTimeReceivers must be specified.
+                                    If sourceType is gnss, gnssConfig must be specified.
+                                  enum:
+                                  - ptpTimeReceiver
+                                  - gnss
+                                  - dpllPhaseLocked
                                   type: string
                                 subsystem:
                                   description: |-
