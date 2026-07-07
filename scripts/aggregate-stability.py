@@ -174,7 +174,9 @@ def aggregate_mode(mode, mode_dir):
     # Compute aggregated metrics
     tests = []
     for full_name, stats in sorted(test_stats.items()):
-        total_non_skip = stats["passes"] + stats["failures"]
+        observed = stats["passes"] + stats["failures"] + stats["skips"]
+        stats["missing"] = max(0, num_runs - observed)
+        total_non_skip = stats["passes"] + stats["failures"] + stats["missing"]
         if total_non_skip == 0:
             pass_rate = None  # only skipped
         else:
@@ -202,6 +204,7 @@ def aggregate_mode(mode, mode_dir):
             "passes": stats["passes"],
             "failures": stats["failures"],
             "skips": stats["skips"],
+            "missing": stats["missing"],
             "pass_rate": pass_rate,
             "category": categorize(pass_rate) if pass_rate is not None else "Skipped",
             "avg_duration": avg_duration,
@@ -272,7 +275,7 @@ def generate_report(all_mode_results, output_path):
 
         overall_stability = (
             sum(t["passes"] for t in active_tests)
-            / sum(t["passes"] + t["failures"] for t in active_tests)
+            / sum(t["passes"] + t["failures"] + t["missing"] for t in active_tests)
             * 100
             if active_tests
             else 0
@@ -311,7 +314,7 @@ def generate_report(all_mode_results, output_path):
         )
 
         for t in sorted_tests:
-            total_runs = t["passes"] + t["failures"]
+            total_runs = t["passes"] + t["failures"] + t["missing"]
             rate_str = f"{t['passes']}/{total_runs}"
             cat_marker = ""
             if t["category"] == "Broken":
@@ -339,7 +342,7 @@ def generate_report(all_mode_results, output_path):
             lines.append("")
 
             for t in failing_tests:
-                total_runs = t["passes"] + t["failures"]
+                total_runs = t["passes"] + t["failures"] + t["missing"]
                 lines.append(
                     f"#### {t['full_name']} "
                     f"({t['passes']}/{total_runs} passed — {t['category']})"
@@ -380,15 +383,17 @@ def generate_report(all_mode_results, output_path):
             lines.append(f"### Broken tests ({len(broken_all)}) — investigate immediately")
             lines.append("")
             for mode, t in broken_all:
+                denom = t["passes"] + t["failures"] + t["missing"]
                 lines.append(f"- **[{mode}]** {t['full_name']} "
-                              f"(passed {t['passes']}/{t['passes']+t['failures']})")
+                              f"(passed {t['passes']}/{denom})")
             lines.append("")
         if flaky_all:
             lines.append(f"### Flaky/Intermittent tests ({len(flaky_all)}) — timing or environment issues")
             lines.append("")
             for mode, t in flaky_all:
+                denom = t["passes"] + t["failures"] + t["missing"]
                 lines.append(f"- **[{mode}]** {t['full_name']} "
-                              f"(passed {t['passes']}/{t['passes']+t['failures']})")
+                              f"(passed {t['passes']}/{denom})")
             lines.append("")
 
     report = "\n".join(lines) + "\n"
