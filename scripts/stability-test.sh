@@ -30,6 +30,10 @@ OUTPUT_DIR="/tmp/stability-results"
 PASSTHROUGH_ARGS=()
 
 while [[ $# -gt 0 ]]; do
+  if [[ "$1" =~ ^(--mode|--runs|--output-dir|--linuxptp-daemon-image|--must-gather-image|--debug-image)$ ]] && [[ $# -lt 2 ]]; then
+    echo "Error: Missing value for $1" >&2
+    exit 1
+  fi
   case "$1" in
     --mode)       MODE="$2"; shift 2 ;;
     --runs)       NUM_RUNS="$2"; shift 2 ;;
@@ -133,6 +137,11 @@ if command -v python3 &>/dev/null; then
     --results-dir "${OUTPUT_DIR}" \
     --output "${REPORT_FILE}" \
     --modes "${MODES[*]}"
+  agg_rc=$?
+  if [[ ${agg_rc} -ne 0 ]]; then
+    echo "ERROR: report aggregation failed (exit ${agg_rc})." >&2
+    exit ${agg_rc}
+  fi
 
   echo ""
   echo "Report written to: ${REPORT_FILE}"

@@ -87,13 +87,12 @@ def collect_run_results(mode_dir):
     for run_dir in run_dirs:
         run_name = os.path.basename(run_dir)
         xml_files = glob.glob(os.path.join(run_dir, "*.xml"))
+        all_results = []
         if not xml_files:
             print(f"  WARNING: No JUnit XML found in {run_dir}", file=sys.stderr)
-            continue
-
-        all_results = []
-        for xml_file in xml_files:
-            all_results.extend(parse_junit_xml(xml_file))
+        else:
+            for xml_file in xml_files:
+                all_results.extend(parse_junit_xml(xml_file))
 
         exit_code_file = os.path.join(run_dir, "exit_code")
         exit_code = None
@@ -250,6 +249,15 @@ def generate_report(all_mode_results, output_path):
         if mode_result is None:
             continue
 
+        if mode_result.get("_missing"):
+            lines.append(f"## Mode: `{mode_result['mode']}`")
+            lines.append("")
+            lines.append("> **No results found.** The test job for this mode did not produce artifacts.")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            continue
+
         mode = mode_result["mode"]
         num_runs = mode_result["num_runs"]
         tests = mode_result["tests"]
@@ -282,7 +290,8 @@ def generate_report(all_mode_results, output_path):
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
         lines.append(f"| Total tests | {total} |")
-        pct = lambda n: f"{n/total*100:.0f}%" if total else "0%"
+        def pct(n, total=total):
+            return f"{n/total*100:.0f}%" if total else "0%"
         lines.append(f"| Stable (100%) | {stable} ({pct(stable)}) |")
         lines.append(f"| Intermittent (80-99%) | {intermittent} ({pct(intermittent)}) |")
         lines.append(f"| Flaky (20-79%) | {flaky} ({pct(flaky)}) |")
@@ -420,6 +429,15 @@ def main():
         if not os.path.isdir(mode_dir):
             print(f"WARNING: No results directory for mode '{mode}' at {mode_dir}",
                   file=sys.stderr)
+            all_results.append({
+                "mode": mode,
+                "num_runs": 0,
+                "run_passes": 0,
+                "run_failures": 0,
+                "avg_run_duration": 0,
+                "tests": [],
+                "_missing": True,
+            })
             continue
         print(f"Aggregating results for mode: {mode}")
         result = aggregate_mode(mode, mode_dir)

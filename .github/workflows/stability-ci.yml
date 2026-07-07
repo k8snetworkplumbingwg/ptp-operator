@@ -358,7 +358,12 @@ jobs:
   # ------------------------------------------------------------------
   stability-report:
     needs: [resolve-matrix, stability-test]
-    if: always()
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.label.name == 'run-stability')
+      )
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -376,10 +381,16 @@ jobs:
       - name: Rearrange artifacts into expected layout
         run: |
           mkdir -p /tmp/stability-merged
+          FOUND=0
           for dir in /tmp/stability-results/stability-results-*/; do
+            [[ -d "$dir" ]] || continue
             mode=$(basename "$dir" | sed 's/^stability-results-//')
             cp -a "$dir" "/tmp/stability-merged/${mode}"
+            (( FOUND++ ))
           done
+          if [[ $FOUND -eq 0 ]]; then
+            echo "::warning::No stability results found to merge"
+          fi
           echo "Merged layout:"
           find /tmp/stability-merged -maxdepth 2 -type d | head -30
 
