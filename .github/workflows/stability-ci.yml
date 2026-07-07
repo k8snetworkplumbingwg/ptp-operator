@@ -155,7 +155,7 @@ jobs:
           BUILD
 
       - name: Upload image tarball
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ptp-images-stability
           path: /tmp/ptp-images.tar
@@ -236,7 +236,7 @@ jobs:
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
       - name: Download image tarball
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: ptp-images-stability
           path: /tmp
@@ -335,7 +335,7 @@ jobs:
 
       - name: Upload stability results
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: stability-results-${{ matrix.mode }}
           path: /tmp/stability-results/${{ matrix.mode }}/
@@ -372,7 +372,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download all stability results
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: stability-results-*
           path: /tmp/stability-results
@@ -421,7 +421,7 @@ jobs:
 
       - name: Upload combined report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: stability-report-combined
           path: /tmp/stability-merged/stability-report-*.md
