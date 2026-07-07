@@ -41,7 +41,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: main
+  DKMS_BRANCH: fix-dashboard
   STABILITY_MODE: ${{ github.event.inputs.stability_mode || 'all' }}
   STABILITY_RUNS: ${{ github.event.inputs.stability_runs || '5' }}
 
