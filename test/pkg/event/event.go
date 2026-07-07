@@ -38,8 +38,10 @@ const (
 	ConsumerSaName                = "consumer-sa"
 	ConsumerServiceName           = "consumer-events-subscription-service"
 	TestSidecarSuccessLogString   = "rest service returned healthy status"
+	ConsumerReadyLogString        = "waiting for events"
 	ConsumerContainerName         = "consumer"
 	sidecarNamespaceDeleteTimeout = time.Minute * 2
+	consumerReadyTimeout          = time.Minute * 2
 	ApiBaseV1                     = "127.0.0.1:9085/api/ocloudNotifications/v1/"
 	ApiBaseV2                     = "127.0.0.1:9043/api/ocloudNotifications/v2"
 )
@@ -322,6 +324,119 @@ func CreateConsumerApp(nodeNameFull string) (err error) {
 	return nil
 }
 
+// WaitForConsumerReady polls the publisher's health endpoint from within the
+// consumer pod until it responds OK, then waits for the consumer app to log
+// "waiting for events" confirming it has finished initialization.
+func WaitForConsumerReady(nodeNameFull string) error {
+	nodeName := nodeNameFull
+	if nodeNameFull != "" && strings.Contains(nodeNameFull, ".") {
+		nodeName = strings.Split(nodeName, ".")[0]
+	}
+	publisherHealthURL := fmt.Sprintf("http://ptp-event-publisher-service-%s.%s.svc.cluster.local:9043/api/ocloudNotifications/v2/health", nodeName, ProducerNamespace)
+	logrus.Infof("Waiting for publisher to become ready at %s", publisherHealthURL)
+
+	consumerPod, err := testclient.Client.Pods(ConsumerNamespace).Get(context.TODO(), ConsumerPodName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("could not get consumer pod: %s", err)
+	}
+
+	publisherReady := false
+	deadline := time.Now().Add(consumerReadyTimeout)
+	for time.Now().Before(deadline) {
+		buf, _, execErr := pods.ExecCommand(
+			testclient.Client,
+			false,
+			consumerPod,
+			ConsumerContainerName,
+			[]string{"curl", "-s", "--max-time", "5", publisherHealthURL},
+		)
+		if execErr == nil && strings.Contains(buf.String(), "OK") {
+			logrus.Info("Publisher health endpoint is ready")
+			publisherReady = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !publisherReady {
+		return fmt.Errorf("publisher health endpoint %s did not return OK within %s", publisherHealthURL, consumerReadyTimeout)
+	}
+
+	logrus.Info("Waiting for consumer app to finish initialization")
+	_, err = pods.GetPodLogsRegex(ConsumerNamespace, ConsumerPodName, ConsumerContainerName, ConsumerReadyLogString, true, consumerReadyTimeout)
+	if err != nil {
+		return fmt.Errorf("consumer app did not become ready: %s", err)
+	}
+	logrus.Info("Consumer app is ready")
+	return nil
+}
+
+// WaitForCloudEventProxyReady waits for the cloud-event-proxy to recover
+// after a process kill. It handles two restart models:
+//   - Container restart (Kind): the killed process IS PID 1, container
+//     RestartCount increases.
+//   - Process restart (OCP hostPID): systemd/CRI-O restarts the process
+//     inside the same container, RestartCount may not change.
+//
+// The pod argument should reflect the pre-kill state for baseline comparison.
+func WaitForCloudEventProxyReady(pod *corev1.Pod) error {
+	refreshPod := func() (*corev1.Pod, error) {
+		return client.Client.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+	}
+
+	initialRestarts := int32(-1)
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == pkg.EventProxyContainerName {
+			initialRestarts = cs.RestartCount
+			break
+		}
+	}
+	if initialRestarts == -1 {
+		return fmt.Errorf("cloud-event-proxy container not found in pod %s/%s status", pod.Namespace, pod.Name)
+	}
+
+	// Brief pause to let the kill take effect before polling.
+	time.Sleep(3 * time.Second)
+
+	// Check if the container restarted (RestartCount increased).
+	restarted := false
+	if current, err := refreshPod(); err == nil {
+		for _, cs := range current.Status.ContainerStatuses {
+			if cs.Name == pkg.EventProxyContainerName && cs.RestartCount > initialRestarts {
+				logrus.Infof("cloud-event-proxy container restarted (restarts: %d -> %d)",
+					initialRestarts, cs.RestartCount)
+				restarted = true
+				break
+			}
+		}
+	}
+	if !restarted {
+		logrus.Info("container RestartCount unchanged — process-level restart (hostPID)")
+	}
+
+	// Wait for health endpoint regardless of restart model.
+	healthOK := false
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		current, err := refreshPod()
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		buf, _, execErr := pods.ExecCommand(client.Client, true, current, pkg.EventProxyContainerName,
+			[]string{"curl", "-s", "--max-time", "5", ApiBaseV2 + "/health"})
+		if execErr == nil && strings.Contains(buf.String(), "OK") {
+			logrus.Info("cloud-event-proxy health endpoint is ready")
+			healthOK = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !healthOK {
+		return fmt.Errorf("cloud-event-proxy health endpoint did not recover within 5 minutes")
+	}
+	return nil
+}
+
 const roleName = "use-privileged"
 const roleBindingName = "sidecar-rolebinding"
 
@@ -499,12 +614,32 @@ func MonitorPodLogsRegex() (term chan bool, err error) {
 	return term, nil
 }
 
-// returns last Regex match in the logs for a given pod
-func PushInitialEvent(eventType string, timeout time.Duration) (err error) {
+// PushInitialEvent scans consumer logs for a single event type's CurrentState
+// and publishes it to PubSub. For multiple topics, prefer PushInitialEvents.
+func PushInitialEvent(eventType string, timeout time.Duration) error {
+	missing, err := PushInitialEvents([]string{eventType}, timeout)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("timed out waiting for initial event %s", eventType)
+	}
+	return nil
+}
+
+// PushInitialEvents scans consumer logs with a single log stream and publishes
+// CurrentState events for all requested topics. Returns the list of topics
+// that were not found before the timeout.
+func PushInitialEvents(eventTypes []string, timeout time.Duration) (missing []string, err error) {
 	namespace := ConsumerNamespace
 	podName := ConsumerPodName
 	containerName := ConsumerContainerName
 	regex := `Got CurrentState: ({.*})`
+
+	pending := make(map[string]bool, len(eventTypes))
+	for _, t := range eventTypes {
+		pending[t] = true
+	}
 
 	count := int64(0)
 	podLogOptions := corev1.PodLogOptions{
@@ -513,39 +648,45 @@ func PushInitialEvent(eventType string, timeout time.Duration) (err error) {
 		TailLines: &count,
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
-	stream, err := podLogRequest.Stream(context.TODO())
+	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
-		return fmt.Errorf("could not retrieve log in ns=%s pod=%s, err=%s", namespace, podName, err)
+		return nil, fmt.Errorf("could not retrieve log in ns=%s pod=%s, err=%s", namespace, podName, err)
 	}
 	defer stream.Close()
-	start := time.Now()
-	for {
-		scanner := bufio.NewScanner(stream)
-		for scanner.Scan() {
-			t := time.Now()
-			elapsed := t.Sub(start)
-			if elapsed > timeout {
-				return fmt.Errorf("timedout PushInitialValue, waiting for log in ns=%s pod=%s, looking for = %s", namespace, podName, regex)
-			}
-			line := scanner.Text()
-			logrus.Trace(line)
 
-			r := regexp.MustCompile(regex)
-			matches := r.FindAllStringSubmatch(line, -1)
-			if len(matches) > 0 {
-				aStoredEvent, eType, err := createStoredEvent([]byte(matches[0][1]))
-				if err != nil {
-					return err
-				}
-				if eType == eventType {
-					PubSub.Publish(eType, aStoredEvent)
-					return nil
+	r := regexp.MustCompile(regex)
+	scanner := bufio.NewScanner(stream)
+	for scanner.Scan() {
+		line := scanner.Text()
+		logrus.Trace(line)
+
+		matches := r.FindAllStringSubmatch(line, -1)
+		if len(matches) > 0 {
+			aStoredEvent, eType, err := createStoredEvent([]byte(matches[0][1]))
+			if err != nil {
+				logrus.Warnf("PushInitialEvents: failed to parse event: %v", err)
+				continue
+			}
+			if pending[eType] {
+				PubSub.Publish(eType, aStoredEvent)
+				delete(pending, eType)
+				if len(pending) == 0 {
+					return nil, nil
 				}
 			}
 		}
-
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		return nil, fmt.Errorf("error reading logs in ns=%s pod=%s: %s", namespace, podName, scanErr)
+	}
+	for t := range pending {
+		missing = append(missing, t)
+	}
+	return missing, nil
 }
 func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType string, err error) {
 	apiVersion := ptphelper.PtpEventEnabled()
@@ -568,8 +709,11 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 
 		values := exports.StoredEventValues{}
 		for _, v := range e.Data.Values {
-			dataType := string(v.DataType)
-			values[dataType] = v.Value
+			key := v.Resource
+			if key == "" {
+				key = string(v.DataType)
+			}
+			values[key] = v.Value
 		}
 		return exports.StoredEvent{exports.EventTimeStamp: e.Time, exports.EventType: e.Type, exports.EventSource: e.Source, exports.EventValues: values}, e.Type, nil
 	}
@@ -597,8 +741,14 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		dataType := string(v.DataType)
-		values[dataType] = v.Value
+		// Use ResourceAddress as key to avoid collisions when multiple
+		// values share the same data_type (e.g., BC mode clock class
+		// events have two "metric" values for different ptp4l instances).
+		key := v.Resource
+		if key == "" {
+			key = string(v.DataType)
+		}
+		values[key] = v.Value
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil
@@ -642,9 +792,12 @@ func SubscribeToGMChangeEvents(
 	lsCh, lID := PubSub.Subscribe(lsTopic, buffer)
 
 	if pushInitial {
-		_ = PushInitialEvent(gnssTopic, initialTTL)
-		_ = PushInitialEvent(ccTopic, initialTTL)
-		_ = PushInitialEvent(lsTopic, initialTTL)
+		missing, err := PushInitialEvents([]string{gnssTopic, ccTopic, lsTopic}, initialTTL)
+		if err != nil {
+			logrus.Warnf("PushInitialEvents failed: %v", err)
+		} else if len(missing) > 0 {
+			logrus.Warnf("PushInitialEvents: timed out waiting for topics: %v", missing)
+		}
 	}
 
 	return Subscriptions{
