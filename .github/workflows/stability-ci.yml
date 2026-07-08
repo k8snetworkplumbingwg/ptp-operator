@@ -392,7 +392,7 @@ jobs:
             [[ -d "$dir" ]] || continue
             mode=$(basename "$dir" | sed 's/^stability-results-//')
             cp -a "$dir" "/tmp/stability-merged/${mode}"
-            (( FOUND++ ))
+            FOUND=$((FOUND + 1))
           done
           if [[ $FOUND -eq 0 ]]; then
             echo "::warning::No stability results found to merge"
