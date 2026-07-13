@@ -376,20 +376,20 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     run_step_row_done "Building kind cluster..."
     run_step_rows_end
 
+    step "Applying certificate manifests"
+    run_quiet_with_log_dump_on_failure "kubectl-apply-certs" kubectl apply -f certs.yaml
+
+    step "Waiting for TLS certificates to be ready"
+    run_quiet_with_log_dump_on_failure "wait-cert-serving" ./retry.sh 60 5 kubectl wait certificate/serving-cert -n openshift-ptp --for=condition=Ready --timeout=5s
+    run_quiet_with_log_dump_on_failure "wait-cert-daemon" ./retry.sh 60 5 kubectl wait certificate/serving-cert-daemon -n openshift-ptp --for=condition=Ready --timeout=5s
+
     step "Deploying ptp-operator manifests"
     cd "${PTP_TOOLS_DIR}"
     run_quiet_with_log_dump_on_failure "make-deploy-all" sh -c "make deploy-all || true"
     cd -
 
-    step "Applying certificate manifests"
-    run_quiet_with_log_dump_on_failure "kubectl-apply-certs" kubectl apply -f certs.yaml
-
-    step "Fixing certificates"
-    run_quiet_with_log_dump_on_failure "retry-fix-certs" ./retry.sh 60 5 ./fix-certs.sh
-    sleep 5
-
-    step "Restarting ptp-operator pod"
-    run_quiet_with_log_dump_on_failure "kubectl-delete-pods" kubectl delete pods -l name=ptp-operator -n openshift-ptp
+    step "Patching webhook for cert-manager CA injection (kind)"
+    run_quiet_with_log_dump_on_failure "retry-patch-webhook-ca" ./retry.sh 60 5 bash -c 'kubectl patch validatingwebhookconfiguration ptpconfig-validating-webhook-configuration --type=strategic --patch-file kind-webhook-ca-patch.yaml && kubectl wait -f kind-webhook-ca-patch.yaml --for=jsonpath={.webhooks[0].clientConfig.caBundle} --timeout=5s'
 
     step "Waiting for ptp-operator rollout"
     run_quiet_with_log_dump_on_failure "kubectl-rollout-status" kubectl rollout status deployment ptp-operator -n openshift-ptp

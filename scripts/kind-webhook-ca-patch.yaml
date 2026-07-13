@@ -1,0 +1,9 @@
+# Patch for local kind clusters: tells cert-manager to inject the CA bundle
+# from the serving-cert Certificate into the ValidatingWebhookConfiguration.
+# This is NOT needed on OpenShift (service.beta.openshift.io/inject-cabundle handles it).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ptpconfig-validating-webhook-configuration
+  annotations:
+    cert-manager.io/inject-ca-from: openshift-ptp/serving-cert
