@@ -82,11 +82,11 @@ podman-build-and-save-%:
 
 ifdef GITHUB_ACTIONS
 build-image:
-	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..
+	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..
 else
 build-image:
 	podman manifest create ${IMG_PREFIX}:$(VAR)
-	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) -f Dockerfile.$(VAR) --manifest ${IMG_PREFIX}:$(VAR) ..
+	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -f Dockerfile.$(VAR) --manifest ${IMG_PREFIX}:$(VAR) ..
 endif
 
 ifdef GITHUB_ACTIONS
