@@ -176,6 +176,33 @@ func GetClockIfRoles(Ifs []string, nodeName *string) (roleInt []MetricRole, err 
 	return roleInt, nil
 }
 
+// getIfaceAlias generates the PHC iface alias used in openshift_ptp_* metrics.
+// Must stay aligned with linuxptp-daemon/cloud-event-proxy GetAlias:
+//
+//	ens2f0 -> ens2fx, ens2f0np0 -> ens2fx, ens1f0.100 -> ens1fx.100
+func getIfaceAlias(ifname string) string {
+	if ifname == "" {
+		return ""
+	}
+	if alreadyAliasedPattern.MatchString(ifname) {
+		return ifname
+	}
+	matches := ifaceAliasPattern.FindStringSubmatch(ifname)
+	if len(matches) < 3 {
+		return ifname
+	}
+	alias := matches[1] + "x"
+	if len(matches) > 3 && matches[3] != "" {
+		alias += matches[3]
+	}
+	return alias
+}
+
+var (
+	alreadyAliasedPattern = regexp.MustCompile(`^(.+?)x(\..+)?$`)
+	ifaceAliasPattern     = regexp.MustCompile(`^(.+?)(\d+)(?:np\d+)?(\..+)?$`)
+)
+
 // gets a metric value string for a given node and interface
 func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 	const (
@@ -201,11 +228,12 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 		metrics := buf.String()
 		node := ptpPods.Items[index].Spec.NodeName
 
-		// Build a list of interface names to try: first the original, then the aliased (masked) version.
-		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias.
+		// Build a list of interface names to try: first the original, then the PHC alias.
+		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias
+		// (e.g. ens2f0 -> ens2fx, ens2f0np0 -> ens2fx).
 		ifCandidates := []string{aIf}
-		aliasedIf := aIf[:len(aIf)-1] + "x"
-		if aliasedIf != aIf {
+		aliasedIf := getIfaceAlias(aIf)
+		if aliasedIf != "" && aliasedIf != aIf {
 			ifCandidates = append(ifCandidates, aliasedIf)
 		}
 
