@@ -187,13 +187,23 @@ jobs:
           ./run-on-vm.sh --dkms --images "${VM_IP}"
 
           rm -rf /tmp/go-build* /root/.cache/go-build
+          chmod 644 /tmp/ptp-images.tar
           BUILD
+
+      - name: Verify image tarball exists
+        run: |
+          if [ ! -f /tmp/ptp-images.tar ]; then
+            echo "::error::Build did not produce /tmp/ptp-images.tar"
+            exit 1
+          fi
+          ls -lh /tmp/ptp-images.tar
 
       - name: Upload image tarball
         uses: actions/upload-artifact@v7
         with:
           name: ptp-images
           path: /tmp/ptp-images.tar
+          if-no-files-found: error
           retention-days: 1
 
   # ------------------------------------------------------------------
