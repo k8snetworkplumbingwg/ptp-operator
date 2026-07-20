@@ -179,6 +179,7 @@ jobs:
           sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -284,6 +285,7 @@ jobs:
           sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'LOAD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -308,6 +310,7 @@ jobs:
           sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
