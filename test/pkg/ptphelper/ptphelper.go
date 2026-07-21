@@ -141,7 +141,7 @@ func configFileFromLogID(logID string) string {
 func getClockIDViaPMC(pod *corev1.Pod, configFile, field string) (string, error) {
 	re := regexp.MustCompile(`(?m)` + regexp.QuoteMeta(field) + `\s+(\S+)`)
 	buf, _, err := pods.ExecCommand(client.Client, true, pod,
-		pkg.PtpContainerName, []string{"pmc", "-b", "0", "-u", "-f", configFile, "GET", "PARENT_DATA_SET"})
+		pkg.PtpContainerName, []string{"pmc", "-b", "0", "-u", "-f", configFile, "GET PARENT_DATA_SET"})
 	if err != nil {
 		return "", fmt.Errorf("pmc GET PARENT_DATA_SET on %s: %v", configFile, err)
 	}

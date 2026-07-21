@@ -2898,6 +2898,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			By("Creating test secret", func() {
 				testSecret = testconfig.CreateTestSecretForVolumeMountTest(pkg.PtpLinuxDaemonNamespace)
+				_ = client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(), testSecret.Name, metav1.DeleteOptions{})
 				_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
 					context.Background(),
 					testSecret,
@@ -2909,6 +2911,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			By("Creating PtpConfig with sa_file referencing the test secret", func() {
 				testPtpConfig = testconfig.CreatePtpConfigForVolumeMountTest(testNode, testInterface)
+				_ = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(), testPtpConfig.Name, metav1.DeleteOptions{})
 				_, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
 					context.Background(),
 					testPtpConfig,
