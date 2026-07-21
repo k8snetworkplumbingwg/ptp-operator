@@ -163,6 +163,13 @@ deploy: manifests kustomize update-env-yaml ## Deploy controller to the K8s clus
 	$(KUSTOMIZE) build config/custom | kubectl $(KUBECONFIG_OPTS) apply -f -
 	@$(MAKE) restore-env-yaml
 
+deploy-upstream: ## Deploy using upstream GHCR images (no OpenShift registry access needed).
+	$(MAKE) deploy \
+		IMG=ghcr.io/k8snetworkplumbingwg/ptp-operator:latest \
+		LINUXPTP_DAEMON_IMAGE=ghcr.io/k8snetworkplumbingwg/linuxptp-daemon:latest \
+		KUBE_RBAC_PROXY_IMAGE=ghcr.io/k8snetworkplumbingwg/kube-rbac-proxy:latest \
+		SIDECAR_EVENT_IMAGE=ghcr.io/k8snetworkplumbingwg/cloud-event-proxy:latest
+
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/default | kubectl $(KUBECONFIG_OPTS) delete -f - || true
 	$(KUSTOMIZE) build config/custom | kubectl $(KUBECONFIG_OPTS) delete -f - || true
