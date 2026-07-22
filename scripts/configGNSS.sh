@@ -34,8 +34,20 @@ kubectl delete deployment gnss-sim -n openshift-ptp --ignore-not-found --wait=fa
 kubectl delete pod gnss-sim -n openshift-ptp --ignore-not-found --wait=false 2>/dev/null || true
 kubectl wait --for=delete pod -l app=gnss-sim -n openshift-ptp --timeout=30s 2>/dev/null || true
 
+# Detect the DPLL sysfs lock_status path on the host (where access is direct,
+# without relying on mount propagation inside Kind/podman containers).
+DPLL_SYSFS_PATH=""
+for f in /sys/bus/pci/devices/*/dpll/lock_status; do
+    [ -f "$f" ] && DPLL_SYSFS_PATH="$f" && break
+done
+if [ -n "$DPLL_SYSFS_PATH" ]; then
+    echo "Detected DPLL sysfs on host: $DPLL_SYSFS_PATH"
+else
+    echo "WARNING: No DPLL sysfs lock_status found on host — holdover tests may not work"
+fi
+
 # Substitute the image placeholder in the manifest and apply
-sed "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g" "${SCRIPT_DIR}/gnss-sim-deployment.yaml" \
+sed "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g; s|DPLL_SYSFS_PATH|${DPLL_SYSFS_PATH}|g" "${SCRIPT_DIR}/gnss-sim-deployment.yaml" \
     | kubectl apply -f -
 
 echo "Waiting for gnss-sim deployment to become ready..."
