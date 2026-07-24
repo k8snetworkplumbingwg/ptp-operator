@@ -217,12 +217,45 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
+# Ensure gnss-sim pod is running and export GNSS env vars so the test framework
+# discovers the simulator even when run-tests.sh is invoked directly.
+init_gnss_sim_env() {
+  export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
+
+  # Derive GNSS_SIM_IMAGE from the linuxptp-daemon image if not already set,
+  # by replacing the tag. This handles direct invocation of run-tests.sh.
+  if [ -z "${GNSS_SIM_IMAGE:-}" ] && [ -n "${LINUXPTP_DAEMON_IMAGE:-}" ]; then
+    export GNSS_SIM_IMAGE="${LINUXPTP_DAEMON_IMAGE%:*}:gnss-sim"
+  fi
+
+  # Deploy gnss-sim pod (idempotent — recreates if already running).
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bash "${SCRIPT_DIR}/configGNSS.sh"
+
+  # Read the gnss-sim pod's node IP for test framework API access
+  export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
+
+  GNSS_KERNEL_DEV=""
+  for g in /dev/gnss*; do
+    [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
+  done
+  if [ -n "$GNSS_KERNEL_DEV" ]; then
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
+  else
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
+  fi
+  export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
+  export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
+}
+
+overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
+  init_gnss_sim_env
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "serial"
+    run_ginkgo_suite "${mode}" "serial" || overall_exit=1
   fi
   if [[ "${RUN_KIND}" == "parallel" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "parallel"
+    run_ginkgo_suite "${mode}" "parallel" || overall_exit=1
   fi
 done
 
@@ -242,3 +275,5 @@ done
 # Run tests with authentication enabled
 # tests with auth will be enabled once the ci-github tests can last more than 1 hour
 # PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
+
+exit ${overall_exit}

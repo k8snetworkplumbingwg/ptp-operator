@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export DKMS_MODE="${DKMS_MODE:-false}"
-TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
+TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm,tgmoc,tgmbc"
 RUN_PHASE="all"
 REGISTRY_IP=""
 TARBALL=""
@@ -115,7 +115,7 @@ run_step_rows_begin() {
   # Skip in CI: /dev/tty may exist but cannot be opened (bash still errors on failed exec).
   if [[ -z "${CI:-}${GITHUB_ACTIONS:-}${GITLAB_CI:-}${BUILD_ID:-}" ]]; then
     set +e
-    exec 9>/dev/tty 2>/dev/null
+    { exec 9>/dev/tty; } 2>/dev/null
     local _tty_rc=$?
     set -e
     if ((_tty_rc == 0)); then
@@ -271,7 +271,10 @@ run_step_row_done "go mod vendor"
 run_step_rows_end
 
 
-# ── Images phase (--images) ──────────────────────────────────────────
+# Kill leftover gnss-sim from a previous run
+pkill -f gnss-sim || true
+
+# ── Images phase (--images only: build + save tarballs) ─────────────
 if [[ "$RUN_PHASE" == "images" ]]; then
 
     export IMG_PREFIX="$VM_IP/test"
@@ -332,7 +335,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     tar xf "$TARBALL" -C /tmp/ptp-images-load
 
     step "Retagging images for local registry"
-    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug)
+    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug gnss-sim)
     for t in "${TAGS[@]}"; do
         podman load -i "/tmp/ptp-images-load/$t.tar"
     done
@@ -379,7 +382,8 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Deploying ptp-operator manifests"
     cd "${PTP_TOOLS_DIR}"
-    run_quiet_with_log_dump_on_failure "make-deploy-all" sh -c "make deploy-all || true"
+    run_quiet_with_log_dump_on_failure "make-deploy-all" \
+      sh -c 'for i in 1 2 3; do make deploy-all && break || { echo "deploy-all attempt $i failed, retrying in 10s..."; sleep 10; }; done'
     cd -
 
     step "Applying certificate manifests"
@@ -407,6 +411,46 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Listing openshift-ptp pods"
     run_ind kubectl get pods -n openshift-ptp -o wide
+
+    SYMLINK_PID=""
+    if [[ "${DKMS_MODE}" == "true" ]]; then
+        bash -c '
+        while true; do
+          for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
+                       --field-selector=status.phase=Running -o name 2>/dev/null); do
+            kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
+              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do ln -sf nsim_ptp\$i /dev/ptp\$i 2>/dev/null; done" \
+              2>/dev/null || true
+          done
+          sleep 5
+        done
+        ' &
+        SYMLINK_PID=$!
+        echo "Symlink maintainer PID: $SYMLINK_PID"
+        cleanup_symlink() { [[ -n "$SYMLINK_PID" ]] && kill "$SYMLINK_PID" 2>/dev/null || true; }
+        trap cleanup_symlink EXIT
+    fi
+
+    # Start GNSS simulator as a pod for T-GM simulation tests
+    export GNSS_SIM_IMAGE="${IMG_PREFIX}:gnss-sim"
+    ./configGNSS.sh
+
+    # Read the gnss-sim pod's node IP for test framework API access
+    export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
+
+    # Export GNSS simulation env vars so the test framework can discover them.
+    GNSS_KERNEL_DEV=""
+    for g in /dev/gnss*; do
+        [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
+    done
+    if [ -n "$GNSS_KERNEL_DEV" ]; then
+        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
+    else
+        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
+    fi
+    export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
+    export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
+    export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
     ./run-tests.sh --kind serial --mode "$TEST_MODES" \
       --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
