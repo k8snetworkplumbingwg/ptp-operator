@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: fix-dashboard
+  DKMS_BRANCH: fix/register-pins-both-dplls
 
 jobs:
   # ------------------------------------------------------------------
