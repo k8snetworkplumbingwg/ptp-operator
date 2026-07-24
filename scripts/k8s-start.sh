@@ -3,6 +3,7 @@ set -x
 set -euo pipefail
 
 VM_IP=$1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Delete cluster
 kind delete cluster --name kind-netdevsim
@@ -10,12 +11,13 @@ kind delete cluster --name kind-netdevsim
 # Delete and re-create netdevsim and openvswitch devices
 ./reset-devices.sh
 
-# restore template and substitute registry IP
-git checkout -- kind-config.yaml 2>/dev/null || true
-sed -i "s/IP/$VM_IP/g" kind-config.yaml
+# Substitute registry IP into a temp copy so the tracked template stays clean.
+KIND_CONFIG="$(mktemp "${PTP_RUN_DIR:-/tmp}/ptp-kind-config.XXXXXX.yaml")"
+trap 'rm -f "${KIND_CONFIG}"' EXIT
+sed "s/IP/$VM_IP/g" "${SCRIPT_DIR}/kind-config.yaml" >"${KIND_CONFIG}"
 
 # Create new cluster
-kind create cluster --name kind-netdevsim --config=kind-config.yaml
+kind create cluster --name kind-netdevsim --config="${KIND_CONFIG}"
 
 # Wait a bit until the cluster API becomes reacheable
 ./retry.sh 30 3 kubectl get nodes

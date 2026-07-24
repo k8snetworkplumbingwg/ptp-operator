@@ -110,3 +110,5 @@ catalog.Dockerfile
 # Backup files created during build
 *.bak
 config/manager/env.yaml.bak
+# Per-run temp artifacts created by scripts/run-on-vm.sh
+.local-runs
