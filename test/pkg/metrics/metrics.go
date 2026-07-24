@@ -17,19 +17,20 @@ import (
 )
 
 const (
-	OpenshiftPtpInterfaceRole   = "openshift_ptp_interface_role"
-	OpenshiftPtpClockState      = "openshift_ptp_clock_state"
-	OpenshiftPtpFrequencyStatus = "openshift_ptp_frequency_status"
-	OpenshiftPtpPhaseStatus     = "openshift_ptp_phase_status"
-	OpenshiftPtpOffsetNs        = "openshift_ptp_offset_ns"
-	OpenshiftPtpProcessStatus   = "openshift_ptp_process_status"
-	OpenshiftPtpClockClass      = "openshift_ptp_clock_class"
-	OpenshiftPtpNMEAStatus      = "openshift_ptp_nmea_status"
-	OpenshiftPtpThreshold       = "openshift_ptp_threshold"
-	metricsEndPoint             = "127.0.0.1:9091/metrics"
-	MaxOffsetDefaultNs          = 100
-	MinOffsetDefaultNs          = -100
-	MaxInSpecOffsetDefaultNs    = 100
+	OpenshiftPtpInterfaceRole       = "openshift_ptp_interface_role"
+	OpenshiftPtpClockState          = "openshift_ptp_clock_state"
+	OpenshiftPtpFrequencyStatus     = "openshift_ptp_frequency_status"
+	OpenshiftPtpPhaseStatus         = "openshift_ptp_phase_status"
+	OpenshiftPtpOffsetNs            = "openshift_ptp_offset_ns"
+	OpenshiftPtpProcessStatus       = "openshift_ptp_process_status"
+	OpenshiftPtpClockClass          = "openshift_ptp_clock_class"
+	OpenshiftPtpNMEAStatus          = "openshift_ptp_nmea_status"
+	OpenshiftPtpThreshold           = "openshift_ptp_threshold"
+	OpenshiftPtpProcessRestartCount = "openshift_ptp_process_restart_count"
+	metricsEndPoint                 = "127.0.0.1:9091/metrics"
+	MaxOffsetDefaultNs              = 100
+	MinOffsetDefaultNs              = -100
+	MaxInSpecOffsetDefaultNs        = 100
 )
 
 var MaxOffsetNs int
@@ -175,6 +176,33 @@ func GetClockIfRoles(Ifs []string, nodeName *string) (roleInt []MetricRole, err 
 	return roleInt, nil
 }
 
+// getIfaceAlias generates the PHC iface alias used in openshift_ptp_* metrics.
+// Must stay aligned with linuxptp-daemon/cloud-event-proxy GetAlias:
+//
+//	ens2f0 -> ens2fx, ens2f0np0 -> ens2fx, ens1f0.100 -> ens1fx.100
+func getIfaceAlias(ifname string) string {
+	if ifname == "" {
+		return ""
+	}
+	if alreadyAliasedPattern.MatchString(ifname) {
+		return ifname
+	}
+	matches := ifaceAliasPattern.FindStringSubmatch(ifname)
+	if len(matches) < 3 {
+		return ifname
+	}
+	alias := matches[1] + "x"
+	if len(matches) > 3 && matches[3] != "" {
+		alias += matches[3]
+	}
+	return alias
+}
+
+var (
+	alreadyAliasedPattern = regexp.MustCompile(`^(.+?)x(\..+)?$`)
+	ifaceAliasPattern     = regexp.MustCompile(`^(.+?)(\d+)(?:np\d+)?(\..+)?$`)
+)
+
 // gets a metric value string for a given node and interface
 func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 	const (
@@ -200,11 +228,12 @@ func getMetric(nodeName, aIf, metricName string) (metric string, err error) {
 		metrics := buf.String()
 		node := ptpPods.Items[index].Spec.NodeName
 
-		// Build a list of interface names to try: first the original, then the aliased (masked) version.
-		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias.
+		// Build a list of interface names to try: first the original, then the PHC alias.
+		// Cards with a PHC per port keep the original name; cards sharing a PHC use the masked alias
+		// (e.g. ens2f0 -> ens2fx, ens2f0np0 -> ens2fx).
 		ifCandidates := []string{aIf}
-		aliasedIf := aIf[:len(aIf)-1] + "x"
-		if aliasedIf != aIf {
+		aliasedIf := getIfaceAlias(aIf)
+		if aliasedIf != "" && aliasedIf != aIf {
 			ifCandidates = append(ifCandidates, aliasedIf)
 		}
 

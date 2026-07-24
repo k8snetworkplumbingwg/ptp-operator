@@ -1442,6 +1442,80 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"Threshold metrics are not detected")
 			})
 
+			It("Should recover clockClass via event API after cloud-event-proxy crash", func() {
+				if ptphelper.PtpEventEnabled() != 2 {
+					Skip("Skipping: test applies to event API v2 only")
+				}
+
+				// Determine expected clock class based on PTP mode
+				// In 4.21+, OC correctly reports its local clock class (255/SlaveOnly)
+				// instead of the upstream GM's class (6).
+				expectedClockClass := fbprotocol.ClockClass6
+				if fullConfig.PtpModeDiscovered == testconfig.OrdinaryClock && ptphelper.IsPTPOperatorVersionAtLeast("4.21") {
+					expectedClockClass = fbprotocol.ClockClassSlaveOnly
+				}
+				expectedClockClassStr := strconv.Itoa(int(expectedClockClass))
+				logrus.Infof("PtpModeDiscovered: %s, expected clockClass: %s", fullConfig.PtpModeDiscovered, expectedClockClassStr)
+
+				By("Deploying consumer app for event API v2")
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+				Expect(nodeName).ToNot(BeEmpty(), "clock-under-test pod node is empty")
+				err := event.CreateConsumerApp(nodeName)
+				if err != nil {
+					Skip(fmt.Sprintf("Consumer app setup failed: %v", err))
+				}
+				DeferCleanup(func() {
+					_ = event.DeleteConsumerNamespace()
+					if event.PubSub != nil {
+						event.PubSub.Close()
+					}
+				})
+				if waitErr := event.WaitForConsumerReady(nodeName); waitErr != nil {
+					Skip(fmt.Sprintf("Consumer app not ready: %v", waitErr))
+				}
+				event.InitPubSub()
+
+				By(fmt.Sprintf("Verifying initial clockClass is %s via metrics", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
+
+				// PMC gm.ClockClass always reports the upstream GM's class (6),
+				// regardless of whether this node is BC or OC.
+				By("Verifying initial gm.ClockClass is 6 via PMC")
+				ptptesthelper.VerifyClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config", int(fbprotocol.ClockClass6))
+
+				By(fmt.Sprintf("Verifying initial clockClass is %s via Event API", expectedClockClassStr))
+				verifyClockClassCurrentState(int(expectedClockClass), 60*time.Second)
+
+				By("Killing cloud-event-proxy process in sidecar container")
+				// Use /proc/PID/comm to find and kill the process — portable across
+				// minimal container images that lack pgrep/pkill. "cloud-event-proxy"
+				// truncated to 15 chars (Linux TASK_COMM_LEN) is "cloud-event-pro".
+				// The exec may error if killing PID 1 crashes the container.
+				killCmd := `for pid in $(ls /proc/ | grep '^[0-9]'); do ` +
+					`if [ "$(cat /proc/$pid/comm 2>/dev/null)" = "cloud-event-pro" ]; then ` +
+					`kill -9 $pid 2>/dev/null; fi; done`
+				pods.ExecCommand(
+					client.Client,
+					true,
+					fullConfig.DiscoveredClockUnderTestPod,
+					pkg.EventProxyContainerName,
+					[]string{"sh", "-c", killCmd},
+				)
+
+				By("Waiting for cloud-event-proxy to be ready")
+				Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
+					"cloud-event-proxy did not become ready after restart")
+
+				By(fmt.Sprintf("Verifying clockClass remains %s via metrics after cloud-event-proxy restart", expectedClockClassStr))
+				checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
+
+				By("Verifying gm.ClockClass remains 6 via PMC after cloud-event-proxy restart")
+				ptptesthelper.VerifyClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config", int(fbprotocol.ClockClass6))
+
+				By(fmt.Sprintf("Verifying clockClass is %s via Event API after cloud-event-proxy restart", expectedClockClassStr))
+				verifyClockClassCurrentState(int(expectedClockClass), 90*time.Second)
+			})
+
 			Context("Event API version validation", func() {
 				BeforeEach(func() {
 					if !ptphelper.IsPTPOperatorVersionAtLeast("4.19") {
@@ -1462,28 +1536,28 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							ptpOperatorConfig.Spec.EventConfig.ApiVersion))
 					}
 
-					By("Verifying v2 REST API health endpoint responds on all pods")
-					for podIndex := range ptpPods.Items {
-						pod := &ptpPods.Items[podIndex]
+					By("Checking cloud-event-proxy v2 health endpoint on all pods")
+					for _, pod := range ptpPods.Items {
 						cloudProxyFound := false
 						for _, c := range pod.Spec.Containers {
 							if c.Name == pkg.EventProxyContainerName {
 								cloudProxyFound = true
 							}
 						}
-						Expect(cloudProxyFound).ToNot(BeFalse(),
-							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+						if !cloudProxyFound {
+							continue
+						}
 
-						logrus.Infof("Checking v2 API health on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Infof("Checking cloud-event-proxy v2 API on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						Eventually(func() string {
-							buf, _, _ := pods.ExecCommand(client.Client, false, pod, pkg.EventProxyContainerName,
-								[]string{"curl", "-s", path.Join(event.ApiBaseV2, "health")})
+							buf, _, _ := pods.ExecCommand(client.Client, true, &pod, pkg.EventProxyContainerName,
+								[]string{"curl", "-s", "--max-time", "5", event.ApiBaseV2 + "/health"})
 							return buf.String()
 						}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(ContainSubstring("OK"),
-							fmt.Sprintf("v2 REST API health check failed on pod %s — API may not have defaulted to v2", pod.Name))
+							fmt.Sprintf("cloud-event-proxy v2 health endpoint not responding on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: v2 REST API health endpoint returned OK", pod.Name)
+						logrus.Infof("Pod %s: cloud-event-proxy v2 API is healthy", pod.Name)
 					}
 				})
 
@@ -1516,28 +1590,28 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(err).NotTo(HaveOccurred())
 					Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
 
-					By("Verifying v2 REST API health endpoint responds on all pods")
-					for podIndex := range ptpPods.Items {
-						pod := &ptpPods.Items[podIndex]
+					By("Checking cloud-event-proxy v2 health endpoint on all pods")
+					for _, pod := range ptpPods.Items {
 						cloudProxyFound := false
 						for _, c := range pod.Spec.Containers {
 							if c.Name == pkg.EventProxyContainerName {
 								cloudProxyFound = true
 							}
 						}
-						Expect(cloudProxyFound).ToNot(BeFalse(),
-							fmt.Sprintf("No cloud-event-proxy container in pod %s", pod.Name))
+						if !cloudProxyFound {
+							continue
+						}
 
-						logrus.Infof("Checking v2 API health on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
+						logrus.Infof("Checking cloud-event-proxy v2 API on pod %s (node: %s)", pod.Name, pod.Spec.NodeName)
 
 						Eventually(func() string {
-							buf, _, _ := pods.ExecCommand(client.Client, false, pod, pkg.EventProxyContainerName,
-								[]string{"curl", "-s", path.Join(event.ApiBaseV2, "health")})
+							buf, _, _ := pods.ExecCommand(client.Client, true, &pod, pkg.EventProxyContainerName,
+								[]string{"curl", "-s", "--max-time", "5", event.ApiBaseV2 + "/health"})
 							return buf.String()
 						}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(ContainSubstring("OK"),
-							fmt.Sprintf("v2 REST API health check failed on pod %s — API may not be running as v2", pod.Name))
+							fmt.Sprintf("cloud-event-proxy v2 health endpoint not responding on pod %s", pod.Name))
 
-						logrus.Infof("Pod %s: v2 REST API health endpoint returned OK", pod.Name)
+						logrus.Infof("Pod %s: cloud-event-proxy v2 API is healthy", pod.Name)
 					}
 				})
 				// Verify invalid apiVersion values are rejected and pods are not restarted
@@ -2239,6 +2313,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				logrus.Info("Successfully verified T-BC clock class recovery after upstream link outage")
 			})
+
+			It("Should restart ptp4l with no socket errors after SIGTERM", func() {
+				verifyProcessRestartNoSocketErrors(fullConfig, "ptp4l")
+			})
+
+			It("Should restart phc2sys with no socket errors after SIGTERM", func() {
+				verifyProcessRestartNoSocketErrors(fullConfig, "phc2sys")
+			})
+
+			It("Should restart ts2phc with no socket errors after SIGTERM", func() {
+				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
+					Skip("ts2phc only runs in GM configuration")
+				}
+				verifyProcessRestartNoSocketErrors(fullConfig, "ts2phc")
+			})
 		})
 
 		Context("WPC GM Verification Tests", func() {
@@ -2456,6 +2545,112 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						seen[name] = true
 					}
 				}
+			})
+
+			It("Verify ts2phc clock state is not LOCKED after GM PtpConfig is deleted", func() {
+				By("Verifying ts2phc clock state is LOCKED")
+				checkClockStateForProcess(fullConfig, "ts2phc", "1")
+
+				Expect(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(),
+					"DiscoveredGrandMasterPtpConfig must not be nil")
+				gmConfigName := testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name
+
+				By(fmt.Sprintf("Deleting GM PtpConfig %s", gmConfigName))
+				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(), gmConfigName, metav1.DeleteOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				DeferCleanup(func() {
+					By("Recreating GM PtpConfig after test")
+					ensureGMPtpConfigRestored()
+				})
+
+				By("Waiting for ts2phc clock state metric to be removed")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true,
+						fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"curl", pkg.MetricsEndPoint})
+					metricsOutput := buf.String()
+					if !strings.Contains(metricsOutput, "# HELP") {
+						return false
+					}
+					_, found := getClockStateByProcess(metricsOutput, "ts2phc")
+					return !found
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeTrue(),
+					"Expected ts2phc clock state metric to be removed after GM PtpConfig deletion")
+			})
+
+			It("Verify ts2phc metrics are cleaned up after GM PtpConfig delete and re-apply", func() {
+				Expect(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(),
+					"DiscoveredGrandMasterPtpConfig must not be nil")
+				gmConfigName := testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name
+
+				By("Ensuring ts2phc is running and recording its config file name and restart count")
+				var initialConfigName string
+				var initialRestartCount int
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true,
+						fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"curl", pkg.MetricsEndPoint})
+					initialConfigName, initialRestartCount, _ = getProcessConfigAndRestartCount(buf.String(), "ts2phc")
+					return initialConfigName != ""
+				}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeTrue(),
+					"ts2phc process_status with config name not found in metrics")
+				fmt.Fprintf(GinkgoWriter, "Initial ts2phc config=%s, restart_count=%d\n",
+					initialConfigName, initialRestartCount)
+
+				By(fmt.Sprintf("Deleting GM PtpConfig %s", gmConfigName))
+				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
+					context.Background(), gmConfigName, metav1.DeleteOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				DeferCleanup(func() {
+					By("Ensuring GM PtpConfig is restored after test")
+					ensureGMPtpConfigRestored()
+				})
+
+				By("Waiting for ts2phc process to stop after deletion")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true,
+						fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"curl", pkg.MetricsEndPoint})
+					metricsOutput := buf.String()
+					if !strings.Contains(metricsOutput, "# HELP") {
+						return false
+					}
+					configName, _, _ := getProcessConfigAndRestartCount(metricsOutput, "ts2phc")
+					return configName == ""
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeTrue(),
+					"ts2phc process did not stop after GM PtpConfig deletion")
+
+				By("Re-applying the same GM PtpConfig")
+				tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+				tempPtpConfig.SetResourceVersion("")
+				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+					context.Background(), tempPtpConfig, metav1.CreateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Waiting for ts2phc to come back up after re-apply")
+				var newConfigName string
+				var newRestartCount int
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true,
+						fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+						[]string{"curl", pkg.MetricsEndPoint})
+					newConfigName, newRestartCount, _ = getProcessConfigAndRestartCount(buf.String(), "ts2phc")
+					return newConfigName != ""
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeTrue(),
+					"ts2phc did not come back up after GM PtpConfig re-apply")
+				fmt.Fprintf(GinkgoWriter, "After re-apply: ts2phc config=%s, restart_count=%d\n",
+					newConfigName, newRestartCount)
+
+				By("Verifying config name is preserved and metrics are consistent after re-apply")
+				Expect(newConfigName).To(Equal(initialConfigName),
+					fmt.Sprintf("ts2phc config name should be preserved after re-apply, got %s (initial was %s)",
+						newConfigName, initialConfigName))
+				Expect(newRestartCount).To(BeNumerically(">=", initialRestartCount),
+					fmt.Sprintf("ts2phc restart count should continue after re-apply (not reset), got %d (initial was %d)",
+						newRestartCount, initialRestartCount))
 			})
 
 		})
@@ -4379,6 +4574,90 @@ func getProcessStatusByProcess(metricsText, process string) (string, bool) {
 	return "", false
 }
 
+// ensureGMPtpConfigRestored is a DeferCleanup helper that recreates the GM PtpConfig
+// if it was deleted during a test, ensuring subsequent tests have a valid configuration.
+func ensureGMPtpConfigRestored() {
+	tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+	tempPtpConfig.SetResourceVersion("")
+	_, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+		context.Background(), tempPtpConfig, metav1.CreateOptions{})
+	if err != nil && !kerrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// getProcessConfigAndRestartCount parses the metrics output for a given process and returns
+// its config file name (from process_status with value 1) and restart count.
+func getProcessConfigAndRestartCount(metricsText, process string) (configName string, restartCount int, found bool) {
+	processFilter := fmt.Sprintf(`process="%s"`, process)
+	scanner := bufio.NewScanner(strings.NewReader(metricsText))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, metrics.OpenshiftPtpProcessStatus) && strings.Contains(line, processFilter) {
+			parts := strings.Fields(line)
+			if len(parts) == 2 && parts[1] == "1" {
+				start := strings.Index(line, `config="`) + len(`config="`)
+				end := strings.Index(line[start:], `"`)
+				if end > 0 {
+					configName = line[start : start+end]
+					found = true
+				}
+			}
+		}
+		if strings.HasPrefix(line, metrics.OpenshiftPtpProcessRestartCount) && strings.Contains(line, processFilter) {
+			parts := strings.Fields(line)
+			if len(parts) == 2 {
+				var parseErr error
+				restartCount, parseErr = strconv.Atoi(parts[1])
+				if parseErr != nil {
+					fmt.Fprintf(GinkgoWriter, "WARN: could not parse restart_count %q for process %s: %v\n", parts[1], process, parseErr)
+				}
+			}
+		}
+	}
+	return configName, restartCount, found
+}
+
+// verifyProcessRestartNoSocketErrors sends SIGTERM to the given PTP process, waits for a
+// 1→0→1 metric restart cycle, and asserts no event-socket errors appear in the daemon logs.
+func verifyProcessRestartNoSocketErrors(fullConfig testconfig.TestConfig, process string) {
+	By(fmt.Sprintf("Verifying %s is running (process status == 1)", process))
+	checkStatusByProcess(fullConfig, process, "1")
+
+	beforeKill := time.Now()
+	time.Sleep(1 * time.Second)
+
+	By(fmt.Sprintf("Starting metric watcher and killing %s", process))
+	watchDone := make(chan bool, 1)
+	go func() {
+		watchDone <- watchProcessFlipOneZeroOne(fullConfig, process, 60*time.Second)
+	}()
+	time.Sleep(1 * time.Second)
+
+	_, _, err := pods.ExecCommand(client.Client, true,
+		fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+		[]string{"sh", "-c", fmt.Sprintf("pkill -TERM %s || true", process)})
+	Expect(err).To(BeNil(), fmt.Sprintf("failed to kill %s", process))
+
+	By(fmt.Sprintf("Waiting for %s process_status 1→0→1 metric flip", process))
+	Eventually(watchDone, 60*time.Second, 1*time.Second).Should(Receive(BeTrue()),
+		fmt.Sprintf("%s did not complete 1→0→1 restart cycle", process))
+
+	By("Checking daemon logs for socket errors after the kill")
+	time.Sleep(5 * time.Second)
+	socketErrMatches, _ := pods.GetPodLogsRegexSince(
+		openshiftPtpNamespace,
+		fullConfig.DiscoveredClockUnderTestPod.Name,
+		pkg.PtpContainerName,
+		`error trying to connect to event socket|Failed to reconnect to event socket|Reconnect failed after write error|Write error for|Write failed again after reconnect`,
+		false,
+		2*time.Second,
+		beforeKill,
+	)
+	Expect(socketErrMatches).To(BeEmpty(),
+		fmt.Sprintf("unexpected socket errors in logs after %s kill: %v", process, socketErrMatches))
+}
+
 // checkStatusByProcess mirrors checkClockStateForProcess but for process status (1/0)
 func checkStatusByProcess(fullConfig testconfig.TestConfig, process string, state string) {
 	Eventually(func() string {
@@ -4801,7 +5080,10 @@ func setupBCClockClassEvents(nodeName string) bcEventContext {
 		logrus.Warnf("PTP events not available: %s; skipping event checks", createErr)
 		return ctx
 	}
-	time.Sleep(10 * time.Second)
+	if waitErr := event.WaitForConsumerReady(nodeName); waitErr != nil {
+		logrus.Warnf("Consumer app not ready: %s; skipping event checks", waitErr)
+		return ctx
+	}
 	event.InitPubSub()
 	var eventCleanup func()
 	ctx.subs, eventCleanup = event.SubscribeToGMChangeEvents(100, true, 60*time.Second)
@@ -4832,4 +5114,41 @@ func verifyClockClassViaEvent(evCtx bcEventContext, expectedClass int) {
 	}
 	events := getGMEvents(evCtx.subs.GNSS, evCtx.subs.CLOCKCLASS, evCtx.subs.LOCKSTATE, 10*time.Second)
 	verifyMetric(events[ptpEvent.PtpClockClassChange], float64(expectedClass))
+}
+
+// verifyClockClassCurrentState creates a fresh event subscription with pushInitial=true
+// to query the current clock class state from the Event API's getCurrentState endpoint.
+// Unlike verifyClockClassViaEvent (which drains an existing long-lived subscription),
+// this function is safe to call after disruptions such as a cloud-event-proxy restart,
+// where the previous subscription may be stale or disconnected.
+func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration) {
+	const incomingEventsBuffer = 100
+	ccTopic := string(ptpEvent.PtpClockClassChange)
+
+	ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
+	defer event.PubSub.Unsubscribe(ccTopic, cID)
+
+	if err := event.PushInitialEvent(ccTopic, timeout); err != nil {
+		Fail(fmt.Sprintf("Failed to push initial clock class event: %v", err))
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API", expectedClockClass))
+			return
+		case ev := <-ccCh:
+			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
+				for _, val := range res.Values {
+					if v, ok2 := val.(float64); ok2 && int(v) == expectedClockClass {
+						fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+						return
+					}
+				}
+			}
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 )
 
@@ -139,6 +140,115 @@ func TestWPCHardwareConfigValidation(t *testing.T) {
 	})
 }
 
+func TestSourceTypeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  *SourceConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "empty structure requires subsystem",
+			source:  &SourceConfig{},
+			wantErr: true,
+			errMsg:  "subsystem must be specified",
+		},
+		{
+			name: "ptpTimeReceiver without receivers",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypePTP,
+			},
+			wantErr: true,
+			errMsg:  "ptpTimeReceivers must be specified",
+		},
+		{
+			name: "ptpTimeReceiver with invalid receiver name",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypePTP,
+				PTPTimeReceivers: []string{
+					"eth0",
+					"%@$bad**",
+					"eth1",
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid PTP time receiver format",
+		},
+		{
+			name: "valid ptpTimeReceiver",
+			source: &SourceConfig{
+				Subsystem:        "subsystem",
+				SourceType:       SourceTypePTP,
+				PTPTimeReceivers: []string{"eth0", "eth1"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "gnss without gnssConfig",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+			},
+			wantErr: true,
+			errMsg:  "gnssConfig must be specified when sourceType is gnss",
+		},
+		{
+			name: "valid gnss with gnssConfig",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						AntennaVoltage: true,
+						Constellations: []ConstellationID{"GPS", "Galileo"},
+						SurveyIn: GNSSSurveyParameters{
+							ObservationTime: 300,
+							Accuracy:        5,
+						},
+					},
+					Match: &GNSSMatcher{
+						TTYDevice: "/dev/gnss0",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid dpllPhaseLocked source",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeDPLL,
+				BoardLabel: "DPLL",
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown sourceType falls through default",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeID("future-type"),
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.source.Validate()
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestClockChainValidation_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -176,8 +286,8 @@ func TestClockChainValidation_EdgeCases(t *testing.T) {
 						{
 							Name:       "source1",
 							Subsystem:  "nonexistent",
-							SourceType: "gnss",
-							BoardLabel: "GNSS",
+							SourceType: SourceTypeDPLL,
+							BoardLabel: "DPLL",
 						},
 					},
 				},
@@ -196,8 +306,8 @@ func TestClockChainValidation_EdgeCases(t *testing.T) {
 						{
 							Name:       "source1",
 							Subsystem:  "subsys1",
-							SourceType: "gnss",
-							BoardLabel: "GNSS",
+							SourceType: SourceTypeDPLL,
+							BoardLabel: "DPLL",
 						},
 					},
 					Conditions: []Condition{
