@@ -42,7 +42,7 @@ podman-buildall: $(foreach v, $(VALUES), podman-build-$(v))
 podman-build-%:
 	@echo "Platform: $(PLATFORM)"
 	podman image rm ${IMG_PREFIX}:$* || true
-	podman build --no-cache --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
+	podman build --no-cache --network host --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
 
 podman-pushall: $(foreach v, $(VALUES), podman-push-$(v))
 
@@ -62,7 +62,7 @@ podman-buildpushall: $(foreach v, $(VALUES), podman-buildpush-$(v))
 podman-buildpush-%:
 	@echo "Platform: $(PLATFORM)"
 	podman image rm ${IMG_PREFIX}:$* || true
-	podman build --no-cache --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
+	podman build --no-cache --network host --platform $(PLATFORM) -t ${IMG_PREFIX}:$* -f Dockerfile.$* ..
 	podman push ${IMG_PREFIX}:$* docker://${IMG_PREFIX}:$*
 
 podman-saveall: $(foreach v, $(VALUES), podman-save-$(v))
