@@ -53,6 +53,87 @@ To deploy the operator using your custom images:
 IMG_PREFIX=quay.io/yourusername/test make deploy-all
 ```
 
+## Staging Images from Remote Branches
+
+`scripts/build-push-deploy.sh` builds, pushes, and deploys images from **remote** git branches or commits. It does not build local working-tree changes.
+
+Use this when you want to stage a specific upstream/downstream branch (or fork commit) onto a cluster without checking those repos out yourself.
+
+### Prerequisites
+
+- `podman`, `skopeo`, and `kubectl` (cluster kubeconfig already configured)
+- Registry credentials for `IMG_PREFIX` (default `quay.io/deliedit/test`)
+- At least one of `--ptpop`, `--lptpd`, or `--cep`
+
+### Branch specs
+
+| Format | Meaning | Example |
+|--------|---------|---------|
+| `upstream/<branch>` | Well-known upstream repo | `upstream/main` |
+| `downstream/<branch>` | Well-known OpenShift/downstream repo | `downstream/release-4.22` |
+| `downstream/<commit>` | Exact commit (7–40 hex chars) | `downstream/a1b2c3d4e5f6` |
+| `<org>/<repo>/<branch>` | Arbitrary GitHub fork | `edcdavid/linuxptp-daemon/my-fix` |
+
+Repo mapping for shorthand:
+
+| Component | `upstream` | `downstream` |
+|-----------|------------|--------------|
+| `ptpop` | `k8snetworkplumbingwg/ptp-operator` | `openshift/ptp-operator` |
+| `lptpd` | `k8snetworkplumbingwg/linuxptp-daemon` | `openshift/linuxptp-daemon` |
+| `cep` | `redhat-cne/cloud-event-proxy` | `redhat-cne/cloud-event-proxy` |
+
+### Phases
+
+If no phase flag is given, the script runs **build + push + deploy**.
+
+| Flag | Action |
+|------|--------|
+| `--build` | Build only the specified component images |
+| `--push` | Push those images (deletes the remote tag first so the digest updates) |
+| `--deploy` | `make deploy-all`, then force daemonset pull-policy Always and restart |
+| `--check` | Verify running pod commits (and optional linuxptp RPM) match the requested specs |
+
+### Custom linuxptp RPM
+
+Pass a pre-built RPM with `--linuxptp-rpm` (requires `--lptpd`). The script copies it into `ptp-tools/extra/` for the image build; `*.rpm` files under `extra/` are gitignored and must not be committed.
+
+```bash
+./scripts/build-push-deploy.sh \
+  --lptpd upstream/main \
+  --linuxptp-rpm /path/to/linuxptp-4.4-1.el9.4.rpm \
+  --build --push --deploy
+```
+
+`Dockerfile.lptpd` installs the stock `linuxptp` package unless `LINUXPTP_RPM` is set at build time.
+
+### Examples
+
+```bash
+# Stage operator + daemon from downstream release branches
+./scripts/build-push-deploy.sh \
+  --ptpop downstream/release-4.20 \
+  --lptpd downstream/release-4.20
+
+# Build CEP from a specific commit only
+./scripts/build-push-deploy.sh --cep downstream/a1b2c3d4e5f6 --build --push
+
+# Fork branch, custom registry prefix
+./scripts/build-push-deploy.sh \
+  --cep edcdavid/cloud-event-proxy/fix-tbc \
+  --img-prefix quay.io/yourusername/test \
+  --build --push --deploy
+
+# Verify what is running after a deploy
+./scripts/build-push-deploy.sh --lptpd upstream/main --check
+```
+
+### How it works
+
+1. Rewrites the relevant `Dockerfile.*` clone lines to the requested remote/branch/commit (originals restored on exit).
+2. Optionally copies a linuxptp RPM into `ptp-tools/extra/` and passes `PODMAN_BUILD_ARGS=--build-arg=LINUXPTP_RPM=...`.
+3. Builds/pushes via the ptp-tools Makefile.
+4. On deploy: applies custom images, scales the operator down briefly, sets daemonset pull policies to `Always`, and restarts the daemonset so nodes pull the new tags.
+
 ## Platform Support
 
 ### Auto-Detection (Default)
@@ -164,6 +245,7 @@ make podman-cleanall
 |----------|---------|-------------|
 | `IMG_PREFIX` | `quay.io/<your user id here>/<your image name>` | Container registry and repository prefix |
 | `PLATFORM` | Auto-detected | Target platform(s) for builds |
+| `PODMAN_BUILD_ARGS` | _(empty)_ | Extra args for `podman build` (e.g. `--build-arg=LINUXPTP_RPM=...`) |
 
 ### Final Image Names
 
@@ -220,10 +302,12 @@ The platform will be displayed at the beginning of the build process.
 Each component has its own Dockerfile:
 - `Dockerfile.cep` - Cloud Event Proxy
 - `Dockerfile.ptpop` - PTP Operator
-- `Dockerfile.lptpd` - LinuxPTP Daemon
+- `Dockerfile.lptpd` - LinuxPTP Daemon (optional `LINUXPTP_RPM` build-arg)
 - `Dockerfile.krp` - Kube RBAC Proxy
 - `Dockerfile.openvswitch` - OpenVSwitch
 - `Dockerfile.prometheus` - Prometheus
+
+For staging images from remote branches without editing Dockerfiles by hand, prefer `scripts/build-push-deploy.sh` (see [Staging Images from Remote Branches](#staging-images-from-remote-branches)).
 
 ### Registry Authentication
 
