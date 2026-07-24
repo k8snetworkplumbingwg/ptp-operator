@@ -337,7 +337,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     tar xf "$TARBALL" -C "${PTP_RUN_DIR}/ptp-images-load"
 
     step "Retagging images for local registry"
-    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug)
+    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug gnss-sim)
     for t in "${TAGS[@]}"; do
         podman load -i "${PTP_RUN_DIR}/ptp-images-load/$t.tar"
     done
