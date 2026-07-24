@@ -110,3 +110,8 @@ catalog.Dockerfile
 # Backup files created during build
 *.bak
 config/manager/env.yaml.bak
+
+# Artifacts that should not be committed
+scripts/ca.crt
+scripts/*.tar.gz
+.cursor/

@@ -441,9 +441,10 @@ func (p *PortEngine) TurnPortUp(port string) error {
 		[]string{"ip", "link", "set", port, "up"})
 
 	logrus.Infof("Turning interface: %s in pod %s up, stdout: %s, stderr: %s", port, p.ClockPod.Name, stdout.String(), stderr.String())
-	if err == nil {
-		p.nmSetManaged(port, true)
-	}
+	// NM is NOT re-enabled here: the DeferCleanup registered in TurnPortDown
+	// handles that after the test completes. Re-enabling NM eagerly can cause
+	// it to re-activate the interface (DHCP, link detection) and interfere
+	// with ptp4l's port state machine, preventing SLAVE recovery.
 	return err
 }
 
@@ -642,9 +643,21 @@ func EnableGMCapableInPlace(configName string) string {
 	modified := strings.Replace(original, "gmCapable 0", "gmCapable 1\nclockClass 248", 1)
 	ptpCfg.Spec.Profile[0].Ptp4lConf = &modified
 
-	_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
-		context.Background(), ptpCfg, metav1.UpdateOptions{})
-	Expect(err).NotTo(HaveOccurred(), "Failed to update PtpConfig %s with gmCapable=1", configName)
+	Eventually(func() error {
+		fresh, getErr := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+			context.Background(), configName, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		fresh.Spec.Profile[0].Ptp4lConf = &modified
+		_, updateErr := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+			context.Background(), fresh, metav1.UpdateOptions{})
+		if updateErr != nil {
+			logrus.Infof("Retrying PtpConfig update for %s: %v", configName, updateErr)
+		}
+		return updateErr
+	}, 2*time.Minute, 10*time.Second).Should(Succeed(),
+		fmt.Sprintf("Failed to update PtpConfig %s with gmCapable=1", configName))
 	return original
 }
 

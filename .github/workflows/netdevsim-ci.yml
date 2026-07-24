@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: main
+  DKMS_BRANCH: fix/register-pins-both-dplls
 
 jobs:
   # ------------------------------------------------------------------
@@ -150,6 +150,13 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force 2>/dev/null || true
+          sudo apt-get clean
+          df -h
+
       - name: Install podman 5.x
         run: |
           sudo mkdir -p /etc/apt/keyrings
@@ -166,10 +173,13 @@ jobs:
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
       - name: "Build images and export tarball"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'BUILD'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -178,13 +188,23 @@ jobs:
           ./run-on-vm.sh --dkms --images "${VM_IP}"
 
           rm -rf /tmp/go-build* /root/.cache/go-build
+          chmod 644 /tmp/ptp-images.tar
           BUILD
+
+      - name: Verify image tarball exists
+        run: |
+          if [ ! -f /tmp/ptp-images.tar ]; then
+            echo "::error::Build did not produce /tmp/ptp-images.tar"
+            exit 1
+          fi
+          ls -lh /tmp/ptp-images.tar
 
       - name: Upload image tarball
         uses: actions/upload-artifact@v7
         with:
           name: ptp-images
           path: /tmp/ptp-images.tar
+          if-no-files-found: error
           retention-days: 1
 
   # ------------------------------------------------------------------
@@ -197,7 +217,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
+        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |
@@ -259,10 +279,13 @@ jobs:
           path: /tmp
 
       - name: "Load images into local registry"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'LOAD'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'LOAD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -281,10 +304,13 @@ jobs:
           CLEANUP
 
       - name: "Run scenario: ${{ matrix.mode }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'DEPLOY'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
