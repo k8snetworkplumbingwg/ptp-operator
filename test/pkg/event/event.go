@@ -741,14 +741,25 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		// Use ResourceAddress as key to avoid collisions when multiple
-		// values share the same data_type (e.g., BC mode clock class
-		// events have two "metric" values for different ptp4l instances).
+		// Index by data_type so helpers can find "metric"/"notification".
+		// Also index by resource so BC multi-instance metrics do not collide
+		// on data_type. When notification and metric share a resource, keep
+		// both via resource/data_type rather than letting the last overwrite.
+		dt := string(v.DataType)
+		if dt != "" {
+			values[dt] = v.Value
+		}
 		key := v.Resource
 		if key == "" {
-			key = string(v.DataType)
+			key = dt
 		}
-		values[key] = v.Value
+		if key != "" {
+			if _, exists := values[key]; exists && dt != "" {
+				values[key+"/"+dt] = v.Value
+			} else {
+				values[key] = v.Value
+			}
+		}
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil

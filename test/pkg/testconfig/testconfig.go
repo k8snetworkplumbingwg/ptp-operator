@@ -733,12 +733,13 @@ func initAndSolveProblems() {
 	}
 
 	// T-BC with local GM: WPC NIC required, receiver, two transmitters on same NIC, local GM
+	// CUT is the T-BC; keep the local GM off that node.
 	data.problems[AlgoTelcoBCString] = &[][][]int{
 		{{int(solver.StepIsWPCNic), 1, 0}},   // step1: T-BC receiver must be on WPC NIC
 		{{int(solver.StepSameNic), 2, 0, 1}}, // step2: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 0, 2}}, // step3: transmitter 2 on same NIC as receiver
 		{{int(solver.StepSameLan2), 2, 0, 3}, // step4: local grandmaster on same LAN as receiver
-			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but NOT on the same node
+			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but on a different node from T-BC (CUT)
 		{{int(solver.StepIsWPCNic), 1, 3}}, // step5: local grandmaster is a WPC NIC
 	}
 
@@ -752,6 +753,7 @@ func initAndSolveProblems() {
 	}
 
 	// T-BC with slaves and local GM: WPC NIC required, slave, receiver, two transmitters on same NIC, local GM
+	// CUT is the T-BC. Downstream OC may share the GM node.
 	data.problems[AlgoTelcoBCWithSlavesString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1: slave interface (can be anything)
 		{{int(solver.StepSameLan2), 2, 0, 2}}, // step2: Slave on the same lan as transmitters
@@ -760,7 +762,7 @@ func initAndSolveProblems() {
 		{{int(solver.StepSameNic), 2, 1, 2}},  // step5: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 1, 3}},  // step6: transmitter 2 on same NIC as receiver
 		{{int(solver.StepSameLan2), 2, 1, 4}, // step7: local grandmaster on same LAN as receiver
-			{int(solver.StepSameNode), 2, 1, 4, solver.Negative}}, // but NOT on the same node
+			{int(solver.StepSameNode), 2, 1, 4, solver.Negative}}, // but on a different node from T-BC (CUT)
 	}
 
 	// T-BC with slaves and external GM: WPC NIC required, slave, receiver, two transmitters on same NIC
@@ -776,23 +778,29 @@ func initAndSolveProblems() {
 	}
 
 	// TGM + OC: WPC GM on slot 0, downstream OC slave on slot 1
+	// CUT is the OC; keep T-GM off that node so priority-override tests cannot wipe the GM.
 	data.problems[AlgoTGMOCString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}},    // step1: GM must be WPC
-		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2: OC slave on same LAN as GM
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: OC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but on a different node from OC (CUT)
 	}
 
 	// TGM + BC: WPC GM on slot 0, BC slave on slot 1, BC master on slot 2
+	// CUT is the BC; keep T-GM off that node so priority-override tests cannot wipe the GM.
 	data.problems[AlgoTGMBCString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}},    // step1: GM must be WPC
-		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2: BC slave on same LAN as GM
-		{{int(solver.StepSameNic), 2, 1, 2}},  // step3: BC slave + master on same NIC
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: BC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but BC (CUT) on a different node
+		{{int(solver.StepSameNic), 2, 1, 2}}, // step3: BC slave + master on same NIC
 	}
 
 	// TGM + BC + downstream OC: WPC GM slot 0, BC slave slot 1, BC master slot 2, downstream OC slot 3
+	// CUT is the BC. Downstream OC may share the GM node (not affected by priority tests).
 	data.problems[AlgoTGMBCWithSlavesString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}},    // step1: GM must be WPC
-		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2: BC slave on same LAN as GM
-		{{int(solver.StepSameNic), 2, 1, 2}},  // step3: BC slave + master on same NIC
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: BC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but BC (CUT) on a different node
+		{{int(solver.StepSameNic), 2, 1, 2}}, // step3: BC slave + master on same NIC
 		{{int(solver.StepSameLan2), 2, 2, 3}, // step4: downstream OC on BC master LAN
 			{int(solver.StepSameNic), 2, 0, 3, solver.Negative},   // GM and downstream OC on different NICs
 			{int(solver.StepSameLan2), 2, 0, 3, solver.Negative}}, // GM and downstream OC on different LANs
@@ -1050,6 +1058,17 @@ func gnssSerialPort(deviceID string) string {
 		return deviceID
 	}
 	return "/dev/" + deviceID
+}
+
+// omitPhc2sysInSimulation drops phc2sysOpts in netdevsim/Kind CI.
+// Kind nodes share one host CLOCK_REALTIME; phc2sys -r forms a feedback loop
+// with ts2phc/gnss-sim. Baremetal keeps a per-node clock and still runs phc2sys.
+func omitPhc2sysInSimulation(phc2sysOpts *string) *string {
+	if phc2sysOpts != nil && ptphelper.IsGnssSimConfigured() {
+		logrus.Info("Omitting phc2sys in netdevsim/Kind simulation (shared host CLOCK_REALTIME)")
+		return nil
+	}
+	return phc2sysOpts
 }
 
 func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string, label string) error {
@@ -1319,6 +1338,14 @@ func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, p
 	}
 
 	bcConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nboundary_clock_jbod 1\ngmCapable 0"
+	// TGMBC cascading-holdover tests require the BC to remain locked while the
+	// upstream T-GM announces CC7 (holdover) and CC248 (freerun). The default
+	// threshold of 7 rejects those classes ("Master clock quality received is
+	// greater than configured, ignoring master!"), so the BC never inherits the
+	// degraded clock class. linuxptp rejects values > 248 for this option.
+	if GlobalConfig.PtpModeDesired == TelcoGMBC {
+		bcConfig = strings.Replace(bcConfig, "clock_class_threshold 7", "clock_class_threshold 248", 1)
+	}
 	bcConfig = AddAuthSettings(AddInterface(bcConfig, ifSlaveName, 0))
 	bcConfig = AddAuthSettings(AddInterface(bcConfig, ifMasterName, 1))
 	ptp4lsysOpts := ptp4lEthernet
@@ -1664,10 +1691,11 @@ func createPtpConfigPhc2SysHA(policyName string, nodeName string, haProfiles []s
 		phc2sysOpts = strings.Join(strings.Fields(strings.ReplaceAll(phc2sysOpts, "-r", "")), " ")
 	}
 	ptp4lOpts := "" // no ptp4l options
+	phc2sysOptsPtr := omitPhc2sysInSimulation(&phc2sysOpts)
 
 	ptpProfile := ptpv1.PtpProfile{
 		Name:                  &policyName,
-		Phc2sysOpts:           &phc2sysOpts,
+		Phc2sysOpts:           phc2sysOptsPtr,
 		Ptp4lOpts:             &ptp4lOpts,
 		PtpSchedulingPolicy:   &ptpSchedulingPolicy,
 		PtpSchedulingPriority: ptr.To(int64(65)),
@@ -2175,6 +2203,7 @@ func AddAuthSettings(ptpConfig string) string {
 // createTelcoBCConfig creates a multi-profile PTP config for Telco Boundary Clock
 // with separate receiver (tbc-tr) and transmitter (tbc-tt) profiles
 func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig string, ptp4lOpts, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcConfig string, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
+	phc2sysOpts = omitPhc2sysInSimulation(phc2sysOpts)
 	// Create receiver profile (tbc-tr)
 	receiverProfileName := "tbc-tr"
 	receiverProfile := ptpv1.PtpProfile{
@@ -2233,6 +2262,7 @@ func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig st
 
 func createConfigWithTs2PhcAndPlugins(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig string, ts2phcConfig string, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
 	thresholds := ptpv1.PtpClockThreshold{}
+	phc2sysOpts = omitPhc2sysInSimulation(phc2sysOpts)
 
 	testParameters, err := ptptestconfig.GetPtpTestConfig()
 	if err != nil {
@@ -2276,6 +2306,7 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 		noRT = strings.Join(strings.Fields(noRT), " ")
 		phc2sysOpts = &noRT
 	}
+	phc2sysOpts = omitPhc2sysInSimulation(phc2sysOpts)
 
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds}
