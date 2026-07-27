@@ -36,15 +36,19 @@ spec:
               for g in /dev/gnss*; do
                 [ -c "$g" ] && GNSS_DEV="$g" && break
               done
+              HOLDOVER_TIMEOUT="${GNSS_SIM_HOLDOVER_TIMEOUT:-60}"
               if [ -n "$GNSS_DEV" ]; then
                 exec /usr/local/bin/gnss-sim \
                   --gnss-dev "$GNSS_DEV" \
                   --api-port 9200 \
+                  --holdover-timeout "$HOLDOVER_TIMEOUT" \
                   $DPLL_ARGS
               else
                 exec /usr/local/bin/gnss-sim \
                   --pty-links /var/run/ptp/ttyGNSS_TS2PHC,/var/run/ptp/ttyGNSS_GNSS0 \
-                  --api-port 9200
+                  --api-port 9200 \
+                  --holdover-timeout "$HOLDOVER_TIMEOUT" \
+                  $DPLL_ARGS
               fi
           securityContext:
             privileged: true
