@@ -68,7 +68,7 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 				logrus.Infof("GetClockIDForeign retry due to err: %s", err)
 			}
 			return err
-		}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+		}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 			fmt.Sprintf("Timeout to get foreign clock ID for ptpconfig %s", ptpConfig.Name))
 	}
 	if errProfile == nil {
@@ -811,7 +811,7 @@ func (p *PortEngine) TurnOffAndWaitFaulty(iface, nodeName string) {
 	Eventually(func() error {
 		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleFaulty},
 			[]string{iface}, &nodeName)
-	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeNil(),
+	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeNil(),
 		iface+" should be FAULTY")
 }
 

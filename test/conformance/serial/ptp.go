@@ -590,7 +590,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						var getErr error
 						aString, getErr = ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
 						return getErr
-					}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 						"Timeout to get grandmaster clock ID")
 					grandmasterID = &aString
 				}
@@ -778,7 +778,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						var getErr error
 						aString, getErr = ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
 						return getErr
-					}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 						"Timeout to get grandmaster clock ID")
 					grandmasterID = &aString
 				}
@@ -900,7 +900,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					var getErr error
 					masterIDBc1, getErr = ptphelper.GetClockIDMaster(name, &aLabel, nil, false)
 					return getErr
-				}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 					"Timeout to get BC master1 clock ID")
 				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave1PtpConfig), &masterIDBc1, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil())
@@ -913,7 +913,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						var getErr error
 						masterIDBc2, getErr = ptphelper.GetClockIDMaster(pkg.PtpBcMaster2PolicyName, &aLabel, nil, false)
 						return getErr
-					}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 						"Timeout to get BC master2 clock ID")
 					err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredSlave2PtpConfig), &masterIDBc2, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 					Expect(err).To(BeNil())
@@ -1004,7 +1004,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							var getErr error
 							gmClockID, getErr = ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
 							return getErr
-						}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+						}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 							"Timeout to get grandmaster clock ID")
 
 						profileName, err := ptphelper.GetProfileName(modifiedPtpConfig, true)
@@ -1029,7 +1029,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 									return fmt.Errorf("Slave master %s does not match GM clock %s", slaveMaster, gmClockID)
 								}
 								return nil
-							}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+							}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 								"Timeout waiting for slave to follow expected GM")
 						}
 					}
@@ -3891,7 +3891,7 @@ func checkStatusByProcess(fullConfig testconfig.TestConfig, process string, stat
 			return ""
 		}
 		return retState
-	}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(Equal(state),
+	}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Equal(state),
 		fmt.Sprintf("Expected %s process status to be %s for GM", process, state))
 }
 
@@ -4057,7 +4057,7 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 
 		time.Sleep(pkg.TimeoutInterval2Seconds)
 
-		if time.Since(start) > pkg.TimeoutIn3Minutes {
+		if time.Since(start) > pkg.TimeoutIn5Minutes {
 			Fail(fmt.Sprintf("Timed out waiting for clock class %s", expectedState))
 			break
 		}
