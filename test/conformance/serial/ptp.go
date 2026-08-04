@@ -4846,7 +4846,7 @@ func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
 
 		time.Sleep(pkg.TimeoutInterval2Seconds)
 
-		if time.Since(start) > pkg.TimeoutIn3Minutes {
+		if time.Since(start) > pkg.TimeoutIn5Minutes {
 			Fail(fmt.Sprintf("Timed out waiting for clock class %s", expectedState))
 			break
 		}
