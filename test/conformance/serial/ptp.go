@@ -1447,14 +1447,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Skip("Skipping: test applies to event API v2 only")
 				}
 
-				// Determine expected clock class based on PTP mode.
-				// In 4.21+, OC CUT nodes report local clock class 255 (SlaveOnly),
-				// not the upstream GM's class (6). TGMOC / DualFollower CUTs are
-				// also OC followers, so they use 255; PMC gm.ClockClass stays 6.
+				// Determine expected clockClass for openshift_ptp_clock_class.
+				//
+				// Product rule (4.21+): an Ordinary Clock CUT must publish its
+				// *local* SlaveOnly class (255), not the upstream GM class (6).
+				// TGMOC's CUT is that same single-iface OC (swapped in discovery),
+				// so it inherits the same rule.
+				//
+				// DualFollower also sets slaveOnly 1, so IEEE-wise 255 would be
+				// ideal — but linuxptp-daemon still emits openshift_ptp_clock_class=6
+				// for multi-iface DualFollower (PMC local clockClass is 255; parent
+				// gm.ClockClass is 6). Keep DualFollower on metric expect 6 until
+				// the daemon publishes local 255 the same way as OC.
 				expectedClockClass := fbprotocol.ClockClass6
 				cutIsOrdinaryFollower := fullConfig.PtpModeDiscovered == testconfig.OrdinaryClock ||
-					fullConfig.PtpModeDiscovered == testconfig.TelcoGMOC ||
-					fullConfig.PtpModeDiscovered == testconfig.DualFollowerClock
+					fullConfig.PtpModeDiscovered == testconfig.TelcoGMOC
 				if cutIsOrdinaryFollower && ptphelper.IsPTPOperatorVersionAtLeast("4.21") {
 					expectedClockClass = fbprotocol.ClockClassSlaveOnly
 				}
