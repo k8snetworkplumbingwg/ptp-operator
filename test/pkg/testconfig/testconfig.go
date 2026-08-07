@@ -2212,6 +2212,17 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 		allMasterIfs = append(allMasterIfs, masterIfStrings...)
 		allFollowerIfs = append(allFollowerIfs, followerIfStrings...)
 
+		logrus.Infof("ptptConfig: %s, masterIfCount: %d, slaveIfCount: %d", ptpConfig.Name, masterIfCount, slaveIfCount)
+
+		// T-BC before OC/DualFollower: TR profile alone looks like a single-slave OC.
+		if isTelcoBoundaryClockConfig(ptpConfig) {
+			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
+			GlobalConfig.PtpModeDiscovered = TelcoBoundaryClock
+			GlobalConfig.Status = DiscoverySuccessStatus
+			logrus.Info("Detected T-BC configuration with receiver/transmitter profiles")
+			continue
+		}
+
 		// OC
 		if masterIfCount == 0 && slaveIfCount == 1 && len(ptpConfigClockUnderTest) == 1 {
 			GlobalConfig.PtpModeDiscovered = OrdinaryClock
@@ -2226,7 +2237,6 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
 			break
 		}
-		logrus.Infof("ptptConfig: %s, masterIfCount: %d, slaveIfCount: %d", ptpConfig.Name, masterIfCount, slaveIfCount)
 		// BC, Dual NIC BC and Dual NIC BC HA
 		if masterIfCount >= 1 && slaveIfCount >= 1 {
 			if numBc == 0 {
@@ -2241,29 +2251,6 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 			}
 		} else if ptphelper.ConfigIsPhc2SysHa(ptpConfig) {
 			numPhc2SysHa++
-		}
-
-		// T-BC state: Check for two profiles (tbc-tr and tbc-tt)
-		if len(ptpConfig.Spec.Profile) == 2 {
-			hasTbcTr := false
-			hasTbcTt := false
-			for _, profile := range ptpConfig.Spec.Profile {
-				if profile.Name != nil {
-					q := ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name)
-					if q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr") {
-						hasTbcTr = true
-					} else if q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt") {
-						hasTbcTt = true
-					}
-				}
-			}
-			if hasTbcTr && hasTbcTt {
-				GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
-				GlobalConfig.PtpModeDiscovered = TelcoBoundaryClock
-				GlobalConfig.Status = DiscoverySuccessStatus
-				logrus.Info("Detected T-BC configuration with tbc-tr and tbc-tt profiles")
-				continue
-			}
 		}
 
 		//WPC GM state
@@ -2301,6 +2288,39 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 	GlobalConfig.DiscoveredClockUnderTestPod = pod
 	GlobalConfig.DiscoveredFollowerInterfaces = allFollowerIfs
 	GlobalConfig.DiscoveredMasterInterfaces = allMasterIfs
+}
+
+// isTelcoBoundaryClockConfig reports whether a PtpConfig is a T-BC with paired
+// receiver/transmitter profiles. Accepts factory names (tbc-tr/tbc-tt),
+// qualified names (<cr>_tbc-tr), and dated suffixes (…-tr/…-tt), or clockType=T-BC.
+func isTelcoBoundaryClockConfig(ptpConfig *ptpv1.PtpConfig) bool {
+	if ptpConfig == nil || len(ptpConfig.Spec.Profile) != 2 {
+		return false
+	}
+	hasTbcTr, hasTbcTt, hasClockTypeTBC := false, false, false
+	for _, profile := range ptpConfig.Spec.Profile {
+		if profile.PtpSettings != nil && strings.EqualFold(profile.PtpSettings["clockType"], "T-BC") {
+			hasClockTypeTBC = true
+		}
+		if profile.Name == nil {
+			continue
+		}
+		name := *profile.Name
+		q := ptphelper.QualifyProfileName(ptpConfig.Name, name)
+		switch {
+		case q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr"),
+			name == "tbc-tr",
+			strings.HasSuffix(name, "_tbc-tr"),
+			strings.HasSuffix(name, "-tr"):
+			hasTbcTr = true
+		case q == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tt"),
+			name == "tbc-tt",
+			strings.HasSuffix(name, "_tbc-tt"),
+			strings.HasSuffix(name, "-tt"):
+			hasTbcTt = true
+		}
+	}
+	return (hasTbcTr && hasTbcTt) || hasClockTypeTBC
 }
 
 func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err error) {

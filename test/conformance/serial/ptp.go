@@ -2302,13 +2302,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// (PHC ← CLOCK_REALTIME) and stop emitting CLOCK_REALTIME phc offset.
 			// cloud-event-proxy must publish os-clock-sync-state FREERUN.
 			//
-			// Run with: PTP_TEST_MODE=BC (or DualNICBC) ENABLE_PTP_EVENT=true SKIP_INTERFACES=<mgmt,...>
+			// Run with: PTP_TEST_MODE=BC|DualNICBC|TBC (or Discovery of those) ENABLE_PTP_EVENT=true SKIP_INTERFACES=<mgmt,...>
 			// Requires a cloud-event-proxy build that includes reverse-sync FREERUN detection.
 			// Skips on Kind/netdevsim when phc2sysOpts lacks -a -r or CLOCK_REALTIME metric is absent.
 			It("OsClockSyncState goes FREERUN on BC upstream loss and recovers to LOCKED", func() {
 				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
-					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock {
-					Skip("test only valid for BC and DualNICBC (not DualNICBCHA HA)")
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
+					Skip("test only valid for BC, DualNICBC, and T-BC (not DualNICBCHA HA)")
 				}
 				if !bcProfileHasNetworkDisciplinedOsClock((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)) {
 					Skip("requires phc2sysOpts with -a -r for CLOCK_REALTIME reverse-sync; " +
