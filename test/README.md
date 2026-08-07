@@ -17,7 +17,7 @@ To run the conformance tests, first set the following environment variables:
 - **MAX_OFFSET_IN_NS**: maximum offset in nanoseconds between a master and a slave clock when testing clock accuracy. Also used as LocalMaxHoldoverOffset for E810 plugin. Default is 100
 - **MIN_OFFSET_IN_NS**: minimum offset in nanoseconds between a master and a slave clock when testing clock accuracy. Default is -100
 - **MAX_IN_SPEC_OFFSET_NS**: maximum in-spec offset in nanoseconds for E810 plugin holdover specification threshold. Default is 100
-- **ENABLE_PTP_EVENT**: enable event based tests.
+- **ENABLE_PTP_EVENT**: enable event based tests (required for OsClockSyncStateChange consumer asserts; CLOCK_REALTIME metric asserts still run without it).
 - **EVENT_API_VERSION**: passes the default REST-API version for the event based tests. Set this to "2.0" for 4.16+ PUT, "1.0" for 4.15 and earlier. If this is not set, default value "2.0" is used.
 - **ENABLE_V1_REGRESSION**: enable V1 regression for event based tests. For 4.16 and 4.17, event based tests will be repeated the second time with v1 REST-API. These tests are marked with "v1 regression".
 - **EXTERNAL_GM**: enables external grandmaster scenarios
@@ -34,6 +34,13 @@ So for instance to run in discovery mode the command line could look like this:
 ```
 KUBECONFIG="/home/user/.kube/config" PTP_TEST_MODE=Discovery make functests
 ```
+
+To exercise BC reverse-sync `os-clock-sync-state` FREERUN (serial outage recovery test) with events:
+```
+KUBECONFIG="/home/user/.kube/config" PTP_TEST_MODE=BC ENABLE_PTP_EVENT=true SKIP_INTERFACES="eno1,ens2f1" make functests
+```
+(`DualNICBC` is also valid; DualNICBCHA is skipped for this It. Needs a cloud-event-proxy build with reverse-sync FREERUN detection.
+Kind/netdevsim CI skips this It: `DisableAllSlaveRTUpdate` strips `-a -r`, and workers share host `CLOCK_REALTIME`.)
 
 To run all the tests
 ```

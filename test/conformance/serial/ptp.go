@@ -2294,6 +2294,115 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				logrus.Info("Successfully verified T-BC clock class recovery after upstream link outage")
 			})
 
+			// OsClockSyncState goes FREERUN when BC upstream is lost (reverse phc2sys)
+			// and recovers to LOCKED when the link is restored.
+			//
+			// Reproduces Case 04504543 / reverse-sync regression after OCPBUGS-88369:
+			// with phc2sysOpts -a -r, losing the BC slave causes phc2sys to reverse
+			// (PHC ← CLOCK_REALTIME) and stop emitting CLOCK_REALTIME phc offset.
+			// cloud-event-proxy must publish os-clock-sync-state FREERUN.
+			//
+			// Run with: PTP_TEST_MODE=BC (or DualNICBC) ENABLE_PTP_EVENT=true SKIP_INTERFACES=<mgmt,...>
+			// Requires a cloud-event-proxy build that includes reverse-sync FREERUN detection.
+			// Skips on Kind/netdevsim when phc2sysOpts lacks -a -r or CLOCK_REALTIME metric is absent.
+			It("OsClockSyncState goes FREERUN on BC upstream loss and recovers to LOCKED", func() {
+				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock {
+					Skip("test only valid for BC and DualNICBC (not DualNICBCHA HA)")
+				}
+				if !bcProfileHasNetworkDisciplinedOsClock((*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)) {
+					Skip("requires phc2sysOpts with -a -r for CLOCK_REALTIME reverse-sync; " +
+						"skipped on Kind/netdevsim where DisableAllSlaveRTUpdate strips RT sync " +
+						"(shared host CLOCK_REALTIME)")
+				}
+
+				skippedInterfacesStr, isSet := os.LookupEnv("SKIP_INTERFACES")
+				if !isSet {
+					Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
+				}
+				skipInterfaces := make(map[string]bool)
+				for _, val := range strings.Split(skippedInterfacesStr, ",") {
+					skipInterfaces[val] = true
+				}
+
+				slaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestPtpConfig), ptpv1.Slave)
+				if fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock {
+					Expect(fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig).NotTo(BeNil(),
+						"secondary PtpConfig required for dual-NIC BC outage tests")
+					secondarySlaveIf := ptpv1.GetInterfaces((ptpv1.PtpConfig)(*fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig), ptpv1.Slave)
+					slaveIf = append(slaveIf, secondarySlaveIf...)
+				}
+				Expect(slaveIf).ToNot(BeEmpty(), "no slave interfaces found in the clock-under-test PtpConfig(s)")
+
+				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+
+				By("Probing CLOCK_REALTIME/phc2sys metric availability")
+				if !clockRealTimeMetricAvailable(nodeName, 30*time.Second) {
+					Skip("openshift_ptp_clock_state{iface=CLOCK_REALTIME,process=phc2sys} not available; " +
+						"Kind/netdevsim typically omits or neuters phc2sys because workers share host CLOCK_REALTIME")
+				}
+
+				portEngine.Initialize(fullConfig.DiscoveredClockUnderTestPod, slaveIf)
+				DeferCleanup(func() {
+					ptptesthelper.DeletePtpTestPrivilegedDaemonSet(
+						pkg.RecoveryNetworkOutageDaemonSetName,
+						pkg.RecoveryNetworkOutageDaemonSetNamespace,
+					)
+				})
+
+				evCtx := setupOsClockSyncStateEvents(nodeName)
+
+				By("Checking initial CLOCK_REALTIME / OsClockSyncState is LOCKED")
+				Eventually(func() error {
+					return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+					"CLOCK_REALTIME must be LOCKED before outage")
+				if evCtx.available {
+					Expect(event.PushInitialEvent(string(ptpEvent.OsClockSyncStateChange), 30*time.Second)).To(Succeed())
+					waitForOsClockSyncState(evCtx.ch, ptpEvent.LOCKED, pkg.TimeoutIn3Minutes)
+				}
+
+				By("Taking all BC slave interfaces down to force phc2sys reverse-sync")
+				outageStart := time.Now()
+				err := portEngine.TurnAllPortsDown(skipInterfaces)
+				Expect(err).To(BeNil())
+				DeferCleanup(func() {
+					_ = portEngine.TurnAllPortsUp()
+				})
+
+				By("Correlating phc2sys reverse-sync log signals (best-effort)")
+				correlatePhc2sysReverseSync(fullConfig.DiscoveredClockUnderTestPod, outageStart)
+
+				By("Checking CLOCK_REALTIME metric is FREERUN after upstream loss")
+				Eventually(func() error {
+					return metrics.CheckClockRealTimeState(metrics.MetricClockStateFreeRun, &nodeName)
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+					"CLOCK_REALTIME must go FREERUN when BC upstream is lost (reverse phc2sys); "+
+						"stuck LOCKED indicates missing reverse-sync detection in cloud-event-proxy")
+
+				if evCtx.available {
+					By("Checking OsClockSyncStateChange event is FREERUN")
+					waitForOsClockSyncState(evCtx.ch, ptpEvent.FREERUN, pkg.TimeoutIn5Minutes)
+				}
+
+				By("Restoring all BC slave interfaces")
+				err = portEngine.TurnAllPortsUp()
+				Expect(err).To(BeNil())
+
+				By("Checking CLOCK_REALTIME metric recovers to LOCKED")
+				Eventually(func() error {
+					return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+					"CLOCK_REALTIME must return to LOCKED after upstream recovers")
+
+				if evCtx.available {
+					By("Checking OsClockSyncStateChange event recovers to LOCKED")
+					waitForOsClockSyncState(evCtx.ch, ptpEvent.LOCKED, pkg.TimeoutIn5Minutes)
+				}
+
+				logrus.Info("Successfully verified OsClockSyncState FREERUN/LOCKED around BC reverse-sync outage")
+			})
+
 			It("Should restart ptp4l with no socket errors after SIGTERM", func() {
 				verifyProcessRestartNoSocketErrors(fullConfig, "ptp4l")
 			})
@@ -4206,6 +4315,160 @@ func waitForStateAndCC(subs event.Subscriptions, state ptpEvent.SyncState, cc in
 type bcEventContext struct {
 	subs      event.Subscriptions
 	available bool
+}
+
+// bcProfileHasNetworkDisciplinedOsClock reports whether a BC PtpConfig runs
+// phc2sys in automatic mode with CLOCK_REALTIME updates (-a -r). Kind/netdevsim
+// CI sets DisableAllSlaveRTUpdate, which replaces those opts with "-v".
+func bcProfileHasNetworkDisciplinedOsClock(ptpConfig *ptpv1.PtpConfig) bool {
+	if ptpConfig == nil {
+		return false
+	}
+	for i := range ptpConfig.Spec.Profile {
+		opts := ptpConfig.Spec.Profile[i].Phc2sysOpts
+		if opts == nil || *opts == "" {
+			continue
+		}
+		// Field-split so "-r" matches a real flag, not a substring of another opt.
+		hasA, hasR := false, false
+		for _, f := range strings.Fields(*opts) {
+			switch f {
+			case "-a":
+				hasA = true
+			case "-r":
+				hasR = true
+			}
+		}
+		if hasA && hasR {
+			return true
+		}
+	}
+	return false
+}
+
+// clockRealTimeMetricAvailable returns true if CLOCK_REALTIME/phc2sys clock_state
+// is present with any recognized state within timeout.
+func clockRealTimeMetricAvailable(nodeName string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	states := []metrics.MetricClockState{
+		metrics.MetricClockStateLocked,
+		metrics.MetricClockStateFreeRun,
+		metrics.MetricClockStateHoldOver,
+	}
+	for time.Now().Before(deadline) {
+		for _, st := range states {
+			if err := metrics.CheckClockRealTimeState(st, &nodeName); err == nil {
+				return true
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
+// osClockEventContext holds an OsClockSyncStateChange subscription for BC
+// reverse-sync outage tests.
+type osClockEventContext struct {
+	ch        <-chan exports.StoredEvent
+	available bool
+}
+
+// setupOsClockSyncStateEvents deploys the consumer, subscribes to
+// OsClockSyncStateChange, and starts log monitoring. When ENABLE_PTP_EVENT
+// is unset or setup fails, available is false and callers rely on metrics.
+func setupOsClockSyncStateEvents(nodeName string) osClockEventContext {
+	ctx := osClockEventContext{}
+	if !event.Enable() {
+		logrus.Info("ENABLE_PTP_EVENT not set; OsClockSyncStateChange checks will be skipped (metric asserts still run)")
+		return ctx
+	}
+	logrus.Info("Deploy consumer app for OsClockSyncStateChange monitoring")
+	if createErr := event.CreateConsumerApp(nodeName); createErr != nil {
+		logrus.Warnf("PTP events not available: %s; skipping OsClockSyncStateChange checks", createErr)
+		return ctx
+	}
+	if waitErr := event.WaitForConsumerReady(nodeName); waitErr != nil {
+		logrus.Warnf("Consumer app not ready: %s; skipping OsClockSyncStateChange checks", waitErr)
+		return ctx
+	}
+	event.InitPubSub()
+	const incomingEventsBuffer = 100
+	ch, subscriberID := event.PubSub.Subscribe(string(ptpEvent.OsClockSyncStateChange), incomingEventsBuffer)
+	termMonitor, monErr := event.MonitorPodLogsRegex()
+	if monErr != nil {
+		logrus.Warnf("Could not start event monitoring: %s; skipping OsClockSyncStateChange checks", monErr)
+		event.PubSub.Unsubscribe(string(ptpEvent.OsClockSyncStateChange), subscriberID)
+		event.PubSub.Close()
+		if deleteErr := event.DeleteConsumerNamespace(); deleteErr != nil {
+			logrus.Debugf("Deleting consumer namespace failed: %s", deleteErr)
+		}
+		return ctx
+	}
+	ctx.ch = ch
+	ctx.available = true
+	DeferCleanup(func() {
+		stopMonitor(termMonitor)
+		event.PubSub.Unsubscribe(string(ptpEvent.OsClockSyncStateChange), subscriberID)
+		event.PubSub.Close()
+		if deleteErr := event.DeleteConsumerNamespace(); deleteErr != nil {
+			logrus.Debugf("Deleting consumer namespace failed: %s", deleteErr)
+		}
+	})
+	return ctx
+}
+
+// waitForOsClockSyncState waits until an OsClockSyncStateChange notification
+// matches the expected sync state.
+func waitForOsClockSyncState(ch <-chan exports.StoredEvent, expected ptpEvent.SyncState, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			Fail(fmt.Sprintf("Timed out waiting for OsClockSyncStateChange %s", expected))
+			return
+		case ev := <-ch:
+			res, ok := processEvent(ptpEvent.OsClockSyncStateChange, ev)
+			if !ok {
+				continue
+			}
+			stateVal, ok := event.ValueByDataType(res.Values, "notification")
+			if !ok {
+				continue
+			}
+			state, ok := stateVal.(string)
+			if ok && state == string(expected) {
+				fmt.Fprintf(GinkgoWriter, "OsClockSyncStateChange %s verified via Event API\n", expected)
+				return
+			}
+		}
+	}
+}
+
+// correlatePhc2sysReverseSync best-effort checks daemon logs for reverse-sync
+// signals after an outage. Hard assertions remain on CLOCK_REALTIME metrics/events.
+func correlatePhc2sysReverseSync(pod *v1core.Pod, since time.Time) {
+	if pod == nil {
+		return
+	}
+	// Match linuxptp 4.4 phc2sys reverse-sync signals: reconfigure, selecting
+	// <iface> for synchronization, dual-port "already selected", or sys offset.
+	const reverseSyncPattern = `phc2sys(?m).*?(?:reconfiguring after port state change|sys offset|selecting \S+ for synchronization|already selected)`
+	matches, err := pods.GetPodLogsRegexSince(
+		pod.Namespace,
+		pod.Name,
+		pkg.PtpContainerName,
+		reverseSyncPattern,
+		false,
+		pkg.TimeoutIn1Minute,
+		since,
+	)
+	if err != nil || len(matches) == 0 {
+		logrus.Warnf("phc2sys reverse-sync log correlate: no reconfiguring/selection/sys offset lines yet (logReduce may hide them): err=%v", err)
+		return
+	}
+	logrus.Infof("phc2sys reverse-sync correlate: saw %d matching log line(s), last=%q",
+		len(matches), matches[len(matches)-1][0])
 }
 
 // setupBCClockClassEvents creates the consumer app, initializes PubSub,
