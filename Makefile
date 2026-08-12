@@ -192,7 +192,7 @@ $(KUSTOMIZE): $(LOCALBIN)
 		echo "$(LOCALBIN)/kustomize version is not expected $(KUSTOMIZE_VERSION). Removing it before installing."; \
 		rm -rf $(LOCALBIN)/kustomize; \
 	fi
-	test -s $(LOCALBIN)/kustomize || { curl -Ss $(KUSTOMIZE_INSTALL_SCRIPT) | bash -s -- $(subst v,,$(KUSTOMIZE_VERSION)) $(LOCALBIN); }
+	test -s $(LOCALBIN)/kustomize || { curl -fSs --retry 7 --retry-all-errors $(KUSTOMIZE_INSTALL_SCRIPT) | bash -s -- $(subst v,,$(KUSTOMIZE_VERSION)) $(LOCALBIN); }
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary. If wrong version is installed, it will be overwritten.
@@ -208,9 +208,9 @@ operator-sdk: ## Download operator-sdk locally if necessary.
 ifneq ($(OPERATOR_SDK_VERSION),$(OPERATOR_SDK_VERSION_INSTALLED))
 ifeq ($(OS), Darwin)
 	mkdir -p $(LOCALBIN)/x86_64/
-	curl -L https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/operator-sdk/4.17.0/operator-sdk-v1.36.1-ocp-darwin-x86_64.tar.gz? | tar -xz -C bin/
+	curl -fL --retry 7 --retry-all-errors https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/operator-sdk/4.17.0/operator-sdk-v1.36.1-ocp-darwin-x86_64.tar.gz? | tar -xz -C bin/
 else
-	curl -L https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/operator-sdk/4.17.0/operator-sdk-v1.36.1-ocp-linux-x86_64.tar.gz? | tar -xz -C bin/
+	curl -fL --retry 7 --retry-all-errors https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/operator-sdk/4.17.0/operator-sdk-v1.36.1-ocp-linux-x86_64.tar.gz? | tar -xz -C bin/
 endif
 endif
 
@@ -286,7 +286,7 @@ ifeq (,$(shell which opm 2>/dev/null))
 	set -e ;\
 	mkdir -p $(dir $(OPM)) ;\
 	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.60.0/$${OS}-$${ARCH}-opm ;\
+	curl -fsSLo --retry 7 --retry-all-errors $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.60.0/$${OS}-$${ARCH}-opm ;\
 	chmod +x $(OPM) ;\
 	}
 else
