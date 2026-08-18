@@ -1,6 +1,10 @@
 # CI for ptp-operator with netdevsim DKMS modules.
 # Builds DKMS modules from netdevsim-dkms, then runs ptp-operator e2e
 # tests using the checked-out ptp-operator source.
+#
+# Ubuntu 26.04 / ethtool 6.19 is supported by create-vrt-clocks.sh and the
+# apt helpers, but GHA stays on 24.04 until netdevsim-dkms kernel 7.0 shims
+# are on main (DKMS_BRANCH).
 
 name: netdevsim CI
 
@@ -25,12 +29,8 @@ jobs:
   # DKMS build + smoke tests (every PR and workflow_dispatch)
   # ------------------------------------------------------------------
   dkms-test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, ubuntu-26.04]
     steps:
       - name: Runner info
         run: |
@@ -162,8 +162,8 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## DKMS Smoke Tests (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
-          echo "- OS: ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## DKMS Smoke Tests (ubuntu-24.04)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OS: ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
           echo "- Kernel: $(uname -r)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Build: ${{ steps.build.outputs.status || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Load: ${{ steps.load.outputs.load_ok || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
@@ -237,15 +237,14 @@ jobs:
   # ------------------------------------------------------------------
   ptp-test:
     needs: ptp-images
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-26.04]
         mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
     steps:
-      - name: "Runner info (${{ matrix.os }} / ${{ matrix.mode }})"
+      - name: "Runner info (${{ matrix.mode }})"
         run: |
           echo "CPUs: $(nproc)"
           echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
@@ -253,10 +252,11 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      - name: Install podman
+      - name: Install podman 5.x
         timeout-minutes: 10
         run: |
           . /etc/os-release
+          # 26.04 has podman 5.x in the distro; kubic is 22.04/24.04 only.
           if [[ "${VERSION_ID}" == "26.04" ]]; then
             sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" update
             sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install podman
@@ -368,7 +368,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ptp-artifacts-${{ matrix.os }}-${{ matrix.mode }}
+          name: ptp-artifacts-${{ matrix.mode }}
           path: /tmp/artifacts/
           if-no-files-found: ignore
 
@@ -384,6 +384,6 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## ptp-operator: ${{ matrix.os }} / ${{ matrix.mode }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- OS: ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "## ptp-operator: ${{ matrix.mode }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OS: ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
           echo "- Kernel: $(uname -r)" >> "$GITHUB_STEP_SUMMARY"
