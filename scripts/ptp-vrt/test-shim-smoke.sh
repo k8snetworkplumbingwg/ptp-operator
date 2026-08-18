@@ -38,7 +38,10 @@ for netdir in "/sys/bus/pci/devices/${PCI}/net" \
 	[[ -n "$IFACE" ]] && break
 done
 [[ -n "$IFACE" ]]
-PHC=$(ethtool -T "$IFACE" | awk '/PTP Hardware Clock:/ {print $4}')
+PHC=$(ethtool -T "$IFACE" | awk '
+	/PTP Hardware Clock:/ { print $4; exit }
+	/Hardware timestamp provider index:/ { print $5; exit }
+')
 DEV="/dev/ptp${PHC}"
 [[ -e "$DEV" ]]
 # Restrict to owner/group; this smoke test runs as root.
