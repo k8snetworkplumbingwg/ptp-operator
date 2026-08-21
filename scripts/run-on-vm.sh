@@ -216,6 +216,20 @@ run_ptp_tools_parallel_make_step_rows() {
   local -a images=("$@")
   local n=${#images[@]}
 
+  # Cap concurrent podman builds in CI. Parallel builds through the remote
+  # API race on overlay storage ("layer not known" during COPY). Unlimited
+  # locally unless PTP_BUILD_PARALLEL is set.
+  local max_parallel="${PTP_BUILD_PARALLEL:-}"
+  if [[ -z "${max_parallel}" && -n "${GITHUB_ACTIONS:-}" ]]; then
+    max_parallel=2
+  fi
+  if [[ -z "${max_parallel}" || "${max_parallel}" -lt 1 ]]; then
+    max_parallel="${n}"
+  fi
+  if ((max_parallel > n)); then
+    max_parallel="${n}"
+  fi
+
   local -a rows=()
   local _img
   for _img in "${images[@]}"; do
@@ -224,20 +238,31 @@ run_ptp_tools_parallel_make_step_rows() {
   run_step_rows_begin "${rows[@]}"
 
   local fifo="${PTP_RUN_DIR}/ptp-${fifo_tag}-done-$$.fifo"
-  rm -f "${fifo}"
+  local slots="${PTP_RUN_DIR}/ptp-${fifo_tag}-slots-$$.fifo"
+  rm -f "${fifo}" "${slots}"
   mkfifo "${fifo}"
+  mkfifo "${slots}"
   exec 8<> "${fifo}"
+  exec 9<> "${slots}"
+
+  local _s
+  for ((_s = 0; _s < max_parallel; _s++)); do
+    echo >&9
+  done
 
   local -a pids=()
   local _i
   for _i in "${!images[@]}"; do
     (
       _img="${images[$_i]}"
+      # Acquire a concurrency slot, then release it when the build finishes.
+      read -r <&9 || true
       if run_quiet_with_log_dump_on_failure "${make_prefix}-${_img}" make -s "${make_prefix}-${_img}"; then
         echo "${_img}" >&8
       else
         echo "FAIL:${_img}" >&8
       fi
+      echo >&9
     ) &
     pids+=($!)
   done
@@ -267,7 +292,8 @@ run_ptp_tools_parallel_make_step_rows() {
       wait "${_pid}" 2>/dev/null || true
     done
     exec 8>&-
-    rm -f "${fifo}"
+    exec 9>&-
+    rm -f "${fifo}" "${slots}"
     run_step_rows_end
     exit 1
   fi
@@ -277,7 +303,8 @@ run_ptp_tools_parallel_make_step_rows() {
     wait "${_pid}"
   done
   exec 8>&-
-  rm -f "${fifo}"
+  exec 9>&-
+  rm -f "${fifo}" "${slots}"
   run_step_rows_end
 }
 
@@ -293,7 +320,6 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
-
 
 # Kill leftover gnss-sim from a previous run
 pkill -f gnss-sim || true
@@ -343,9 +369,7 @@ if [[ "$RUN_PHASE" == "all" ]]; then
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
     cd ../ptp-tools
-    step "Pushing ptp-tools images"
     run_ptp_tools_parallel_make_step_rows PUSH podman-push push "${_ptp_tool_images[@]}"
-    make podman-cleanall
     cd -
 
 fi
@@ -358,18 +382,18 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     mkdir -p "${PTP_RUN_DIR}/ptp-images-load"
     tar xf "$TARBALL" -C "${PTP_RUN_DIR}/ptp-images-load"
 
-    # Derive the tag list from ptp-tools/Makefile VALUES so it stays in sync
-    # with what the build/save phase produced
-    read_ptp_tool_images
-
     step "Retagging images for local registry"
-    for t in "${_ptp_tool_images[@]}"; do
+    # Derive the tag list from ptp-tools/Makefile VALUES so it stays in sync
+    # with what the build/save phase produced.
+    read_ptp_tool_images
+    TAGS=("${_ptp_tool_images[@]}")
+    for t in "${TAGS[@]}"; do
         podman load -i "${PTP_RUN_DIR}/ptp-images-load/$t.tar"
     done
 
-    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${_ptp_tool_images[0]}$" | head -1 | sed "s/:${_ptp_tool_images[0]}$//")
+    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${TAGS[0]}$" | head -1 | sed "s/:${TAGS[0]}$//")
     if [[ "$OLD_PREFIX" != "$IMG_PREFIX" ]]; then
-        for t in "${_ptp_tool_images[@]}"; do
+        for t in "${TAGS[@]}"; do
             podman tag "$OLD_PREFIX:$t" "$IMG_PREFIX:$t"
         done
     fi
@@ -382,7 +406,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     step "Creating local registry"
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
-    for t in "${_ptp_tool_images[@]}"; do
+    for t in "${TAGS[@]}"; do
         podman push --quiet "$IMG_PREFIX:$t" "docker://$IMG_PREFIX:$t"
     done
 
@@ -443,46 +467,6 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Listing openshift-ptp pods"
     run_ind kubectl get pods -n openshift-ptp -o wide
-
-    SYMLINK_PID=""
-    if [[ "${DKMS_MODE}" == "true" ]]; then
-        bash -c '
-        while true; do
-          for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
-                       --field-selector=status.phase=Running -o name 2>/dev/null); do
-            kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
-              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do ln -sf nsim_ptp\$i /dev/ptp\$i 2>/dev/null; done" \
-              2>/dev/null || true
-          done
-          sleep 5
-        done
-        ' &
-        SYMLINK_PID=$!
-        echo "Symlink maintainer PID: $SYMLINK_PID"
-        cleanup_symlink() { [[ -n "$SYMLINK_PID" ]] && kill "$SYMLINK_PID" 2>/dev/null || true; }
-        trap cleanup_symlink EXIT
-    fi
-
-    # Start GNSS simulator as a pod for T-GM simulation tests
-    export GNSS_SIM_IMAGE="${IMG_PREFIX}:gnss-sim"
-    ./configGNSS.sh
-
-    # Read the gnss-sim pod's node IP for test framework API access
-    export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
-
-    # Export GNSS simulation env vars so the test framework can discover them.
-    GNSS_KERNEL_DEV=""
-    for g in /dev/gnss*; do
-        [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
-    done
-    if [ -n "$GNSS_KERNEL_DEV" ]; then
-        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
-    else
-        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
-    fi
-    export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
-    export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
-    export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
     ./run-tests.sh --kind serial --mode "$TEST_MODES" \
       --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \

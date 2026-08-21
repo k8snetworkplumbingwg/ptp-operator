@@ -60,7 +60,6 @@ func Configs() {
 	for _, ptpConfig := range ptpconfigList.Items {
 		if ptpConfig.Name == pkg.PtpGrandMasterPolicyName ||
 			ptpConfig.Name == pkg.PtpWPCGrandMasterPolicyName ||
-			ptpConfig.Name == pkg.PtpSimGrandMasterPolicyName ||
 			ptpConfig.Name == pkg.PtpBcMaster1PolicyName ||
 			ptpConfig.Name == pkg.PtpSlave1PolicyName ||
 			ptpConfig.Name == pkg.PtpBcMaster2PolicyName ||

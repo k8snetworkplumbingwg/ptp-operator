@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: add-gnss
+  DKMS_BRANCH: main
   # Optional: set to "true" to stream run-on-vm child command logs.
   # RUN_ON_VM_VERBOSE: "true"
 
@@ -164,37 +164,17 @@ jobs:
           df -h
 
       - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-install-podman.sh"
 
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
       - name: "Build images and export tarball"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
+          sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -233,26 +213,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+        run: bash "$GITHUB_WORKSPACE/scripts/ci-install-podman.sh"
 
       - name: Install OpenShift CLI (oc)
         run: |
@@ -300,12 +261,11 @@ jobs:
           path: /tmp
 
       - name: "Load images into local registry"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'LOAD'
+          sudo bash -l <<'LOAD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -324,12 +284,11 @@ jobs:
           CLEANUP
 
       - name: "Run scenario: ${{ matrix.mode }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'DEPLOY'
+          sudo bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
           export ENABLE_CEPV2=true

@@ -1,0 +1,68 @@
+diff --git a/pkg/parser/ptp4l_parser.go b/pkg/parser/ptp4l_parser.go
+index 60ef9b27..6d7c0077 100644
+--- a/pkg/parser/ptp4l_parser.go
++++ b/pkg/parser/ptp4l_parser.go
+@@ -41,7 +41,10 @@ var (
+ 			`\s+offset\s+(?P<offset>-?\d+)` +
+ 			`\s+(?P<servo_state>s\d)` +
+ 			`\s+freq\s+(?P<freq_adj>[-+]?\d+)` +
+-			`\s*(?:path\s+delay\s+(?P<delay>\d+))?` +
++			// path delay can be negative when master/slave PHC epochs diverge
++			// (e.g. GNSS-synced BC → cold OC on netdevsim); still parse the line
++			// so clock_state/offset metrics are published.
++			`\s*(?:path\s+delay\s+(?P<delay>-?\d+))?` +
+ 			`$`,
+ 	)
+ )
+diff --git a/pkg/parser/ptp4l_parser_internal_test.go b/pkg/parser/ptp4l_parser_internal_test.go
+index 117cc01f..59349bd1 100644
+--- a/pkg/parser/ptp4l_parser_internal_test.go
++++ b/pkg/parser/ptp4l_parser_internal_test.go
+@@ -73,6 +73,21 @@ func TestPTP4LParser(t *testing.T) {
+ 				ServoState: "s2",
+ 			},
+ 		},
++		{
++			name:    "Valid regular metrics with negative path delay",
++			logLine: "ptp4l[1242.363]: [ptp4l.0.config:6] master offset        101 s2 freq   +1943 path delay -1791451314652049631",
++			regex:   regularPTP4LRegex,
++			expectedResult: &ptp4lParsed{
++				Timestamp:      "1242.363",
++				ConfigName:     "ptp4l.0.config",
++				ServerityLevel: _ptr(6),
++				Interface:      "master",
++				Offset:         _ptr(101.0),
++				FreqAdj:        _ptr(1943.0),
++				Delay:          _ptr(-1791451314652049631.0),
++				ServoState:     "s2",
++			},
++		},
+ 		{
+ 			name:           "Empty log line summary",
+ 			logLine:        "",
+diff --git a/pkg/parser/ptp4l_parser_test.go b/pkg/parser/ptp4l_parser_test.go
+index 720b6905..0fbfba6d 100644
+--- a/pkg/parser/ptp4l_parser_test.go
++++ b/pkg/parser/ptp4l_parser_test.go
+@@ -74,6 +74,21 @@ func TestPTP4LParser(t *testing.T) {
+ 				Source:     constants.Master,
+ 			},
+ 		},
++		{
++			name:       "Valid regular metrics with negative path delay",
++			configName: "ptp4l.0.config",
++			logLine:    "ptp4l[1242.363]: [ptp4l.0.config:6] master offset        101 s2 freq   +1943 path delay -1791451314652049631",
++			expectedMetric: &parser.Metrics{
++				Iface:      constants.Master,
++				Offset:     101,
++				MaxOffset:  101,
++				FreqAdj:    1943,
++				Delay:      -1791451314652049631,
++				ClockState: constants.ClockStateLocked,
++				ServoState: "s2",
++				Source:     constants.Master,
++			},
++		},
+ 	}
+ 
+ 	for _, tt := range tests {
