@@ -1692,9 +1692,9 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-// ApplyIntegratedGnssSimWPCPCIOverlay sets IfPci.Subsystem on selected interfaces so the L2 graph
-// solver treats them as Intel WPC (StepIsWPCNic / AlgoTelcoGMString) on netdevsim CI where real
-// E810 PCI identity is absent. Matches solver.WPCNICSubsystemID prefix "E810-XXV-4T".
+// ApplyIntegratedGnssSimWPCPCIOverlay stamps selected L2 interfaces as Intel WPC
+// (E810-XXV-4T) so StepIsWPCNic can match on netdevsim, where real E810 PCI identity
+// is absent. Called for every PTP_TEST_MODE; modes without StepIsWPCNic ignore the stamp.
 func ApplyIntegratedGnssSimWPCPCIOverlay() {
 	list := strings.TrimSpace(os.Getenv("GNSS_SIM_WPC_IFACES"))
 	if list == "" {
@@ -1730,5 +1730,5 @@ func ApplyIntegratedGnssSimWPCPCIOverlay() {
 	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfListUnfiltered {
 		patch(p)
 	}
-	logrus.Infof("Applied L2 WPC PCI overlay for netdevsim Telco GM (no E810 in L2): interfaces %v", want)
+	logrus.Infof("Applied L2 WPC PCI overlay for netdevsim (no E810 in L2): interfaces %v", want)
 }

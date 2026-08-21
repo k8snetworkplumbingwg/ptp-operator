@@ -588,13 +588,15 @@ func createPtpConfigurations(ctx context.Context) error {
 	logrus.Tracef("L2DiscoveryConfig: %s\n", config)
 	logrus.Tracef("L2 ifListFiltered=%+v, ifListUnfiltered=%+v", config.GetPtpIfList(), config.GetPtpIfListUnfiltered())
 	GlobalConfig.L2Config = config
-	// WPC overlay is T-GM-only so DualNICBC still solves on worker2 ens3f*.
+	// GNRD PCI rewrite is only needed for T-GM StepIsWPCNic on hardware GNSS NICs.
 	switch GlobalConfig.PtpModeDesired {
 	case TelcoGrandMasterClock, TelcoGMOC, TelcoGMBC:
 		ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
-		if ptphelper.IsGnssSimConfigured() && !ptphelper.L2ConfigReportsIntelWPC(config) {
-			ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
-		}
+	}
+	// Stamp gnss-sim ports as E810 WPC in L2 for every mode when no real WPC is present.
+	// T-GM matches them with StepIsWPCNic; other modes do not use that constraint.
+	if ptphelper.IsGnssSimConfigured() && !ptphelper.L2ConfigReportsIntelWPC(config) {
+		ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
 	}
 
 	if GlobalConfig.PtpModeDesired != Discovery {
