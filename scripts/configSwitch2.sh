@@ -37,7 +37,9 @@ podman exec switch1 yum install iputils iproute ptp4l ethtool ps -y
 # Server 2 nic 1 (3 ports: ens3f0/ens3f1 on VLAN 1500, ens3f2 on VLAN 1502 for cross-VLAN BC)
 ./configpair.sh 9 10 ens3f0 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.0 ${PCI_PREFIX}:0b.0
 ./configpair.sh 11 12 ens3f1 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.1 ${PCI_PREFIX}:0c.0
-./configpair.sh 19 20 ens3f2 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.2 ${PCI_PREFIX}:10.0
+# PCI device numbers are 0-31. create-vrt-clocks.sh uses :10.0-:12.0 for
+# virtual CLOCK_REALTIME PHCs, so ens3f2 takes the next free slot :13.0.
+./configpair.sh 19 20 ens3f2 3 0 kind-netdevsim-worker2 switch1 ${PCI_PREFIX}:03.2 ${PCI_PREFIX}:13.0
 
 # Server 3 nic 1
 ./configpair.sh 13 14 ens4f0 4 0 kind-netdevsim-worker3 switch1 ${PCI_PREFIX}:04.0 ${PCI_PREFIX}:0d.0

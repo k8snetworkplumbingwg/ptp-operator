@@ -2,7 +2,28 @@ FROM docker.io/golang:1.25.7 AS daemon-builder
 WORKDIR /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
 ENV GOMAXPROCS=16
 
-RUN git clone -b main https://github.com/k8snetworkplumbingwg/linuxptp-daemon.git  /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
+# CI daemon patches (skip when already present on linuxptp-daemon main).
+COPY ptp-tools/patches/nmea-status-bool-metric.patch /tmp/nmea-status-bool-metric.patch
+COPY ptp-tools/patches/gm-gnss-sim-leading-iface.patch /tmp/gm-gnss-sim-leading-iface.patch
+COPY ptp-tools/patches/ipc-no-drop-clock-class.patch /tmp/ipc-no-drop-clock-class.patch
+COPY ptp-tools/patches/ptp4l-signed-path-delay.patch /tmp/ptp4l-signed-path-delay.patch
+RUN git clone -b main https://github.com/k8snetworkplumbingwg/linuxptp-daemon.git /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon \
+    && cd /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon \
+    && for patch in \
+         /tmp/nmea-status-bool-metric.patch \
+         /tmp/gm-gnss-sim-leading-iface.patch \
+         /tmp/ipc-no-drop-clock-class.patch \
+         /tmp/ptp4l-signed-path-delay.patch; do \
+         if git apply --check "$patch"; then \
+           git apply "$patch"; \
+           echo "applied $(basename "$patch")"; \
+         elif git apply --reverse --check "$patch"; then \
+           echo "$(basename "$patch") already in linuxptp-daemon main"; \
+         else \
+           echo "$(basename "$patch") does not apply to linuxptp-daemon main" >&2; \
+           exit 1; \
+         fi; \
+       done
 
 RUN make clean && make -j 16
 
@@ -10,7 +31,7 @@ FROM quay.io/centos/centos:stream9
 ARG LINUXPTP_RPM=""
 
 RUN yum -y update && yum --setopt=skip_missing_names_on_install=False -y install \
-    linuxptp ethtool hwdata synce4l procps-ng chrony iproute \
+    linuxptp ethtool hwdata synce4l procps-ng chrony \
     gpsd-minimal gpsd-minimal-clients && yum clean all
 
 COPY ptp-tools/extra/ /tmp/extra/

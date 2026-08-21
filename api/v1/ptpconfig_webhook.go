@@ -460,9 +460,17 @@ func GetInterfaces(config PtpConfig, mode PtpRole) (interfaces []string) {
 		logrus.Warnf("No profile detected for ptpconfig %s", config.ObjectMeta.Name)
 		return interfaces
 	}
+	// HA-only profiles (phc2sys + haProfiles) intentionally omit Ptp4lConf.
+	ptp4lConf := config.Spec.Profile[0].Ptp4lConf
+	if ptp4lConf == nil || strings.TrimSpace(*ptp4lConf) == "" {
+		if mode == Slave && config.Spec.Profile[0].Interface != nil {
+			return []string{*config.Spec.Profile[0].Interface}
+		}
+		return interfaces
+	}
 	conf := &Ptp4lConf{}
 	var dummy *string
-	err := conf.PopulatePtp4lConf(config.Spec.Profile[0].Ptp4lConf, dummy)
+	err := conf.PopulatePtp4lConf(ptp4lConf, dummy)
 	if err != nil {
 		logrus.Warnf("ptp4l conf parsing failed, err=%s", err)
 	}

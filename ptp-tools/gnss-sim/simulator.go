@@ -172,21 +172,29 @@ func NewSimulator(state *SimState, writers ...io.Writer) *Simulator {
 // Run starts the 1 Hz generation loop. It blocks until Stop() is called.
 // Each tick generates GNRMC, GNGGA, and GPZDA sentences and writes them
 // to all configured writers.
+//
+// Emissions are aligned to UTC second boundaries (plus a small delay) so
+// NMEA TOD matches the mock PHC's TAI-aligned 1PPS edges that ts2phc pairs
+// against. A free-running time.Ticker drifts relative to those edges and
+// periodically causes second-boundary mis-pairing.
 func (sim *Simulator) Run() {
 	defer close(sim.done)
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
 
 	log.Println("GNSS simulator started, generating NMEA at 1 Hz")
 
 	for {
+		now := time.Now().UTC()
+		next := now.Truncate(time.Second).Add(time.Second + 50*time.Millisecond)
+		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-sim.stop:
+			if !timer.Stop() {
+				<-timer.C
+			}
 			log.Println("GNSS simulator stopped")
 			return
-		case now := <-ticker.C:
-			sim.generate(now)
+		case t := <-timer.C:
+			sim.generate(t.UTC())
 		}
 	}
 }

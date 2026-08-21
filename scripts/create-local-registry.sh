@@ -11,25 +11,13 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes  -keyout ~/registry
 
 openssl x509 -in ~/registry/registry.crt -out ~/registry/registry.pem -outform PEM
 
-if [ -d /usr/local/share/ca-certificates ]; then
+if [[ "${DKMS_MODE:-}" == "true" ]]; then
     cp ~/registry/registry.pem /usr/local/share/ca-certificates/registry.crt
     update-ca-certificates
-elif [ -d /etc/pki/ca-trust/source/anchors ]; then
-    cp ~/registry/registry.pem /etc/pki/ca-trust/source/anchors/registry.pem
-    update-ca-trust
 else
-    echo "WARNING: Could not find CA certificate directory"
+    sudo mv ~/registry/registry.pem /etc/pki/ca-trust/source/anchors/
+    update-ca-trust
 fi
-
-# Create the containerd certificate trust bundle that Kind nodes will mount at
-# /etc/containerd/certs.d/$VM_IP/ (via kind-config.yaml extraMounts).
-cp ~/registry/registry.crt ~/registry/ca.crt
-cat > ~/registry/hosts.toml <<EOF
-server = "https://$VM_IP"
-
-[host."https://$VM_IP"]
-  ca = "/etc/containerd/certs.d/$VM_IP/ca.crt"
-EOF
 
 podman run -d \
   --restart=always \

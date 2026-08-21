@@ -148,7 +148,7 @@ func configFileFromLogID(logID string) string {
 
 // getClockIDViaPMC runs "pmc GET PARENT_DATA_SET" against the given ptp4l config
 // file inside the linuxptp-daemon pod and returns the value of the requested
-// field (e.g. "grandmasterIdentity" or "parentPortIdentity.clockIdentity").
+// field (e.g. "grandmasterIdentity" or "parentPortIdentity").
 func getClockIDViaPMC(pod *corev1.Pod, configFile, field string) (string, error) {
 	// Handle special case for extracting clock ID from port identity.
 	// PMC output shows "parentPortIdentity" as "clockIdentity-portNumber"
@@ -163,6 +163,8 @@ func getClockIDViaPMC(pod *corev1.Pod, configFile, field string) (string, error)
 	}
 
 	re := regexp.MustCompile(`(?m)` + regexp.QuoteMeta(queryField) + `\s+(\S+)`)
+	// pmc treats each positional arg after options as a separate command.
+	// "GET" and "PARENT_DATA_SET" must be a single argv entry.
 	buf, _, err := pods.ExecCommand(client.Client, true, pod,
 		pkg.PtpContainerName, []string{"pmc", "-b", "0", "-u", "-f", configFile, "GET PARENT_DATA_SET"})
 	if err != nil {
@@ -186,6 +188,19 @@ func getClockIDViaPMC(pod *corev1.Pod, configFile, field string) (string, error)
 	return result, nil
 }
 
+// ptp4lLogTagPattern matches the bracketed ptp4l message tag.
+// Parsed logs use "ptp4l.0.config:{level}". The /var/run fallback returns
+// "ptp4l.0.config", while ptp4l prints "[ptp4l.0.config:5]".
+func ptp4lLogTagPattern(logID string) string {
+	if strings.Contains(logID, "{level}") {
+		return strings.Replace(logID, "{level}", `\d+`, 1)
+	}
+	if strings.Contains(logID, ":") {
+		return logID
+	}
+	return regexp.QuoteMeta(logID) + `(?::\d+)?`
+}
+
 func GetClockIDMaster(ptpConfigName string, profileName string, label *string, nodeName *string, isGM bool) (string, error) {
 	const clockIDGMRegex = `(?m)\[%s\] selected local clock (.*) as best master`
 	const clockIDBCRegex = `(?m)\[%s\] selected best master clock (.*)`
@@ -199,9 +214,7 @@ func GetClockIDMaster(ptpConfigName string, profileName string, label *string, n
 		return "", err
 	}
 	configFile := configFileFromLogID(logID)
-	if strings.Contains(logID, "level") {
-		logID = strings.Replace(logID, "{level}", "\\d+", 1)
-	}
+	logID = ptp4lLogTagPattern(logID)
 	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
 		return "", err
@@ -225,9 +238,7 @@ func GetClockIDForeign(ptpConfigName string, profileName string, label *string, 
 		return "", err
 	}
 	configFile := configFileFromLogID(logID)
-	if strings.Contains(logID, "level") {
-		logID = strings.Replace(logID, "{level}", "\\d+", 1)
-	}
+	logID = ptp4lLogTagPattern(logID)
 	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
 		return "", err
@@ -240,7 +251,9 @@ func GetClockIDForeign(ptpConfigName string, profileName string, label *string, 
 		return matches[len(matches)-1][clockIDForeignIndex], nil
 	}
 	logrus.Infof("GetClockIDForeign: log parsing failed for %s, falling back to pmc: %v", profileName, err)
-	return getClockIDViaPMC(pod, configFile, "parentPortIdentity.clockIdentity")
+	// "selected best master clock" is the grandmaster identity. Behind a
+	// boundary clock, parentPortIdentity is the BC port and does not match.
+	return getClockIDViaPMC(pod, configFile, "grandmasterIdentity")
 }
 
 // WaitForClockIDForeign searches the slave's log stream for a specific expected
@@ -252,9 +265,7 @@ func WaitForClockIDForeign(ptpConfigName string, profileName string, label *stri
 	if err != nil {
 		return fmt.Errorf("could not get profile log ID: %w", err)
 	}
-	if strings.Contains(logID, "level") {
-		logID = strings.Replace(logID, "{level}", "\\d+", 1)
-	}
+	logID = ptp4lLogTagPattern(logID)
 	pod, err := findMatchingPod(label, nodeName)
 	if err != nil {
 		return fmt.Errorf("no matching pod found for profile %s: %w", profileName, err)
@@ -1019,6 +1030,7 @@ func GetProfileName(config *ptpv1.PtpConfig, receiverOnly bool) (string, error) 
 		}
 		switch *profile.Name {
 		case pkg.PtpGrandMasterPolicyName,
+			pkg.PtpWPCGrandMasterPolicyName,
 			pkg.PtpBcMaster1PolicyName,
 			pkg.PtpBcMaster2PolicyName,
 			pkg.PtpSlave1PolicyName,
@@ -1273,10 +1285,25 @@ func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 	}
 	return nil, ""
 }
+
+// nicBaseName returns the shared prefix for ports on the same NIC.
+// Legacy: ens1f0/ens1f1 → "ens1f". Netdev: ens7f0np0/ens7f1np1 → "ens7f".
+func nicBaseName(iface string) string {
+	re := regexp.MustCompile(`^(.*f)\d+(?:np\d+)?$`)
+	if m := re.FindStringSubmatch(iface); m != nil {
+		return m[1]
+	}
+	if idx := strings.LastIndex(iface, "np"); idx > 0 {
+		return iface[:idx]
+	}
+	return strings.TrimRight(iface, "0123456789")
+}
+
 func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
 	var ret = make([]string, 0)
+	base := nicBaseName(firstIface)
 	for _, iFace := range WPCifaces {
-		if strings.HasPrefix(iFace, strings.TrimSuffix(firstIface, "0")) {
+		if nicBaseName(iFace) == base {
 			ret = append(ret, iFace)
 		}
 	}
@@ -1777,6 +1804,7 @@ func IsGnssSimulatedCI() bool {
 
 // IsGnssSimConfigured returns true when GNSS simulation env vars are set,
 // indicating the CI environment has a gnss-sim instance available.
+// run-tests.sh exports those vars only for tgm/tgmoc/tgmbc.
 func IsGnssSimConfigured() bool {
 	_, hasDevice := os.LookupEnv("GNSS_SIM_NMEA_DEVICE")
 	_, hasIface := os.LookupEnv("GNSS_SIM_IFACE1")

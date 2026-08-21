@@ -34,6 +34,14 @@ if [[ "${DKMS_MODE:-}" == "true" ]]; then
     modprobe -r nsim_dpll || true
     modprobe -r nsim_ptp_mock || true
     modprobe -r nsim_ptp || true
+    # Reload gnss module to reset the GNSS IDA minor allocator so new
+    # devices start from gnss0 (gpsd/ts2phc expect /dev/gnss0).
+    # Callers must stop gnss-sim / linuxptp-daemon (or any /dev/gnss*
+    # opener) first; otherwise gnss stays busy and IDs resume at gnss1+.
+    if ! modprobe -r gnss 2>/dev/null; then
+        echo "WARNING: could not unload gnss (still in use?); /dev/gnss0 may be skipped" >&2
+    fi
+    modprobe gnss
     modprobe nsim_ptp
     modprobe nsim_dpll
     modprobe netdevsim pci_bus_nr=0x1f
@@ -48,4 +56,7 @@ else
     modprobe gnss
     modprobe netdevsim pci_bus_nr=0x1f
 fi
+# gpsd drops to nobody; without world/group access it fails with EACCES
+# and frees /dev/gnss*, which starves ts2phc of NMEA.
+chmod 666 /dev/gnss* 2>/dev/null || true
 modprobe openvswitch

@@ -44,7 +44,8 @@ func main() {
 	flag.StringVar(&gnssDev, "gnss-dev", "", "Kernel GNSS device path (e.g. /dev/gnss0); writes NMEA into the kernel read FIFO")
 	flag.StringVar(&ptyLinks, "pty-links", "", "Comma-separated symlink paths; creates a PTY pair per path and writes to the master")
 	flag.StringVar(&apiPort, "api-port", "9200", "HTTP API listen port")
-	flag.IntVar(&holdoverTimeout, "holdover-timeout", 5, "DPLL holdover timeout in seconds before transitioning to FREERUN")
+	// Default 60s so CI holdover tests can observe CC7 in Prometheus before FREERUN.
+	flag.IntVar(&holdoverTimeout, "holdover-timeout", 60, "DPLL holdover timeout in seconds before transitioning to FREERUN")
 	flag.StringVar(&dpllSysfsPath, "dpll-sysfs", "", "Path to DPLL lock_status sysfs file (e.g. /sys/bus/pci/devices/0001:1f:01.0/dpll/lock_status)")
 	flag.Parse()
 

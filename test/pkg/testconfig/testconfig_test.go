@@ -608,3 +608,42 @@ func GeneratePTPObjects(mode PTPMode) {
 		_ = testclient.GetTestClientSet(mockClientObjects)
 	}
 }
+
+func TestStripPhc2sysRealtimeOpts(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "-a -r -n 24 -m -N 8 -R 16", want: "-a -n 24 -m -N 8 -R 16"},
+		{in: "-a -r -r -n 24", want: "-a -n 24"},
+		{in: "-a -n 24", want: "-a -n 24"},
+		{in: "  -a   -r  -m  ", want: "-a -m"},
+	}
+	for _, tt := range tests {
+		if got := stripPhc2sysRealtimeOpts(tt.in); got != tt.want {
+			t.Fatalf("stripPhc2sysRealtimeOpts(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIsTelcoGMMode(t *testing.T) {
+	gm := map[PTPMode]bool{
+		TelcoGrandMasterClock: true,
+		TelcoGMOC:             true,
+		TelcoGMBC:             true,
+	}
+	nonGM := []PTPMode{
+		OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA,
+		DualFollowerClock, Discovery, TelcoBoundaryClock, None,
+	}
+	for mode, want := range gm {
+		if got := isTelcoGMMode(mode); got != want {
+			t.Errorf("isTelcoGMMode(%s) = %v, want %v", mode, got, want)
+		}
+	}
+	for _, mode := range nonGM {
+		if isTelcoGMMode(mode) {
+			t.Errorf("isTelcoGMMode(%s) = true, want false", mode)
+		}
+	}
+}
