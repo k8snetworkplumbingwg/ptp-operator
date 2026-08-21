@@ -294,6 +294,17 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
+step "Tidying and vendoring Go dependencies"
+run_step_rows_begin "go mod tidy" "go mod vendor"
+
+run_quiet_with_log_dump_on_failure "go-mod-tidy" go mod tidy
+run_step_row_done "go mod tidy"
+
+run_quiet_with_log_dump_on_failure "go-mod-vendor" go mod vendor
+run_step_row_done "go mod vendor"
+
+run_step_rows_end
+
 
 # Kill leftover gnss-sim from a previous run
 pkill -f gnss-sim || true
@@ -359,16 +370,15 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     mkdir -p "${PTP_RUN_DIR}/ptp-images-load"
     tar xf "$TARBALL" -C "${PTP_RUN_DIR}/ptp-images-load"
 
-    read_ptp_tool_images
-
     step "Retagging images for local registry"
-    for t in "${_ptp_tool_images[@]}"; do
+    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug gnss-sim)
+    for t in "${TAGS[@]}"; do
         podman load -i "${PTP_RUN_DIR}/ptp-images-load/$t.tar"
     done
 
-    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${_ptp_tool_images[0]}$" | head -1 | sed "s/:${_ptp_tool_images[0]}$//")
+    OLD_PREFIX=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep ":${TAGS[0]}$" | head -1 | sed "s/:${TAGS[0]}$//")
     if [[ "$OLD_PREFIX" != "$IMG_PREFIX" ]]; then
-        for t in "${_ptp_tool_images[@]}"; do
+        for t in "${TAGS[@]}"; do
             podman tag "$OLD_PREFIX:$t" "$IMG_PREFIX:$t"
         done
     fi
@@ -381,7 +391,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     step "Creating local registry"
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
-    for t in "${_ptp_tool_images[@]}"; do
+    for t in "${TAGS[@]}"; do
         podman push --quiet "$IMG_PREFIX:$t" "docker://$IMG_PREFIX:$t"
     done
 

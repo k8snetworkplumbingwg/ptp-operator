@@ -148,9 +148,11 @@ func configFileFromLogID(logID string) string {
 
 // getClockIDViaPMC runs "pmc GET PARENT_DATA_SET" against the given ptp4l config
 // file inside the linuxptp-daemon pod and returns the value of the requested
-// field (e.g. "grandmasterIdentity" or "parentPortIdentity.clockIdentity").
+// field (e.g. "grandmasterIdentity" or "parentPortIdentity").
 func getClockIDViaPMC(pod *corev1.Pod, configFile, field string) (string, error) {
 	re := regexp.MustCompile(`(?m)` + regexp.QuoteMeta(field) + `\s+(\S+)`)
+	// pmc treats each positional arg after options as a separate command.
+	// "GET" and "PARENT_DATA_SET" must be a single argv entry.
 	buf, _, err := pods.ExecCommand(client.Client, true, pod,
 		pkg.PtpContainerName, []string{"pmc", "-b", "0", "-u", "-f", configFile, "GET PARENT_DATA_SET"})
 	if err != nil {
@@ -217,7 +219,17 @@ func GetClockIDForeign(ptpConfigName string, profileName string, label *string, 
 		return matches[len(matches)-1][clockIDForeignIndex], nil
 	}
 	logrus.Infof("GetClockIDForeign: log parsing failed for %s, falling back to pmc: %v", profileName, err)
-	return getClockIDViaPMC(pod, configFile, "parentPortIdentity.clockIdentity")
+	// linuxptp pmc prints "parentPortIdentity <clockId>-<port>", not
+	// "parentPortIdentity.clockIdentity". Strip the port suffix for callers
+	// that compare against grandmasterIdentity.
+	id, pmcErr := getClockIDViaPMC(pod, configFile, "parentPortIdentity")
+	if pmcErr != nil {
+		return "", pmcErr
+	}
+	if dash := strings.LastIndex(id, "-"); dash > 0 {
+		id = id[:dash]
+	}
+	return id, nil
 }
 
 // WaitForClockIDForeign searches the slave's log stream for a specific expected
@@ -1250,10 +1262,25 @@ func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 	}
 	return nil, ""
 }
+
+// nicBaseName returns the shared prefix for ports on the same NIC.
+// Legacy: ens1f0/ens1f1 → "ens1f". Netdev: ens7f0np0/ens7f1np1 → "ens7f".
+func nicBaseName(iface string) string {
+	re := regexp.MustCompile(`^(.*f)\d+(?:np\d+)?$`)
+	if m := re.FindStringSubmatch(iface); m != nil {
+		return m[1]
+	}
+	if idx := strings.LastIndex(iface, "np"); idx > 0 {
+		return iface[:idx]
+	}
+	return strings.TrimRight(iface, "0123456789")
+}
+
 func addAllInterfacesForNic(WPCifaces map[string]string, firstIface string) []string {
 	var ret = make([]string, 0)
+	base := nicBaseName(firstIface)
 	for _, iFace := range WPCifaces {
-		if strings.HasPrefix(iFace, strings.TrimSuffix(firstIface, "0")) {
+		if nicBaseName(iFace) == base {
 			ret = append(ret, iFace)
 		}
 	}

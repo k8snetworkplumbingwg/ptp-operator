@@ -111,7 +111,7 @@ flowchart LR
         ubxtool["ubxtool"]
         monitor["MonitorGNSSEvents<br/>WithUblox"]
         ptp4l["ptp4l"]
-        phc2sys["phc2sys"]
+        phc2sys["phc2sys<br/>(baremetal only)"]
     end
 
     gnss_sim -->|"write NMEA"| gnss_dev
@@ -120,7 +120,8 @@ flowchart LR
     gnss_dev --> gga_parser -->|"gnss_gps_fix"| ubx_timer
     ubx_timer -->|"NAV-STATUS"| gnss_dev
     ptp_mock -->|"EXTTS 1PPS"| ts2phc
-    ts2phc --> ptp4l --> phc2sys
+    ts2phc --> ptp4l
+    ptp4l -.->|"omitted in Kind/netdevsim"| phc2sys
     gpsd --> ubxtool --> monitor
     ntf_timer -->|"dpll_pin_change_ntf"| daemon
 ```
@@ -363,7 +364,7 @@ sequenceDiagram
     Kernel->>UBX: read gpsFix=0
     UBX->>Daemon: GNSS HOLDOVER (CC7)
     Daemon->>Events: ptp-state-change (HOLDOVER)
-    Note over Kernel: After holdover timeout (15s default)
+    Note over Kernel: After holdover timeout (30s default)
     Kernel->>Kernel: DPLL: HOLDOVER → UNLOCKED
     Timer->>Kernel: NAV-CLOCK tAcc=999999 (out of spec)
     UBX->>Daemon: GNSS FREERUN (CC248)
@@ -542,10 +543,10 @@ flowchart LR
 | Context | Test | What it verifies |
 |---------|------|-----------------|
 | TGM | Signal loss/recovery events | GNSS state change, clock class 6 -> 7 -> 248 -> 6, cloud events |
-| TGM | Process status | ts2phc, ptp4l, phc2sys, gpsd running |
+| TGM | Process status | ts2phc, ptp4l, gpsd running (phc2sys omitted: shared host CLOCK_REALTIME) |
 | TGM | Clock state via metrics | `openshift_ptp_clock_class` reaches 6 |
 | TGM | DPLL state via gnss-sim API | DPLL reports LOCKED |
-| TGMOC | GM process status + CC6 | ts2phc, ptp4l, phc2sys running; clock class reaches 6 |
+| TGMOC | GM process status + CC6 | ts2phc, ptp4l running; clock class reaches 6 |
 | TGMOC | Downstream OC sync | OC slave synchronized to WPC T-GM |
 | TGMBC | GM + BC reach Locked CC6 | Both GM and BC achieve clock class 6 |
 | TGMBC | Cascading holdover on GNSS loss | Signal loss degrades GM CC, BC cascades; restore recovers both |
