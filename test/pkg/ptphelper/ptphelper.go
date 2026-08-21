@@ -1127,57 +1127,6 @@ func wpcInterfacesOnNode(l2Config l2exports.L2Info, nodeName string) ([]string, 
 	return group, err
 }
 
-// GetWPCEnabledInterfaces returns the WPC-enabled network interfaces for a
-// given node. Interfaces are grouped by PTP hardware clock and the first
-// group whose PHC has pin support is selected.
-func GetWPCEnabledInterfaces(nodeName string) (interfaces []string, err error) {
-	WPCifaces := getWPCEnabledIfacesFromSysfs(nodeName)
-	if len(WPCifaces) == 0 {
-		return nil, nil
-	}
-
-	phcGroups := make(map[int][]string)
-	for _, iFace := range WPCifaces {
-		if iFace == "" {
-			continue
-		}
-		idx, err := getPTPHardwareClockIndex(nodeName, iFace)
-		if err != nil {
-			continue
-		}
-		phcGroups[idx] = append(phcGroups[idx], iFace)
-	}
-
-	if len(phcGroups) == 0 {
-		return nil, nil
-	}
-
-	phcIndexes := make([]int, 0, len(phcGroups))
-	for idx := range phcGroups {
-		phcIndexes = append(phcIndexes, idx)
-	}
-	sort.Ints(phcIndexes)
-
-	for _, idx := range phcIndexes {
-		group := phcGroups[idx]
-		sort.Slice(group, func(i, j int) bool {
-			return group[i] < group[j]
-		})
-		ifaceWithPins, err := findIfaceWithPinsForPhc(nodeName, idx)
-		if err != nil {
-			logrus.Debugf("PTP pins lookup failed phc=%d err=%v", idx, err)
-			continue
-		}
-		for _, iface := range group {
-			if iface == ifaceWithPins {
-				return group, nil
-			}
-		}
-	}
-
-	return nil, nil
-}
-
 // gnssSimNmeaActive is set when Telco GM uses a kernel virtual GNSS device (netdevsim) or
 // gnss-sim PTY NMEA instead of physical E810 hardware. It enables the "Simulated T-GM" test
 // contexts and skips hardware-only tests (e.g. ubxtool direct GNSS reboot).
@@ -1291,59 +1240,6 @@ func getWPCEnabledIfacesFromSysfs(nodeName string) map[string]string {
 	return resMap
 }
 
-func getPTPHardwareClockIndex(nodeName string, ifaceName string) (int, error) {
-	cmd := []string{"ethtool", "-T", ifaceName}
-	so, se, err := execPodCommand(nodeName, cmd)
-	if err != nil {
-		return 0, fmt.Errorf("ethtool -T %s failed: %s", ifaceName, strings.TrimSpace(se.String()))
-	}
-	scanner := bufio.NewScanner(&so)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "PTP Hardware Clock:") {
-			parts := strings.Fields(line)
-			if len(parts) == 0 {
-				break
-			}
-			val := parts[len(parts)-1]
-			if strings.EqualFold(val, "none") {
-				return 0, fmt.Errorf("no PTP hardware clock for %s", ifaceName)
-			}
-			idx, parseErr := strconv.Atoi(val)
-			if parseErr != nil {
-				return 0, fmt.Errorf("unable to parse PTP Hardware Clock index from %q", line)
-			}
-			return idx, nil
-		}
-	}
-	return 0, fmt.Errorf("PTP Hardware Clock not found in ethtool output for %s", ifaceName)
-}
-
-// findIfaceWithPinsForPhc returns the network interface name that owns PTP pin
-// support for the given PHC index, by inspecting sysfs paths on the target node.
-// Returns ("", nil) when no pins directory exists for the PHC.
-func findIfaceWithPinsForPhc(nodeName string, phcIndex int) (string, error) {
-	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls -d /sys/class/net/*/device/ptp/ptp%d/pins 2>/dev/null | head -n1", phcIndex)}
-	so, se, err := execPodCommand(nodeName, cmd)
-	if err != nil {
-		return "", fmt.Errorf("PTP pins lookup failed phc=%d stderr=%s err=%v", phcIndex, strings.TrimSpace(se.String()), err)
-	}
-	path := strings.TrimSpace(so.String())
-	if path == "" {
-		return "", nil
-	}
-	const netPrefix = "/sys/class/net/"
-	if !strings.HasPrefix(path, netPrefix) {
-		return "", fmt.Errorf("unexpected pins path %q", path)
-	}
-	rest := strings.TrimPrefix(path, netPrefix)
-	iface := strings.SplitN(rest, "/", 2)[0]
-	if iface == "" {
-		return "", fmt.Errorf("unexpected pins path %q", path)
-	}
-	return iface, nil
-}
-
 func checkGNSSAvailabilityForIfaceHardware(nodeName string, IfaceName string) (string, bool) {
 	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss", IfaceName)}
 	logrus.Infof("cmd = %s ", cmd)
@@ -1363,29 +1259,6 @@ func checkGNSSAvailabilityForIfaceHardware(nodeName string, IfaceName string) (s
 		}
 	}
 	return "", false
-}
-
-// CheckGNSSForInterface checks whether a GNSS device is available on the
-// given network interface by inspecting sysfs on the target node. Returns
-// the GNSS device name if found, or ("", nil) if no GNSS is present.
-func CheckGNSSForInterface(nodeName, ifaceName string) (gnssDevice string, err error) {
-	cmd := []string{"/bin/sh", "-c", fmt.Sprintf("ls /sys/class/net/%s/device/gnss 2>/dev/null || true", ifaceName)}
-	logrus.Infof("cmd = %s ", cmd)
-	so, _, err := execPodCommand(nodeName, cmd)
-	if err != nil {
-		return "", fmt.Errorf("GNSS device check for %s: %w", ifaceName, err)
-	}
-	devs := strings.Split(so.String(), "\n")
-
-	for _, dev := range devs {
-		if dev != "" {
-			logrus.Infof("gnss device string: %s", dev)
-			if checkGNMRCString(dev, nodeName) {
-				return dev, nil
-			}
-		}
-	}
-	return "", nil
 }
 
 func checkGNMRCString(deviceName string, nodeName string) bool {
@@ -1628,21 +1501,6 @@ func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2
 	return "", fmt.Errorf("could not find MAC for leading interface %s on node %s", leadingIface, nodeName)
 }
 
-// GetFirstWorkerNodeName returns the name of the first Kubernetes worker node.
-func GetFirstWorkerNodeName() (string, error) {
-	nodeList, err := client.Client.CoreV1().Nodes().List(
-		context.Background(),
-		metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/worker"},
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to list worker nodes: %v", err)
-	}
-	if len(nodeList.Items) == 0 {
-		return "", fmt.Errorf("no worker nodes found in the cluster")
-	}
-	return nodeList.Items[0].Name, nil
-}
-
 var gnssSimClient = &http.Client{Timeout: 10 * time.Second}
 
 func gnssSimRequest(method, path string) (*http.Response, context.CancelFunc, error) {
@@ -1756,13 +1614,8 @@ func UseGnssSimulation() bool {
 	return gnssSimNmeaActive.Load()
 }
 
-// IsGnssSimulatedCI is true for conformance paths that target a virtual/simulated GNSS source.
-func IsGnssSimulatedCI() bool {
-	return UseGnssSimulation()
-}
-
 // IsGnssSimConfigured returns true when GNSS simulation env vars are set,
-// indicating the CI environment has a gnss-sim instance available.
+// indicating the Kind platform has gnss-sim deployed (all netdevsim modes).
 func IsGnssSimConfigured() bool {
 	_, hasDevice := os.LookupEnv("GNSS_SIM_NMEA_DEVICE")
 	_, hasIface := os.LookupEnv("GNSS_SIM_IFACE1")

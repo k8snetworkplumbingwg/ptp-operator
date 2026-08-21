@@ -268,8 +268,8 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
-# Ensure gnss-sim pod is running and export GNSS env vars so the test framework
-# discovers the simulator even when run-tests.sh is invoked directly.
+# Deploy gnss-sim once for the whole Kind cluster so any test mode can apply
+# a GNSS / T-GM PtpConfig without changing the platform topology. Idempotent.
 init_gnss_sim_env() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
@@ -299,9 +299,10 @@ init_gnss_sim_env() {
   export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
 }
 
+init_gnss_sim_env
+
 overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
-  init_gnss_sim_env
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
     run_ginkgo_suite "${mode}" "serial" || overall_exit=1
   fi

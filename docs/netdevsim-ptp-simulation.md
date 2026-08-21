@@ -530,11 +530,11 @@ flowchart LR
     subgraph tgmbc_topo ["TGMBC Topology"]
         gm2["WPC T-GM<br/>ens1f0 (worker)"]
         bc_slave["BC Slave<br/>ens3f0 (worker2)"]
-        bc_master["BC Master<br/>ens3f1 (worker2)"]
+        bc_master["BC Master<br/>ens3f2 (worker2)"]
         oc2["OC Slave<br/>ens4f0 (worker3)"]
-        gm2 -->|"PTP"| bc_slave
+        gm2 -->|"PTP over VLAN 1500"| bc_slave
         bc_slave ---|"same NIC"| bc_master
-        bc_master -->|"PTP"| oc2
+        bc_master -->|"PTP over VLAN 1502"| oc2
     end
 ```
 
@@ -543,7 +543,7 @@ flowchart LR
 | Context | Test | What it verifies |
 |---------|------|-----------------|
 | TGM | Signal loss/recovery events | GNSS state change, clock class 6 -> 7 -> 248 -> 6, cloud events |
-| TGM | Process status | ts2phc, ptp4l, gpsd running (phc2sys omitted: shared host CLOCK_REALTIME) |
+| TGM | Process status | ts2phc, ptp4l, phc2sys running; CLOCK_REALTIME LOCKED (gpsd omitted: gnss-sim owns /dev/gnssN) |
 | TGM | Clock state via metrics | `openshift_ptp_clock_class` reaches 6 |
 | TGM | DPLL state via gnss-sim API | DPLL reports LOCKED |
 | TGMOC | GM process status + CC6 | ts2phc, ptp4l running; clock class reaches 6 |
