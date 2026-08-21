@@ -338,16 +338,15 @@ if [[ "$RUN_PHASE" == "all" ]]; then
 
     step "Building kustomize"
     cd ..
-    run_quiet_with_log_dump_on_failure "make-kustomize" make kustomize
+    # GitHub release downloads can flake under parallel matrix jobs; retry make.
+    run_quiet_with_log_dump_on_failure "make-kustomize" bash -c 'for i in 1 2 3; do make kustomize && exit 0; echo "make kustomize attempt $i failed"; sleep $((i*3)); done; exit 1'
     cd -
 
     step "Creating local registry"
     run_quiet_with_log_dump_on_failure "create-local-registry" ./create-local-registry.sh "$VM_IP"
 
     cd ../ptp-tools
-    step "Pushing ptp-tools images"
     run_ptp_tools_parallel_make_step_rows PUSH podman-push push "${_ptp_tool_images[@]}"
-    make podman-cleanall
     cd -
 
 fi
@@ -376,7 +375,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
     step "Building kustomize"
     cd ..
-    run_quiet_with_log_dump_on_failure "make-kustomize" make kustomize
+    run_quiet_with_log_dump_on_failure "make-kustomize" bash -c 'for i in 1 2 3; do make kustomize && exit 0; echo "make kustomize attempt $i failed"; sleep $((i*3)); done; exit 1'
     cd -
 
     step "Creating local registry"
