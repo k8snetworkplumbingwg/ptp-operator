@@ -2,7 +2,11 @@ FROM docker.io/golang:1.25.7 AS daemon-builder
 WORKDIR /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
 ENV GOMAXPROCS=16
 
-RUN git clone -b main https://github.com/k8snetworkplumbingwg/linuxptp-daemon.git  /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
+# TEMPORARY: pin to k8snetworkplumbingwg/linuxptp-daemon#269 (delayed phc2sys
+# process_status config label). Revert to `-b main` after that PR merges.
+RUN git clone https://github.com/k8snetworkplumbingwg/linuxptp-daemon.git /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon \
+ && git -C /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon fetch origin pull/269/head \
+ && git -C /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon checkout FETCH_HEAD
 
 RUN make clean && make -j 16
 
