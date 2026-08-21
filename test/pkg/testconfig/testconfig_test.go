@@ -608,3 +608,44 @@ func GeneratePTPObjects(mode PTPMode) {
 		_ = testclient.GetTestClientSet(mockClientObjects)
 	}
 }
+
+func TestStripPhc2sysRealtimeOpts(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "-a -r -n 24 -m -N 8 -R 16", want: "-a -n 24 -m -N 8 -R 16"},
+		{in: "-a -r -r -n 24", want: "-a -n 24"},
+		{in: "-a -n 24", want: "-a -n 24"},
+		{in: "  -a   -r  -m  ", want: "-a -m"},
+	}
+	for _, tt := range tests {
+		if got := stripPhc2sysRealtimeOpts(tt.in); got != tt.want {
+			t.Fatalf("stripPhc2sysRealtimeOpts(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestStripPhc2sysRealtimeInSimulation(t *testing.T) {
+	t.Run("kind strips -r but keeps opts", func(t *testing.T) {
+		t.Setenv("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
+		opts := "-a -r -n 24 -m"
+		got := stripPhc2sysRealtimeInSimulation(&opts)
+		if got == nil {
+			t.Fatal("expected non-nil phc2sysOpts so DualNICBC primary stays distinguishable from secondary")
+		}
+		if *got != "-a -n 24 -m" {
+			t.Fatalf("got %q, want %q", *got, "-a -n 24 -m")
+		}
+	})
+	t.Run("baremetal keeps -r", func(t *testing.T) {
+		t.Setenv("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC") // force set then clear
+		_ = os.Unsetenv("GNSS_SIM_NMEA_DEVICE")
+		_ = os.Unsetenv("GNSS_SIM_IFACE1")
+		bare := "-a -r -n 24"
+		gotBare := stripPhc2sysRealtimeInSimulation(&bare)
+		if gotBare == nil || *gotBare != bare {
+			t.Fatalf("without GNSS_SIM env, opts should be unchanged; got %v", gotBare)
+		}
+	})
+}

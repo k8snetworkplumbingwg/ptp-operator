@@ -764,8 +764,13 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		key := compositeEventKey(v.Resource, string(v.DataType))
-		values[key] = v.Value
+		dt := string(v.DataType)
+		// Unique resource/data_type key (upstream event keying).
+		values[compositeEventKey(v.Resource, dt)] = v.Value
+		// Also index by data_type so helpers can find "metric"/"notification".
+		if dt != "" {
+			values[dt] = v.Value
+		}
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil
