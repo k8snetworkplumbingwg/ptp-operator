@@ -35,17 +35,18 @@ fi
 echo "Detected architecture: $ARCH, using PCI prefix: $PCI_PREFIX"
 
 # Configure netdevsim interface pairs connected with a direct link (ptp1 <----> ptp1)
-# ./configpair.sh < port1 netdevsim ID (unique)> < port 2 netdevsim ID (unique)> <name of the interface on side 1 (ptp1)> <name of the interface on side 2 (ptp1)>
-# <port1 ptp clock ID A (/dev/ptpA)> < port2 ptp clock ID B (/dev/ptpB)> <port1 container name > <port2 container name> <port1 pci ID> <port2 pci ID>
+# ./configpair.sh <port1 id> <port2 id> <if1> <if2> <clk1> <clk2> \
+#   <container1> <container2> <pci1> <pci2> [wpc]
+#   wpc=1 enables DPLL + GNSS emulation on the port1 NIC (WPC NIC).
 
 # TODO: netdevsim needs to implement real PCI address, right now we are reusing the address of existing devices
 
-# Server 1 nic 1 / nic 2 first ports to Server 2 nic 1 (both ports share clock 3)
-./configpair.sh 1 2 ens1f0 ens3f0 1 3 kind-netdevsim-worker kind-netdevsim-worker2 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:03.0
+# Server 1 nic 1 (WPC — grandmaster with DPLL + GNSS) / nic 2 first ports to Server 2 nic 1
+./configpair.sh 1 2 ens1f0 ens3f0 1 3 kind-netdevsim-worker kind-netdevsim-worker2 ${PCI_PREFIX}:01.0 ${PCI_PREFIX}:03.0 1
 ./configpair.sh 3 4 ens2f0 ens3f1 2 3 kind-netdevsim-worker kind-netdevsim-worker2 ${PCI_PREFIX}:02.0 ${PCI_PREFIX}:03.1
 
-# Server 1 nic 1 / nic 2 second ports to Server 3 nic 1 / nic 2
-./configpair.sh 5 6 ens1f1 ens5f0 1 5 kind-netdevsim-worker kind-netdevsim-worker3 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:05.0
+# Server 1 nic 1 (WPC) / nic 2 second ports to Server 3 nic 1 / nic 2
+./configpair.sh 5 6 ens1f1 ens5f0 1 5 kind-netdevsim-worker kind-netdevsim-worker3 ${PCI_PREFIX}:01.1 ${PCI_PREFIX}:05.0 1
 ./configpair.sh 7 8 ens2f1 ens6f0 2 6 kind-netdevsim-worker kind-netdevsim-worker3 ${PCI_PREFIX}:02.1 ${PCI_PREFIX}:06.0
 
 # Server 2 nic 2 (both ports share clock 4) to Server 3 nic 3 (both ports share clock 7)

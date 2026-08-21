@@ -10,7 +10,7 @@ FROM quay.io/centos/centos:stream9
 ARG LINUXPTP_RPM=""
 
 RUN yum -y update && yum --setopt=skip_missing_names_on_install=False -y install \
-    linuxptp ethtool hwdata synce4l procps-ng chrony \
+    linuxptp ethtool hwdata synce4l procps-ng chrony iproute \
     gpsd-minimal gpsd-minimal-clients && yum clean all
 
 COPY ptp-tools/extra/ /tmp/extra/
