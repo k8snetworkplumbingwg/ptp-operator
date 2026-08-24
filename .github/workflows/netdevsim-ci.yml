@@ -195,10 +195,8 @@ jobs:
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
       - name: "Build images and export tarball"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
+          sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true
@@ -311,10 +309,8 @@ jobs:
           path: /tmp
 
       - name: "Load images into local registry"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'LOAD'
+          sudo bash -l <<'LOAD'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true
@@ -336,10 +332,8 @@ jobs:
           CLEANUP
 
       - name: "Run scenario: ${{ matrix.mode }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'DEPLOY'
+          sudo bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true

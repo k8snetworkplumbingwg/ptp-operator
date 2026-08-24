@@ -626,26 +626,24 @@ func TestStripPhc2sysRealtimeOpts(t *testing.T) {
 	}
 }
 
-func TestStripPhc2sysRealtimeInSimulation(t *testing.T) {
-	t.Run("kind strips -r but keeps opts", func(t *testing.T) {
-		t.Setenv("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
-		opts := "-a -r -n 24 -m"
-		got := stripPhc2sysRealtimeInSimulation(&opts)
-		if got == nil {
-			t.Fatal("expected non-nil phc2sysOpts so DualNICBC primary stays distinguishable from secondary")
+func TestIsTelcoGMMode(t *testing.T) {
+	gm := map[PTPMode]bool{
+		TelcoGrandMasterClock: true,
+		TelcoGMOC:             true,
+		TelcoGMBC:             true,
+	}
+	nonGM := []PTPMode{
+		OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA,
+		DualFollowerClock, Discovery, TelcoBoundaryClock, None,
+	}
+	for mode, want := range gm {
+		if got := isTelcoGMMode(mode); got != want {
+			t.Errorf("isTelcoGMMode(%s) = %v, want %v", mode, got, want)
 		}
-		if *got != "-a -n 24 -m" {
-			t.Fatalf("got %q, want %q", *got, "-a -n 24 -m")
+	}
+	for _, mode := range nonGM {
+		if isTelcoGMMode(mode) {
+			t.Errorf("isTelcoGMMode(%s) = true, want false", mode)
 		}
-	})
-	t.Run("baremetal keeps -r", func(t *testing.T) {
-		t.Setenv("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC") // force set then clear
-		_ = os.Unsetenv("GNSS_SIM_NMEA_DEVICE")
-		_ = os.Unsetenv("GNSS_SIM_IFACE1")
-		bare := "-a -r -n 24"
-		gotBare := stripPhc2sysRealtimeInSimulation(&bare)
-		if gotBare == nil || *gotBare != bare {
-			t.Fatalf("without GNSS_SIM env, opts should be unchanged; got %v", gotBare)
-		}
-	})
+	}
 }

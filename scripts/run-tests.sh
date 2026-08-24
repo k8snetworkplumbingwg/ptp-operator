@@ -268,8 +268,17 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
-# Ensure gnss-sim pod is running and export GNSS env vars so the test framework
-# discovers the simulator even when run-tests.sh is invoked directly.
+# gnss-sim (and GNSS_SIM_* env) is T-GM only. Starting it for OC/BC/DualNIC*
+# exports GNSS_SIM_IFACE1=ens1f0 so the WPC L2 overlay / solver can pin DualNICBC
+# onto worker1 GNSS NICs, and CLOCK_REALTIME never locks on the BC.
+is_telco_gm_mode() {
+  case "${1,,}" in
+    tgm|tgmoc|tgmbc) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Deploy gnss-sim for the current T-GM mode. Idempotent.
 init_gnss_sim_env() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
@@ -299,9 +308,19 @@ init_gnss_sim_env() {
   export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
 }
 
+clear_gnss_sim_env() {
+  unset GNSS_SIM_API_HOST GNSS_SIM_NMEA_DEVICE GNSS_SIM_IFACE1 GNSS_SIM_IFACE2
+}
+
 overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
-  init_gnss_sim_env
+  if is_telco_gm_mode "${mode}"; then
+    echo "Deploying gnss-sim for T-GM mode ${mode}"
+    init_gnss_sim_env
+  else
+    echo "Skipping gnss-sim deploy for mode ${mode} (T-GM only: tgm, tgmoc, tgmbc)"
+    clear_gnss_sim_env
+  fi
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
     run_ginkgo_suite "${mode}" "serial" || overall_exit=1
   fi
