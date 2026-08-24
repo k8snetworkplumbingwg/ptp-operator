@@ -14,12 +14,14 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
 
+	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 	ptptestconfig "github.com/k8snetworkplumbingwg/ptp-operator/test/conformance/config"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/clean"
 	testclient "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 
 	ptphelper "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
@@ -66,6 +68,33 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
 		"clock-under-test pod missing; label node with "+pkg.PtpClockUnderTestNodeLabel)
 	ptphelper.RestartPTPDaemon()
+
+	By("Waiting for ptp4l to synchronize before starting soak tests")
+	if fullConfig.DiscoveredClockUnderTestPtpConfig == nil {
+		logrus.Warn("DiscoveredClockUnderTestPtpConfig is nil — skipping sync wait")
+	} else {
+		ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+		slaveIfs := ptpv1.GetInterfaces(*ptpConfig, ptpv1.Slave)
+		if len(slaveIfs) > 0 {
+			if !ptphelper.IsExternalGM() {
+				aLabel := pkg.PtpGrandmasterNodeLabel
+				Eventually(func() error {
+					_, err := ptphelper.GetClockIDMaster(pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
+					return err
+				}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
+					"Timeout waiting for grandmaster clock ID before soak tests")
+			}
+			slaveRoles := make([]metrics.MetricRole, len(slaveIfs))
+			for i := range slaveRoles {
+				slaveRoles[i] = metrics.MetricRoleSlave
+			}
+			Eventually(func() error {
+				return metrics.CheckClockRole(slaveRoles, slaveIfs, &fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName)
+			}, pkg.TimeoutIn5Minutes, 5*pkg.Timeout1Seconds).Should(BeNil(),
+				"Clock-under-test slave interfaces must reach SLAVE state before soak tests start")
+			logrus.Info("ptp4l synchronized — starting soak tests")
+		}
+	}
 
 	isConsumerReady := true
 	apiVersion := event.GetDefaultApiVersion()
