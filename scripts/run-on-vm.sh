@@ -18,6 +18,7 @@ while [[ "${1:-}" == --* ]]; do
         --mode)    TEST_MODES="$2"; shift 2 ;;
         --images)  RUN_PHASE="images"; shift ;;
         --deploy)  RUN_PHASE="deploy"; REGISTRY_IP="$2"; shift 2 ;;
+        --cluster) RUN_PHASE="cluster"; REGISTRY_IP="$2"; shift 2 ;;
         --load)    RUN_PHASE="load"; TARBALL="$2"; shift 2 ;;
         --clean-tmp) KEEP_TMP=false; shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
@@ -384,10 +385,11 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
 fi
 
-# ── Deploy phase (--deploy or default) ──────────────────────────────
-if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
+# ── Deploy phase (--deploy, --cluster, or default) ──────────────────
+# --cluster is deploy without run-tests.sh (used by the stability harness).
+if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" || "$RUN_PHASE" == "cluster" ]]; then
 
-    if [[ "$RUN_PHASE" == "deploy" ]]; then
+    if [[ "$RUN_PHASE" == "deploy" || "$RUN_PHASE" == "cluster" ]]; then
         export IMG_PREFIX="${REGISTRY_IP}/test"
     else
         export IMG_PREFIX="${IMG_PREFIX:-$VM_IP/test}"
@@ -441,9 +443,13 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     step "Listing openshift-ptp pods"
     run_ind kubectl get pods -n openshift-ptp -o wide
 
-    ./run-tests.sh --kind serial --mode "$TEST_MODES" \
-      --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
-      --must-gather-image "$IMG_PREFIX:ptpmg" \
-      --debug-image "$IMG_PREFIX:debug"
+    if [[ "$RUN_PHASE" == "cluster" ]]; then
+        echo "Cluster deployed (--cluster); skipping run-tests.sh"
+    else
+        ./run-tests.sh --kind serial --mode "$TEST_MODES" \
+          --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
+          --must-gather-image "$IMG_PREFIX:ptpmg" \
+          --debug-image "$IMG_PREFIX:debug"
+    fi
 
 fi

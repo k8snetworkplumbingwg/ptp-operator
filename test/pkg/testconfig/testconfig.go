@@ -1089,6 +1089,87 @@ func stripPhc2sysRealtimeOpts(opts string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(opts, "-r", "")), " ")
 }
 
+// ptp4lJbodLine is "boundary_clock_jbod 1\n" when the ports are on different
+// PHCs (Intel E810-style). Empty when they share one PHC (netdevsim one-PHC-
+// per-NIC). ptp4l default is jbod 0 — a single clock for all ports.
+//
+// Forcing jbod 1 on a shared PHC makes phc2sys -a treat each port as its own
+// clock and dual-control that PHC (PHC←PHC plus CLOCK_REALTIME←PHC). After
+// reverse-sync the CLOCK_REALTIME servo then stays FREERUN (~250µs, above the
+// ±10µs lock threshold) on Kind/VRT. Hardware with per-port PHCs still gets
+// jbod 1. If L2 caps are missing, keep jbod 1 so existing hardware CI is
+// unchanged.
+func ptp4lJbodLine(nodeName string, ifaces ...string) string {
+	if needBoundaryClockJbod(nodeName, ifaces...) {
+		return "boundary_clock_jbod 1\n"
+	}
+	return ""
+}
+
+func needBoundaryClockJbod(nodeName string, ifaces ...string) bool {
+	idxs, ok := phcIndexesForNodeIfaces(nodeName, ifaces)
+	if !ok {
+		logrus.Infof("ports %v on %s: PHC indexes unknown; using boundary_clock_jbod 1", ifaces, nodeName)
+		return true
+	}
+	first := idxs[0]
+	for _, idx := range idxs[1:] {
+		if idx != first {
+			logrus.Infof("ports %v on %s have PHC indexes %v; using boundary_clock_jbod 1", ifaces, nodeName, idxs)
+			return true
+		}
+	}
+	logrus.Infof("ports %v on %s share PHC index %d; omitting boundary_clock_jbod (single clock)", ifaces, nodeName, first)
+	return false
+}
+
+func phcIndexesForNodeIfaces(nodeName string, ifaces []string) ([]int, bool) {
+	if GlobalConfig.L2Config == nil || nodeName == "" || len(ifaces) == 0 {
+		return nil, false
+	}
+	unique := make([]string, 0, len(ifaces))
+	seen := make(map[string]bool, len(ifaces))
+	for _, name := range ifaces {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		unique = append(unique, name)
+	}
+	if len(unique) == 0 {
+		return nil, false
+	}
+	idxs := make([]int, 0, len(unique))
+	for _, name := range unique {
+		idx, ok := phcIndexForNodeIface(nodeName, name)
+		if !ok {
+			return nil, false
+		}
+		idxs = append(idxs, idx)
+	}
+	return idxs, true
+}
+
+func phcIndexForNodeIface(nodeName, ifaceName string) (int, bool) {
+	for _, p := range GlobalConfig.L2Config.GetPtpIfList() {
+		if p == nil || p.NodeName != nodeName {
+			continue
+		}
+		if p.IfName != ifaceName && p.InterfaceName != ifaceName {
+			continue
+		}
+		if p.IfPTPCaps.PhcIndex < 0 {
+			return 0, false
+		}
+		// Zero-value PTPCaps (PhcIndex 0, no raw clock) is "unset", not /dev/ptp0.
+		if !p.IfPTPCaps.HwRawClock && p.IfPTPCaps.PhcIndex == 0 {
+			return 0, false
+		}
+		return p.IfPTPCaps.PhcIndex, true
+	}
+	return 0, false
+}
+
 func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string, label string) error {
 	if len(ifList) < 2 {
 		return fmt.Errorf("WPC GrandMaster requires at least 2 interfaces on the WPC NIC, found %d (%v) on node %s", len(ifList), ifList, nodeName)
@@ -1109,7 +1190,7 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 
 	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  %s\n", gnssSerialPort(deviceID))
 	ts2phcConfig = fmt.Sprintf("%s\n[%s]\nts2phc.extts_polarity rising\nts2phc.extts_correction 0\n", ts2phcConfig, ifList[0])
-	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\n"
+	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + ptp4lJbodLine(nodeName, ifList...)
 	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[0], 1))
 	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[1], 1))
 	ptp4lsysOpts := ptp4lEthernet
@@ -1240,16 +1321,19 @@ func CreatePtpConfigTelcoBoundaryClock(configName, nodeName, ifSlaveName string,
 	tbcBase = strings.Replace(tbcBase, "pi_integral_const 0.0", "pi_integral_const 0.0003", 1)
 	tbcBase = strings.Replace(tbcBase, "neighborPropDelayThresh 20000000", "neighborPropDelayThresh 20000000\nmasterOnly 0", 1)
 
+	tbcJbod := ptp4lJbodLine(nodeName, append([]string{ifSlaveName, firstNicInterface}, ifMasterNames...)...)
 	// T-BC receiver profile (tbc-tr)
 	receiverConfig := tbcBase +
-		"\nslaveOnly 0\npriority1 128\npriority2 128\ndomainNumber 24\nclockClass 248" +
-		"\nboundary_clock_jbod 1\nclock_type OC\n"
+		"\nslaveOnly 0\npriority1 128\npriority2 128\ndomainNumber 24\nclockClass 248\n" +
+		tbcJbod +
+		"clock_type OC\n"
 	receiverConfig += fmt.Sprintf("[%s]\nmasterOnly 0\n", ifSlaveName)
 
 	// T-BC transmitter profile (tbc-tt) - multiple transmitter interfaces
 	transmitterConfig := tbcBase +
-		"\nslaveOnly 0\npriority1 128\npriority2 128\ndomainNumber 24\nclockClass 248" +
-		"\nboundary_clock_jbod 1\nclock_type BC\n"
+		"\nslaveOnly 0\npriority1 128\npriority2 128\ndomainNumber 24\nclockClass 248\n" +
+		tbcJbod +
+		"clock_type BC\n"
 	for _, ifMasterName := range ifMasterNames {
 		transmitterConfig += fmt.Sprintf("[%s]\nmasterOnly 1\n", ifMasterName)
 	}
@@ -1358,7 +1442,7 @@ func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, p
 		return fmt.Errorf("error setting BC node role label: %w", err)
 	}
 
-	bcConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nboundary_clock_jbod 1\ngmCapable 0"
+	bcConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + ptp4lJbodLine(nodeName, ifSlaveName, ifMasterName) + "gmCapable 0"
 	// TGMBC cascading-holdover needs the BC to accept upstream announces when the
 	// GM clock class is above the default threshold of 7 ("Master clock quality
 	// received is greater than configured, ignoring master!"). DualNicBC/HA keep
