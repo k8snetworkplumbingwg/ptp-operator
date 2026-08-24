@@ -294,18 +294,6 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
-step "Tidying and vendoring Go dependencies"
-run_step_rows_begin "go mod tidy" "go mod vendor"
-
-run_quiet_with_log_dump_on_failure "go-mod-tidy" go mod tidy
-run_step_row_done "go mod tidy"
-
-run_quiet_with_log_dump_on_failure "go-mod-vendor" go mod vendor
-run_step_row_done "go mod vendor"
-
-run_step_rows_end
-
-
 # Kill leftover gnss-sim from a previous run
 pkill -f gnss-sim || true
 
@@ -349,8 +337,7 @@ if [[ "$RUN_PHASE" == "all" ]]; then
 
     step "Building kustomize"
     cd ..
-    # GitHub release downloads can flake under parallel matrix jobs; retry make.
-    run_quiet_with_log_dump_on_failure "make-kustomize" bash -c 'for i in 1 2 3; do make kustomize && exit 0; echo "make kustomize attempt $i failed"; sleep $((i*3)); done; exit 1'
+    run_quiet_with_log_dump_on_failure "make-kustomize" make kustomize
     cd -
 
     step "Creating local registry"
@@ -385,7 +372,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
     step "Building kustomize"
     cd ..
-    run_quiet_with_log_dump_on_failure "make-kustomize" bash -c 'for i in 1 2 3; do make kustomize && exit 0; echo "make kustomize attempt $i failed"; sleep $((i*3)); done; exit 1'
+    run_quiet_with_log_dump_on_failure "make-kustomize" make kustomize
     cd -
 
     step "Creating local registry"
@@ -453,46 +440,6 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Listing openshift-ptp pods"
     run_ind kubectl get pods -n openshift-ptp -o wide
-
-    SYMLINK_PID=""
-    if [[ "${DKMS_MODE}" == "true" ]]; then
-        bash -c '
-        while true; do
-          for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
-                       --field-selector=status.phase=Running -o name 2>/dev/null); do
-            kubectl exec -n openshift-ptp ${pod#pod/} -c linuxptp-daemon-container -- \
-              bash -c "for i in 0 1 2 3 4 5 6 7 8 9; do ln -sf nsim_ptp\$i /dev/ptp\$i 2>/dev/null; done" \
-              2>/dev/null || true
-          done
-          sleep 5
-        done
-        ' &
-        SYMLINK_PID=$!
-        echo "Symlink maintainer PID: $SYMLINK_PID"
-        cleanup_symlink() { [[ -n "$SYMLINK_PID" ]] && kill "$SYMLINK_PID" 2>/dev/null || true; }
-        trap cleanup_symlink EXIT
-    fi
-
-    # Start GNSS simulator as a pod for T-GM simulation tests
-    export GNSS_SIM_IMAGE="${IMG_PREFIX}:gnss-sim"
-    ./configGNSS.sh
-
-    # Read the gnss-sim pod's node IP for test framework API access
-    export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
-
-    # Export GNSS simulation env vars so the test framework can discover them.
-    GNSS_KERNEL_DEV=""
-    for g in /dev/gnss*; do
-        [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
-    done
-    if [ -n "$GNSS_KERNEL_DEV" ]; then
-        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
-    else
-        export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
-    fi
-    export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
-    export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
-    export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
     ./run-tests.sh --kind serial --mode "$TEST_MODES" \
       --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \

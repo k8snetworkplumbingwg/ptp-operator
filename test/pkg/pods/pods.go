@@ -3,6 +3,7 @@ package pods
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -125,108 +126,134 @@ func WaitForCondition(cs *testclient.ClientSet, pod *corev1.Pod, conditionType c
 	})
 }
 
-func compileLogRegex(regex string, isLiteralText bool) *regexp.Regexp {
+func findRegexInStream(stream io.ReadCloser, r *regexp.Regexp, timeout time.Duration) (matches [][]string, err error) {
+	logContent := ""
+	buf := make([]byte, 2000)
+
+	for start := time.Now(); time.Since(start) <= timeout && len(matches) == 0; {
+		numBytes, err := stream.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				logContent += string(buf[:numBytes])
+				matches = r.FindAllStringSubmatch(logContent, -1)
+				break
+			} else {
+				return nil, fmt.Errorf("error reading from stream: %s", err)
+			}
+		}
+
+		if numBytes == 0 {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		logContent += string(buf[:numBytes])
+		matches = r.FindAllStringSubmatch(logContent, -1)
+	}
+
+	if len(matches) == 0 {
+		return matches, errors.New("timedout waiting for matches")
+	}
+
+	return matches, nil
+}
+
+// returns last Regex match in the logs for a given pod
+func GetPodLogsRegexSince(namespace string, podName string, containerName, regex string, isLiteralText bool, timeout time.Duration, since time.Time) (matches [][]string, err error) {
 	const matchOnlyFullLines = `\s*^`
 	if isLiteralText {
 		regex = regexp.QuoteMeta(regex)
 	} else {
 		regex += matchOnlyFullLines
 	}
-	return regexp.MustCompile(regex)
-}
 
-// snapshotPodLogsRegex reads a non-follow log snapshot and returns every regex
-// match. Callers that need the current value must use matches[len(matches)-1].
-//
-// Non-follow only: Follow + find-first returns the oldest hit in the stream,
-// which is wrong for "current phc2sys HA source" when daemon logs are large.
-// TailLines (or SinceTime) bounds the read so the client can finish the stream.
-//
-// Incomplete reads are hard errors: the API delivers oldest→newest, so a
-// truncated buffer's last match is not the latest line and must not be trusted.
-func snapshotPodLogsRegex(namespace, podName, containerName string, r *regexp.Regexp, tailLines *int64, since *time.Time) (matches [][]string, err error) {
-	opts := corev1.PodLogOptions{
+	r := regexp.MustCompile(regex)
+
+	podLogOptions := corev1.PodLogOptions{
 		Container: containerName,
-		Follow:    false,
-	}
-	if tailLines != nil {
-		opts.TailLines = tailLines
-	}
-	if since != nil {
-		opts.SinceTime = &metav1.Time{Time: *since}
+		Follow:    true,
+		SinceTime: &metav1.Time{Time: since},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), pkg.TimeoutIn1Minute)
+	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	stream, err := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
+
+	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open log snapshot for %s/%s container=%s: %w", namespace, podName, containerName, err)
+		return matches, fmt.Errorf("failed to open log streamn for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
 	}
 	defer stream.Close()
 
-	logContent, readErr := io.ReadAll(stream)
-	if readErr != nil {
-		return nil, fmt.Errorf("incomplete log snapshot for %s/%s container=%s (%d bytes): %w",
-			namespace, podName, containerName, len(logContent), readErr)
+	matches, err = findRegexInStream(stream, r, timeout)
+	if err != nil {
+		return matches, fmt.Errorf("could not find regex in log stream for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
 	}
-	if len(logContent) == 0 {
-		return nil, nil
-	}
-	return r.FindAllStringSubmatch(string(logContent), -1), nil
+
+	return matches, nil
 }
 
-func pollPodLogsRegex(namespace, podName, containerName string, r *regexp.Regexp, timeout time.Duration, tailLines *int64, since *time.Time) (matches [][]string, err error) {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		matches, err = snapshotPodLogsRegex(namespace, podName, containerName, r, tailLines, since)
-		if err != nil {
-			lastErr = err
-		} else if len(matches) > 0 {
-			return matches, nil
-		}
-		if time.Now().After(deadline) {
-			if lastErr != nil {
-				return nil, fmt.Errorf("could not find regex in logs for %s/%s container=%s: %w", namespace, podName, containerName, lastErr)
-			}
-			return nil, fmt.Errorf("could not find regex in logs for %s/%s container=%s: timed out after %s", namespace, podName, containerName, timeout)
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
-// GetPodLogsRegexSince returns all regex matches from pod logs at or after since.
-// Callers that need the current/latest value should use matches[len(matches)-1].
-//
-// Semantics: repeatedly snapshot (Follow=false, SinceTime=since) until at least
-// one match appears or timeout. This preserves transition sequences for HA
-// tests and never returns a stale first-hit from a Follow stream.
-func GetPodLogsRegexSince(namespace string, podName string, containerName, regex string, isLiteralText bool, timeout time.Duration, since time.Time) (matches [][]string, err error) {
-	return pollPodLogsRegex(namespace, podName, containerName, compileLogRegex(regex, isLiteralText), timeout, nil, &since)
-}
-
-// GetPodLogsRegex returns regex matches from a recent TailLines snapshot of the
-// pod logs. Callers that need the current/latest value should use
-// matches[len(matches)-1].
-//
-// If no match is present yet, it re-snapshots until timeout. It does not use
-// Follow-from-beginning / first-match semantics (unsafe with large daemon logs).
+// returns last Regex match in the logs for a given pod.
+// It first reads all existing logs (without follow) to get the complete set of
+// matches, so that callers using matches[len-1] get the most recent entry.
+// If no match is found in the existing logs, it falls back to following the
+// stream and waiting for new content up to the given timeout.
 func GetPodLogsRegex(namespace string, podName string, containerName, regex string, isLiteralText bool, timeout time.Duration) (matches [][]string, err error) {
-	// Bound the snapshot so ReadAll cannot stall on multi-100MB daemon logs.
-	// Rare lines that may be older (e.g. phc2sys HA "selecting") need
-	// GetPodLogsRegexTail or GetPodLogsRegexSince instead.
-	var tailLines int64 = 20000
-	return pollPodLogsRegex(namespace, podName, containerName, compileLogRegex(regex, isLiteralText), timeout, &tailLines, nil)
-}
-
-// GetPodLogsRegexTail is GetPodLogsRegex with an explicit TailLines bound.
-// Use a large tail for rare log lines that remain the current truth (e.g.
-// phc2sys HA source selection) without draining the entire daemon history.
-func GetPodLogsRegexTail(namespace string, podName string, containerName, regex string, isLiteralText bool, timeout time.Duration, tailLines int64) (matches [][]string, err error) {
-	if tailLines <= 0 {
-		return nil, fmt.Errorf("tailLines must be > 0")
+	const matchOnlyFullLines = `\s*^`
+	if isLiteralText {
+		regex = regexp.QuoteMeta(regex)
+	} else {
+		regex += matchOnlyFullLines
 	}
-	return pollPodLogsRegex(namespace, podName, containerName, compileLogRegex(regex, isLiteralText), timeout, &tailLines, nil)
+
+	r := regexp.MustCompile(regex)
+
+	// Pass 1: read all existing log content without following.
+	// Use io.ReadAll to drain the entire log before matching, so that
+	// FindAllStringSubmatch returns ALL matches (not just the first chunk's).
+	noFollowOpts := corev1.PodLogOptions{
+		Container: containerName,
+		Follow:    false,
+	}
+	noFollowReq := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &noFollowOpts)
+	snapCtx, snapCancel := context.WithTimeout(context.Background(), pkg.TimeoutIn1Minute)
+	defer snapCancel()
+	snapStream, err := noFollowReq.Stream(snapCtx)
+	if err != nil {
+		logrus.Warnf("failed to open log stream for initial snapshot for %s/%s container=%s: %s", namespace, podName, containerName, err)
+	} else {
+		logContent, readErr := io.ReadAll(snapStream)
+		snapStream.Close()
+		if readErr == nil && len(logContent) > 0 {
+			matches = r.FindAllStringSubmatch(string(logContent), -1)
+			if len(matches) > 0 {
+				return matches, nil
+			}
+		}
+	}
+
+	// Pass 2: no match in existing logs — follow the stream for new content.
+	followOpts := corev1.PodLogOptions{
+		Container: containerName,
+		Follow:    true,
+	}
+	followReq := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &followOpts)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	stream, err := followReq.Stream(ctx)
+	if err != nil {
+		return matches, fmt.Errorf("failed to open log streamn for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
+	}
+	defer stream.Close()
+
+	matches, err = findRegexInStream(stream, r, timeout)
+	if err != nil {
+		return matches, fmt.Errorf("could not find regex in log stream for %s/%s container=%s, err=%s", namespace, podName, containerName, err)
+	}
+
+	return matches, nil
 }
 
 func ExecutePtpInterfaceCommand(pod corev1.Pod, interfaceName string, command string) {

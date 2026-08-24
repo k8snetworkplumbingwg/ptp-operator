@@ -1781,6 +1781,7 @@ func IsGnssSimulatedCI() bool {
 
 // IsGnssSimConfigured returns true when GNSS simulation env vars are set,
 // indicating the CI environment has a gnss-sim instance available.
+// run-tests.sh exports those vars only for tgm/tgmoc/tgmbc.
 func IsGnssSimConfigured() bool {
 	_, hasDevice := os.LookupEnv("GNSS_SIM_NMEA_DEVICE")
 	_, hasIface := os.LookupEnv("GNSS_SIM_IFACE1")

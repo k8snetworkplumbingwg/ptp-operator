@@ -543,7 +543,7 @@ flowchart LR
 | Context | Test | What it verifies |
 |---------|------|-----------------|
 | TGM | Signal loss/recovery events | GNSS state change, clock class 6 -> 7 -> 248 -> 6, cloud events |
-| TGM | Process status | ts2phc, ptp4l, gpsd running (phc2sys omitted: shared host CLOCK_REALTIME) |
+| TGM | Process status | ts2phc, ptp4l, phc2sys running; CLOCK_REALTIME LOCKED (gpsd omitted: gnss-sim owns /dev/gnssN) |
 | TGM | Clock state via metrics | `openshift_ptp_clock_class` reaches 6 |
 | TGM | DPLL state via gnss-sim API | DPLL reports LOCKED |
 | TGMOC | GM process status + CC6 | ts2phc, ptp4l running; clock class reaches 6 |

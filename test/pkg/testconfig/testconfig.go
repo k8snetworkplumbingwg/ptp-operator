@@ -449,6 +449,18 @@ func (mode PTPMode) String() string {
 	}
 }
 
+// isTelcoGMMode is true for tgm / tgmoc / tgmbc. The gnss-sim WPC L2 overlay
+// must run only in these modes; otherwise DualNICBC solves onto worker1 GNSS
+// NICs (ens1f*) and CLOCK_REALTIME never locks on the BC.
+func isTelcoGMMode(mode PTPMode) bool {
+	switch mode {
+	case TelcoGrandMasterClock, TelcoGMOC, TelcoGMBC:
+		return true
+	default:
+		return false
+	}
+}
+
 func StringToMode(aString string) PTPMode {
 	switch strings.ToLower(aString) {
 	case strings.ToLower(OrdinaryClockString):
@@ -588,9 +600,13 @@ func createPtpConfigurations(ctx context.Context) error {
 	logrus.Tracef("L2DiscoveryConfig: %s\n", config)
 	logrus.Tracef("L2 ifListFiltered=%+v, ifListUnfiltered=%+v", config.GetPtpIfList(), config.GetPtpIfListUnfiltered())
 	GlobalConfig.L2Config = config
-	ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
-	if ptphelper.IsGnssSimConfigured() && !ptphelper.L2ConfigReportsIntelWPC(config) {
-		ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
+	// WPC overlay is T-GM-only so DualNICBC still solves on worker2 ens3f*
+	// instead of worker1 GNSS NICs (ens1f*) whenever gnss-sim env is set.
+	if isTelcoGMMode(GlobalConfig.PtpModeDesired) {
+		ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
+		if ptphelper.IsGnssSimConfigured() && !ptphelper.L2ConfigReportsIntelWPC(config) {
+			ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
+		}
 	}
 
 	if GlobalConfig.PtpModeDesired != Discovery {
@@ -1067,23 +1083,10 @@ func gnssSerialPort(deviceID string) string {
 }
 
 // stripPhc2sysRealtimeOpts removes -r flags so phc2sys does not drive CLOCK_REALTIME.
+// Used only when DisableAllSlaveRTUpdate is set (non-VRT Kind). VRT CI keeps -r
+// so every profile — including simulated T-GM — disciplines CLOCK_REALTIME.
 func stripPhc2sysRealtimeOpts(opts string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(opts, "-r", "")), " ")
-}
-
-// stripPhc2sysRealtimeInSimulation keeps phc2sysOpts in netdevsim/Kind CI but
-// strips -r. Kind nodes share one host CLOCK_REALTIME; phc2sys -r forms a
-// feedback loop with ts2phc/gnss-sim. Dropping the whole Phc2sysOpts pointer
-// would make every DualNIC BC look secondary (IsSecondaryBc) and break
-// DualNICBC / DualNICBCHA discovery — keep a non-nil opts string instead.
-// Baremetal keeps -r so phc2sys still syncs the per-node system clock.
-func stripPhc2sysRealtimeInSimulation(phc2sysOpts *string) *string {
-	if phc2sysOpts == nil || !ptphelper.IsGnssSimConfigured() {
-		return phc2sysOpts
-	}
-	stripped := stripPhc2sysRealtimeOpts(*phc2sysOpts)
-	logrus.Infof("Stripping phc2sys -r in netdevsim/Kind simulation (shared host CLOCK_REALTIME); opts=%q", stripped)
-	return &stripped
 }
 
 func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string, label string) error {
@@ -1708,7 +1711,7 @@ func createPtpConfigPhc2SysHA(policyName string, nodeName string, haProfiles []s
 		phc2sysOpts = stripPhc2sysRealtimeOpts(phc2sysOpts)
 	}
 	ptp4lOpts := "" // no ptp4l options
-	phc2sysOptsPtr := stripPhc2sysRealtimeInSimulation(&phc2sysOpts)
+	phc2sysOptsPtr := &phc2sysOpts
 
 	ptpProfile := ptpv1.PtpProfile{
 		Name:                  &policyName,
@@ -2221,7 +2224,6 @@ func AddAuthSettings(ptpConfig string) string {
 // createTelcoBCConfig creates a multi-profile PTP config for Telco Boundary Clock
 // with separate receiver (tbc-tr) and transmitter (tbc-tt) profiles
 func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig string, ptp4lOpts, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcConfig string, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
-	phc2sysOpts = stripPhc2sysRealtimeInSimulation(phc2sysOpts)
 	// Create receiver profile (tbc-tr)
 	receiverProfileName := "tbc-tr"
 	receiverProfile := ptpv1.PtpProfile{
@@ -2280,7 +2282,6 @@ func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig st
 
 func createConfigWithTs2PhcAndPlugins(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig string, ts2phcConfig string, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
 	thresholds := ptpv1.PtpClockThreshold{}
-	phc2sysOpts = stripPhc2sysRealtimeInSimulation(phc2sysOpts)
 
 	testParameters, err := ptptestconfig.GetPtpTestConfig()
 	if err != nil {
@@ -2323,7 +2324,6 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 		noRT := stripPhc2sysRealtimeOpts(*phc2sysOpts)
 		phc2sysOpts = &noRT
 	}
-	phc2sysOpts = stripPhc2sysRealtimeInSimulation(phc2sysOpts)
 
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
 		PtpClockThreshold: &thresholds}

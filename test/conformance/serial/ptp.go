@@ -1140,9 +1140,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 
 			It("DualNICBCHA phc2sys switches to secondary ptp4l when primary interface fails", func() {
-				if ptphelper.IsGnssSimConfigured() {
-					Skip("phc2sys is not started in netdevsim/Kind simulation (shared host CLOCK_REALTIME)")
-				}
 				if fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA {
 					Skip("Test only valid for Dual NIC Boundary Clocks with phc2sys HA configuration (DualNICBCHA)")
 				}
@@ -1156,16 +1153,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				logrus.Infof("Primary   BC slave interfaces: %v", primaryBCSlaveInterfaces)
 				logrus.Infof("Secondary BC slave interfaces: %v", secondaryBCSlaveInterfaces)
-				Expect(primaryBCSlaveInterfaces).NotTo(BeEmpty(), "primary BC must expose a slave interface for HA fault injection")
-
-				// Capture logs from before the slave-role wait: phc2sys often emits
-				// "selecting" only when it starts after ptp4l reaches SLAVE. A short
-				// TailLines window after the fact misses an aged selection line.
-				const phc2sysLogPattern = `phc2sys(?m).*?:.* selecting (\w+) as out-of-domain source clock`
-				// Large tail for rare selection lines buried under offset spam.
-				// Still bounded vs full-history ReadAll (timeout → stale prefix).
-				const phc2sysHASourceTailLines int64 = 500000
-				sinceBeforeSlaveWait := time.Now()
 
 				// phc2sys is delayed until ptp4l synchronizes, so first wait for
 				// the primary BC slave interface to reach SLAVE state, then give
@@ -1180,58 +1167,31 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeNil(),
 					"Primary BC slave interface must reach SLAVE state before phc2sys starts")
 
-				// Resolve current HA source without Follow-first-hit:
-				//  1) SinceTime from before slave wait (fresh selection during start)
-				//  2) large TailLines (aged selection still current)
-				//  3) if still none and exactly one primary slave: use that iface
+				// Get phc2sys logs to identify which interface it's using.
+				const phc2sysLogPattern = `phc2sys(?m).*?:.* selecting (\w+) as out-of-domain source clock`
 				var selectedInterface string
-				var logMatches [][]string
 
-				By("Waiting until phc2sys HA source is a primary BC slave")
-				Eventually(func() error {
-					ns := fullConfig.DiscoveredClockUnderTestPod.Namespace
-					name := fullConfig.DiscoveredClockUnderTestPod.Name
-					var matches [][]string
-					var err error
+				logMatches, err := pods.GetPodLogsRegex(fullConfig.DiscoveredClockUnderTestPod.Namespace,
+					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
+					phc2sysLogPattern, false, pkg.TimeoutIn1Minute)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(logMatches)).To(BeNumerically(">=", 1), "Could not identify which interface phc2sys is using")
+				logrus.Infof("phc2sys log matching line: %v", logMatches[len(logMatches)-1][0])
+				selectedInterface = logMatches[len(logMatches)-1][1]
 
-					matches, err = pods.GetPodLogsRegexSince(ns, name, pkg.PtpContainerName,
-						phc2sysLogPattern, false, 15*time.Second, sinceBeforeSlaveWait)
-					if err != nil || len(matches) == 0 {
-						matches, err = pods.GetPodLogsRegexTail(ns, name, pkg.PtpContainerName,
-							phc2sysLogPattern, false, 15*time.Second, phc2sysHASourceTailLines)
-					}
-					if err != nil || len(matches) == 0 {
-						if len(primaryBCSlaveInterfaces) == 1 {
-							selectedInterface = primaryBCSlaveInterfaces[0]
-							logMatches = nil
-							logrus.Warnf("no phc2sys selecting line in SinceTime/TailLines; assuming HA source %s (sole primary BC slave)", selectedInterface)
-							return nil
-						}
-						if err != nil {
-							return err
-						}
-						return fmt.Errorf("no phc2sys selecting line yet (primary slaves=%v)", primaryBCSlaveInterfaces)
-					}
-					iface := matches[len(matches)-1][1]
-					if !slices.Contains(primaryBCSlaveInterfaces, iface) {
-						return fmt.Errorf("current HA source %s not in primary BC slaves %v (sequence=%v)",
-							iface, primaryBCSlaveInterfaces, ptptesthelper.Phc2sysMatchedInterfaces(matches))
-					}
-					selectedInterface = iface
-					logMatches = matches
-					return nil
-				}, 3*time.Minute, 5*time.Second).Should(Succeed())
-				if len(logMatches) > 0 {
-					logrus.Infof("phc2sys HA source (primary): %s; last line: %v", selectedInterface, logMatches[len(logMatches)-1][0])
-				} else {
-					logrus.Infof("phc2sys HA source (primary, assumed): %s", selectedInterface)
-				}
+				// Save it as primary interface
 				primaryInterface := selectedInterface
+				By("Verifying the selected interface " + selectedInterface + " is a primary BC's slave interface")
+				// Check if the selected interface belongs to the primary boundary clock config
+				if !slices.Contains(primaryBCSlaveInterfaces, selectedInterface) {
+					Fail(fmt.Sprintf("Selected interface %s does not belong to the primary boundary clock config. Primary interfaces: %v", selectedInterface, primaryBCSlaveInterfaces))
+				}
 
-				// Wait so the regex won't match the previous log entry
+				// Wait for some time to ensure the regex won't match the previous log entry
 				time.Sleep(2 * time.Second)
 				ifDownTime := time.Now()
 				By("Taking down the selected interface " + selectedInterface)
+
 				nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
 				portEngine.TurnOffAndWaitFaulty(selectedInterface, nodeName)
 
@@ -1240,7 +1200,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				By("Verifying phc2sys switches to a different interface")
 				var newSelectedInterface string
-				var err error
 				logMatches, err = pods.GetPodLogsRegexSince(fullConfig.DiscoveredClockUnderTestPod.Namespace,
 					fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName,
 					phc2sysLogPattern, false, pkg.TimeoutIn1Minute, ifDownTime)
@@ -1558,6 +1517,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
+				waitForWPCGMReady(fullConfig)
 			})
 
 			// Subscribe to PTP events and assert an event payload is delivered to
@@ -1698,6 +1658,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					By("Waiting for cloud-event-proxy to be ready")
 					Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
 						"cloud-event-proxy did not become ready after restart")
+					waitForWPCGMReady(fullConfig)
 					crashDone = true
 				})
 
@@ -1713,7 +1674,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				It("recovers clockClass via Event API after cloud-event-proxy restart", func() {
 					Expect(crashDone).To(BeTrue(), "cloud-event-proxy crash setup did not complete")
 					By(fmt.Sprintf("Verifying clockClass is %s via Event API after restart", expectedClockClassStr))
-					verifyClockClassCurrentState(int(expectedClockClass), 90*time.Second)
+					verifyClockClassCurrentState(int(expectedClockClass), pkg.TimeoutIn3Minutes)
 				})
 
 				It("recovers gm.ClockClass via PMC after cloud-event-proxy restart", func() {
@@ -2570,9 +2531,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 
 			It("Should restart phc2sys with no socket errors after SIGTERM", func() {
-				if ptphelper.IsGnssSimConfigured() {
-					Skip("phc2sys is not started in netdevsim/Kind simulation (shared host CLOCK_REALTIME)")
-				}
 				verifyProcessRestartNoSocketErrors(fullConfig, "phc2sys")
 			})
 
@@ -2755,16 +2713,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					clockClassRe := regexp.MustCompile(clockClassPattern)
 
 					Eventually(func() ([][]string, error) {
-						// CLOCK_CLASS_CHANGE is rare; a short TailLines window often
-						// misses it under dense daemon logs (same class of bug as HA).
-						logMatches, err := pods.GetPodLogsRegexTail(
+						logMatches, err := pods.GetPodLogsRegex(
 							openshiftPtpNamespace,
 							fullConfig.DiscoveredClockUnderTestPod.Name,
 							pkg.PtpContainerName,
 							clockClassRe.String(),
-							false,
-							pkg.TimeoutIn1Minute,
-							500000,
+							false,                // don't follow logs
+							pkg.TimeoutIn1Minute, // inner timeout for single call (can be shorter if you want)
 						)
 						return logMatches, err
 					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should( // <-- total wait 5 mins, check every 10s
@@ -3327,9 +3282,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				gmPod := getGMPod()
 
-				// phc2sys -r is stripped in Kind/netdevsim (shared host CLOCK_REALTIME).
-				By("checking sim GM required processes status (ts2phc, ptp4l)", func() {
-					processesArr := [...]string{"ts2phc", "ptp4l"}
+				By("checking sim GM required processes status (ts2phc, ptp4l, phc2sys)", func() {
+					processesArr := [...]string{"ts2phc", "ptp4l", "phc2sys"}
 					for _, val := range processesArr {
 						logMatches, err := pods.GetPodLogsRegex(openshiftPtpNamespace, gmPod.Name, pkg.PtpContainerName, val, true, pkg.TimeoutIn1Minute)
 						Expect(err).To(BeNil(), fmt.Sprintf("Error encountered looking for %s", val))
@@ -3337,7 +3291,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					}
 				})
 
-				By("checking sim GM process metrics (skip gpsd/gpspipe/phc2sys)", func() {
+				By("checking sim GM process metrics (skip gpsd/gpspipe; phc2sys -r is required)", func() {
 					Eventually(func() string {
 						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 						return buf.String()
@@ -3350,9 +3304,17 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						if err != nil {
 							return false
 						}
-						return ret["ptp4l"] && ret["ts2phc"]
+						return ret["ptp4l"] && ret["ts2phc"] && ret["phc2sys"]
 					}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
-						"Expected ptp4l and ts2phc to report process_status 1 for simulated GM")
+						"Expected ptp4l, ts2phc, and phc2sys to report process_status 1 for simulated GM")
+				})
+
+				By("checking CLOCK_REALTIME is LOCKED via phc2sys -r", func() {
+					nodeName := gmPod.Spec.NodeName
+					Eventually(func() error {
+						return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+						"simulated T-GM CLOCK_REALTIME (phc2sys -r) must reach LOCKED")
 				})
 			})
 
@@ -4421,6 +4383,13 @@ func checkStabilityOfSimGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
 	checkClockState(fullConfig, "1")
 	checkPTPNMEAStatus(fullConfig, "1")
+	if fullConfig.DiscoveredClockUnderTestPod != nil {
+		nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+		Eventually(func() error {
+			return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+		}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+			"simulated T-GM CLOCK_REALTIME (phc2sys -r) must reach LOCKED")
+	}
 }
 
 func verifyEventsV1(expectedState string) {
@@ -4634,13 +4603,13 @@ func processRunning(input string, state string) (map[string]bool, error) {
 }
 
 // processRunningSimGM is like processRunning but only checks processes that
-// exist in the simulated T-GM environment (no gpsd, gpspipe, or phc2sys —
-// Kind/netdevsim shares one host CLOCK_REALTIME so phc2sys is not started).
+// exist in the simulated T-GM environment (no gpsd or gpspipe — gnss-sim
+// owns /dev/gnssN). phc2sys -r still runs so CLOCK_REALTIME is disciplined.
 func processRunningSimGM(input string, state string) (map[string]bool, error) {
 	processStatusPattern := `openshift_ptp_process_status\{config="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
 	processStatusRe := regexp.MustCompile(processStatusPattern)
 
-	result := map[string]bool{"ptp4l": false, "ts2phc": false}
+	result := map[string]bool{"ptp4l": false, "ts2phc": false, "phc2sys": false}
 
 	scanner := bufio.NewScanner(strings.NewReader(input))
 	timeout := 10 * time.Second
@@ -4764,25 +4733,21 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpProcessStatus),
 		"Process status metrics are not detected")
 
-	if !ptphelper.IsGnssSimConfigured() {
-		Eventually(func() string {
-			buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
-			if err != nil {
-				refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
-				return ""
-			}
-			return buf.String()
-		}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring("phc2sys"),
-			"phc2sys process status not detected")
-	}
+	Eventually(func() string {
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return ""
+		}
+		return buf.String()
+	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring("phc2sys"),
+		"phc2sys process status not detected")
 
 	time.Sleep(10 * time.Second)
 	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
 	ret, err := processRunning(buf.String(), state)
 	Expect(err).To(BeNil())
-	if !ptphelper.IsGnssSimConfigured() {
-		Expect(ret["phc2sys"]).To(BeTrue(), fmt.Sprintf("Expected phc2sys to be  %s for GM", state))
-	}
+	Expect(ret["phc2sys"]).To(BeTrue(), fmt.Sprintf("Expected phc2sys to be  %s for GM", state))
 	Expect(ret["ptp4l"]).To(BeTrue(), fmt.Sprintf("Expected ptp4l to be  %s for GM", state))
 	Expect(ret["ts2phc"]).To(BeTrue(), fmt.Sprintf("Expected ts2phc to be  %s for GM", state))
 	Expect(ret["gpspipe"]).To(BeTrue(), fmt.Sprintf("Expected gpspipe to be %s for GM", state))
@@ -5322,12 +5287,13 @@ func anyClockClassDifferent(fullConfig testconfig.TestConfig, excludedClass stri
 	return false
 }
 
-// waitForWPCGMReady blocks until the WPC T-GM's ptp4l advertises clock class 6.
-// The WPC GM does not hardcode clockClass; it converges dynamically through the
-// GNSS→ts2phc→DPLL→PMC pipeline. Downstream OC/BC profiles that still use the
-// default clock_class_threshold of 7 reject GMs with class > 7, so we must wait
-// before any slave sync assertion. (TGMBC BC configs raise the threshold so
-// cascading holdover can observe CC7.)
+// waitForWPCGMReady blocks until the WPC T-GM advertises clock class 6 and
+// CLOCK_REALTIME is LOCKED. The WPC GM does not hardcode clockClass; it
+// converges dynamically through the GNSS→ts2phc→DPLL→PMC pipeline.
+// Downstream OC/BC profiles that still use the default clock_class_threshold
+// of 7 reject GMs with class > 7, so we must wait before any slave sync
+// assertion. (TGMBC BC configs raise the threshold so cascading holdover can
+// observe CC7.)
 // The function is a no-op when there is no WPC GM in the topology.
 func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
 	if fullConfig.PtpModeDiscovered != testconfig.TelcoGMOC &&
@@ -5342,6 +5308,12 @@ func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
 		return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
 	}, pkg.TimeoutIn10Minutes, 5*time.Second).Should(BeTrue(),
 		"WPC T-GM did not reach clock class 6 — downstream clocks cannot leave LISTENING state")
+	By("Waiting for WPC T-GM CLOCK_REALTIME (phc2sys -r) to reach LOCKED")
+	nodeName := gmPod.Spec.NodeName
+	Eventually(func() error {
+		return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(Succeed(),
+		"WPC T-GM CLOCK_REALTIME did not reach LOCKED — keep phc2sys -r (VRT per-node CLOCK_REALTIME)")
 }
 
 // getGMPod returns the linuxptp-daemon pod running on the node labeled
@@ -5366,17 +5338,17 @@ func getGMPod() *v1core.Pod {
 	return nil
 }
 
-// checkClockClassInMetrics scans raw metrics output for ptp4l clock class matching expectedState.
-// Unlike checkClockClassStateReturnBool, this operates on pre-fetched metrics text so the caller
-// can target any pod (GM, BC, OC) independently.
+// checkClockClassInMetrics scans raw metrics output for ptp4l or ts2phc clock
+// class matching expectedState. T-GM often publishes the GNSS-driven class on
+// ts2phc first; ptp4l follows via PMC.
 func checkClockClassInMetrics(metricsOutput string, expectedState string) bool {
 	scanner := bufio.NewScanner(strings.NewReader(metricsOutput))
 	for scanner.Scan() {
 		line := scanner.Text()
 		if matches := clockClassRe.FindStringSubmatch(line); matches != nil {
-			process := matches[2]
-			class := matches[3]
-			if strings.TrimSpace(process) == "ptp4l" && strings.TrimSpace(class) == expectedState {
+			process := strings.TrimSpace(matches[2])
+			class := strings.TrimSpace(matches[3])
+			if (process == "ptp4l" || process == "ts2phc") && class == expectedState {
 				return true
 			}
 		}
@@ -5842,39 +5814,55 @@ func verifyClockClassViaEvent(evCtx bcEventContext, expectedClass int) {
 	verifyMetric(events[ptpEvent.PtpClockClassChange], float64(expectedClass))
 }
 
-// verifyClockClassCurrentState creates a fresh event subscription with pushInitial=true
-// to query the current clock class state from the Event API's getCurrentState endpoint.
-// Unlike verifyClockClassViaEvent (which drains an existing long-lived subscription),
-// this function is safe to call after disruptions such as a cloud-event-proxy restart,
-// where the previous subscription may be stale or disconnected.
+// verifyClockClassCurrentState re-queries Event API getCurrentState until any
+// clock-class value matches. After a cloud-event-proxy restart the first
+// CurrentState can be 255/248 (BC master port or unpopulated stats) while
+// ptp4l metrics already show 6; a single PushInitialEvent would accept that
+// first event and then wait for a CLOCK_CLASS_CHANGE that never comes.
 func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration) {
 	const incomingEventsBuffer = 100
+	const pushTimeout = 15 * time.Second
 	ccTopic := string(ptpEvent.PtpClockClassChange)
-
-	ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
-	defer event.PubSub.Unsubscribe(ccTopic, cID)
-
-	if err := event.PushInitialEvent(ccTopic, timeout); err != nil {
-		Fail(fmt.Sprintf("Failed to push initial clock class event: %v", err))
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	deadline := time.Now().Add(timeout)
+	want := float64(expectedClockClass)
 
 	for {
-		select {
-		case <-timer.C:
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API", expectedClockClass))
 			return
-		case ev := <-ccCh:
-			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
+		}
+		ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
+		thisPush := pushTimeout
+		if remaining < thisPush {
+			thisPush = remaining
+		}
+		_ = event.PushInitialEvent(ccTopic, thisPush)
+		matched := false
+	drain:
+		for {
+			select {
+			case ev := <-ccCh:
+				res, ok := processEvent(ptpEvent.PtpClockClassChange, ev)
+				if !ok {
+					continue
+				}
 				for _, val := range res.Values {
-					if eventValueMatchesFloat(val, float64(expectedClockClass)) {
-						fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
-						return
+					if eventValueMatchesFloat(val, want) {
+						matched = true
+						break drain
 					}
 				}
+				fmt.Fprintf(GinkgoWriter, "ClockClass CurrentState did not match %d: %v\n", expectedClockClass, res.Values)
+			default:
+				break drain
 			}
 		}
+		event.PubSub.Unsubscribe(ccTopic, cID)
+		if matched {
+			fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
 }
