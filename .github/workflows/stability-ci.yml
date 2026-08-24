@@ -1,15 +1,47 @@
-# CI for ptp-operator with netdevsim DKMS modules.
-# Builds DKMS modules from netdevsim-dkms, then runs ptp-operator e2e
-# tests using the checked-out ptp-operator source.
+# Test stability CI for ptp-operator.
+# Runs each selected mode N times and produces a stability report
+# identifying stable, flaky, intermittent, and broken tests.
+#
+# Image build, DKMS, and Kind/netdevsim deploy match netdevsim-ci.yml
+# (integrate-add-gnss). Cluster setup uses run-on-vm.sh --cluster so
+# tests can be repeated by stability-test.sh without redeploying.
+#
+# Triggers:
+#   - Add the "run-stability" label to a PR  (uses PR branch)
+#   - Manual workflow_dispatch                (works once on default branch)
 
-name: netdevsim CI
+name: Test Stability
 
 on:
   pull_request:
+    types: [labeled]
   workflow_dispatch:
+    inputs:
+      stability_mode:
+        description: "Test mode"
+        required: true
+        type: choice
+        options:
+          - oc
+          - bc
+          - dualnicbc
+          - dualnicbcha
+          - dualfollower
+          - tgm
+          - tgmoc
+          - tgmbc
+          - all
+        default: all
+      stability_runs:
+        description: "Number of runs per mode (default: 5)"
+        required: false
+        type: number
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: stability-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -17,130 +49,47 @@ env:
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
   DKMS_BRANCH: fix-dashboard
-  # Optional: set to "true" to stream run-on-vm child command logs.
-  # RUN_ON_VM_VERBOSE: "true"
+  STABILITY_MODE: ${{ github.event.inputs.stability_mode || 'all' }}
+  STABILITY_RUNS: ${{ github.event.inputs.stability_runs || '5' }}
 
 jobs:
   # ------------------------------------------------------------------
-  # DKMS build + smoke tests (every PR and workflow_dispatch)
+  # Gate: only proceed if triggered by the "run-stability" label or dispatch
   # ------------------------------------------------------------------
-  dkms-test:
+  gate:
     runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'run-stability')
     steps:
-      - name: Runner info
-        run: |
-          echo "CPUs: $(nproc)"
-          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
-          echo "Kernel: $(uname -r)"
-
-      - name: Clone netdevsim-dkms
-        run: git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
-
-      - name: Install DKMS dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dkms gcc make ethtool linuxptp \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r) || {
-            echo "::error::Could not install kernel headers/modules for $(uname -r)"
-            exit 1
-          }
-
-      - name: Install DKMS source tree
-        run: |
-          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
-          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
-            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
-            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
-            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
-            /usr/src/${DKMS_PKG}-${DKMS_VER}/
-
-      - name: DKMS add + build + install
-        id: build
-        run: |
-          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
-          if sudo dkms build ${DKMS_PKG}/${DKMS_VER} 2>&1; then
-            echo "status=ok" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=fail" >> "$GITHUB_OUTPUT"
-            echo "::warning::DKMS build failed — dumping make.log"
-            sudo cat /var/lib/dkms/${DKMS_PKG}/${DKMS_VER}/build/make.log || true
-            exit 1
-          fi
-          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
-          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
-          sudo udevadm control --reload-rules
-
-      - name: Load modules
-        id: load
-        run: |
-          set -e
-          sudo modprobe gnss           && echo "gnss loaded"           || echo "gnss skipped"
-          sudo modprobe nsim_ptp       && echo "nsim_ptp loaded"
-          sudo modprobe nsim_ptp_mock  && echo "nsim_ptp_mock loaded"
-          sudo modprobe nsim_dpll      && echo "nsim_dpll loaded"
-          sudo modprobe netdevsim pci_bus_nr=0x1f && echo "netdevsim loaded"
-          lsmod | grep -E 'nsim_ptp|nsim_dpll|netdevsim|gnss' || true
-          sudo chmod 666 /dev/nsim_ptp* 2>/dev/null || true
-          echo "load_ok=true" >> "$GITHUB_OUTPUT"
-
-      - name: Smoke test — create netdevsim device
-        if: steps.load.outputs.load_ok == 'true'
-        run: |
-          set -euo pipefail
-          BUS_NR=$(cat /sys/module/netdevsim/parameters/pci_bus_nr 2>/dev/null || echo 31)
-          BUS=$(printf "%02x" "$BUS_NR")
-          FAKE_ROOT=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep ":${BUS}:00\.0" | head -1)
-          DOMAIN="${FAKE_ROOT:+$(echo "$FAKE_ROOT" | cut -d: -f1)}"
-          : "${DOMAIN:=0000}"
-          PCI_ADDR="${DOMAIN}:${BUS}:02.0"
-          echo "Using PCI address: ${PCI_ADDR}"
-          echo "1 ${PCI_ADDR} 1" | sudo tee /sys/bus/netdevsim/new_device
-          sleep 1
-          ls /sys/bus/netdevsim/devices/netdevsim1/
-
-      - name: Smoke test — verify PTP clock
-        if: steps.load.outputs.load_ok == 'true'
-        run: |
-          set -euo pipefail
-          ls /sys/class/nsim_ptp/
-          ls -la /dev/nsim_ptp* /dev/ptp* 2>/dev/null || echo "No PTP devices found"
-          readlink /dev/ptp0 2>/dev/null | grep -q nsim_ptp \
-            && echo "OK: /dev/ptp0 -> $(readlink /dev/ptp0)" \
-            || echo "WARN: /dev/ptp0 symlink not found"
-
-      - name: Smoke test — verify ethtool PHC
-        if: steps.load.outputs.load_ok == 'true'
-        run: |
-          BUS_NR=$(cat /sys/module/netdevsim/parameters/pci_bus_nr 2>/dev/null || echo 31)
-          BUS=$(printf "%02x" "$BUS_NR")
-          FAKE_ROOT=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep ":${BUS}:00\.0" | head -1)
-          DOMAIN="${FAKE_ROOT:+$(echo "$FAKE_ROOT" | cut -d: -f1)}"
-          : "${DOMAIN:=0000}"
-          IFACE=$(ls /sys/bus/pci/devices/${DOMAIN}:${BUS}:02.0/net/ 2>/dev/null | head -1)
-          [ -n "$IFACE" ] && ethtool -T "$IFACE" || echo "WARN: No interface found"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          echo "1" | sudo tee /sys/bus/netdevsim/del_device 2>/dev/null || true
-          sudo rmmod netdevsim nsim_dpll nsim_ptp_mock nsim_ptp 2>/dev/null || true
-          sudo dkms remove ${DKMS_PKG}/${DKMS_VER} --all 2>/dev/null || true
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "## DKMS Smoke Tests (ubuntu-24.04)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- OS: ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Kernel: $(uname -r)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Build: ${{ steps.build.outputs.status || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Load: ${{ steps.load.outputs.load_ok || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+      - run: echo "Stability tests triggered (mode=${{ env.STABILITY_MODE }}, runs=${{ env.STABILITY_RUNS }})"
 
   # ------------------------------------------------------------------
-  # ptp-operator: build images once and upload as artifact
+  # Resolve mode input into a JSON matrix array
+  # ------------------------------------------------------------------
+  resolve-matrix:
+    needs: gate
+    runs-on: ubuntu-24.04
+    outputs:
+      modes: ${{ steps.set.outputs.modes }}
+    steps:
+      - name: Compute mode list
+        id: set
+        run: |
+          RAW="${{ env.STABILITY_MODE }}"
+          if [[ "$RAW" == "all" ]]; then
+            echo 'modes=["oc","bc","dualnicbc","dualnicbcha","dualfollower","tgm","tgmoc","tgmbc"]' >> "$GITHUB_OUTPUT"
+          else
+            # Support comma-separated modes: "oc,bc" -> ["oc","bc"]
+            JSON=$(echo "$RAW" | tr ',' '\n' | sed 's/^/"/;s/$/"/' | paste -sd ',' | sed 's/^/[/;s/$/]/')
+            echo "modes=${JSON}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------
+  # Build images (mirrors netdevsim-ci ptp-images job)
   # ------------------------------------------------------------------
   ptp-images:
-    needs: dkms-test
+    needs: gate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -171,7 +120,6 @@ jobs:
           sudo apt-get install -y podman
           # Ubuntu noble ships crun 1.14.1; Podman 5 needs >= 1.14.3 or root hits
           # "OCI runtime error: crun: unknown version specified" when starting registry.
-          # Install a current static binary for both the runner user and root.
           CRUN_VER=1.28
           ARCH=$(dpkg --print-architecture)
           case "$ARCH" in
@@ -188,15 +136,16 @@ jobs:
           crun --version
           sudo crun --version
           sudo podman run --rm quay.io/libpod/alpine:latest echo ok
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
           sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
-      - name: "Build images and export tarball"
+      - name: Build images and export tarball
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'BUILD'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'BUILD'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true
@@ -213,29 +162,39 @@ jobs:
       - name: Upload image tarball
         uses: actions/upload-artifact@v7
         with:
-          name: ptp-images
+          name: ptp-images-stability
           path: /tmp/ptp-images.tar
           retention-days: 1
+          if-no-files-found: error
 
   # ------------------------------------------------------------------
-  # ptp-operator: one parallel runner per scenario
+  # One parallel runner per mode — deploy cluster, run N times
   # ------------------------------------------------------------------
-  ptp-test:
-    needs: ptp-images
+  stability-test:
+    needs: [ptp-images, resolve-matrix]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
+        mode: ${{ fromJson(needs.resolve-matrix.outputs.modes) }}
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |
           echo "CPUs: $(nproc)"
           echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
           echo "Kernel: $(uname -r)"
+          echo "Mode: ${{ matrix.mode }}"
+          echo "Runs: ${{ env.STABILITY_RUNS }}"
 
       - uses: actions/checkout@v5
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force 2>/dev/null || true
+          sudo apt-get clean
+          df -h
 
       - name: Install podman 5.x
         run: |
@@ -247,9 +206,6 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y podman
-          # Ubuntu noble ships crun 1.14.1; Podman 5 needs >= 1.14.3 or root hits
-          # "OCI runtime error: crun: unknown version specified" when starting registry.
-          # Install a current static binary for both the runner user and root.
           CRUN_VER=1.28
           ARCH=$(dpkg --print-architecture)
           case "$ARCH" in
@@ -266,7 +222,6 @@ jobs:
           crun --version
           sudo crun --version
           sudo podman run --rm quay.io/libpod/alpine:latest echo ok
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
           sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Install OpenShift CLI (oc)
@@ -305,12 +260,14 @@ jobs:
       - name: Download image tarball
         uses: actions/download-artifact@v7
         with:
-          name: ptp-images
+          name: ptp-images-stability
           path: /tmp
 
-      - name: "Load images into local registry"
+      - name: Load images into local registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'LOAD'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'LOAD'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true
@@ -322,7 +279,7 @@ jobs:
           ./run-on-vm.sh --dkms --load /tmp/ptp-images.tar "${VM_IP}"
           LOAD
 
-      - name: "Free disk space before tests"
+      - name: Free disk space before tests
         run: |
           sudo bash -l <<'CLEANUP'
           set -euo pipefail
@@ -331,9 +288,11 @@ jobs:
           df -h
           CLEANUP
 
-      - name: "Run scenario: ${{ matrix.mode }}"
+      - name: Deploy Kind cluster
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sudo bash -l <<'DEPLOY'
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'SETUP'
           set -euo pipefail
           set -x
           export GITHUB_ACTIONS=true
@@ -342,29 +301,144 @@ jobs:
 
           VM_IP=$(hostname -I | awk '{print $1}')
           cd /root/ptp-operator/scripts
-          ./run-on-vm.sh --dkms --deploy "${VM_IP}" --mode "${{ matrix.mode }}" "${VM_IP}"
-          DEPLOY
+          ./run-on-vm.sh --dkms --cluster "${VM_IP}" "${VM_IP}"
+          SETUP
 
-      - name: Upload test artifacts
+      - name: "Run stability tests: ${{ matrix.mode }} x${{ env.STABILITY_RUNS }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" bash -l <<'TEST'
+          set -uo pipefail
+          set -x
+          export GITHUB_ACTIONS=true
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+          export DKMS_MODE=true
+          export GITHUB_TOKEN="${GITHUB_TOKEN}"
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          export IMG_PREFIX="${VM_IP}/test"
+
+          cd /root/ptp-operator/scripts
+
+          ./stability-test.sh \
+            --mode "${{ matrix.mode }}" \
+            --runs "${{ env.STABILITY_RUNS }}" \
+            --output-dir /tmp/stability-results \
+            --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
+            --must-gather-image "$IMG_PREFIX:ptpmg" \
+            --debug-image "$IMG_PREFIX:debug" \
+            || true
+
+          if [[ ! -d /tmp/stability-results/${{ matrix.mode }} ]]; then
+            echo "::error::stability-test.sh produced no results for ${{ matrix.mode }} (infrastructure failure)"
+            exit 1
+          fi
+          TEST
+
+      - name: Upload stability results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ptp-artifacts-${{ matrix.mode }}
-          path: /tmp/artifacts/
+          name: stability-results-${{ matrix.mode }}
+          path: /tmp/stability-results/${{ matrix.mode }}/
           if-no-files-found: ignore
 
       - name: Cleanup
         if: always()
         run: |
+          if [[ -f /tmp/symlink-pid ]]; then
+            sudo kill "$(cat /tmp/symlink-pid)" 2>/dev/null || true
+          fi
           for id in $(ls /sys/bus/netdevsim/devices/ 2>/dev/null | sed 's/netdevsim//'); do
             echo "$id" | sudo tee /sys/bus/netdevsim/del_device 2>/dev/null || true
           done
           sudo rmmod netdevsim nsim_dpll nsim_ptp_mock nsim_ptp 2>/dev/null || true
           sudo dkms remove ${DKMS_PKG}/${DKMS_VER} --all 2>/dev/null || true
 
-      - name: Summary
+  # ------------------------------------------------------------------
+  # Aggregate per-mode results into a single stability report
+  # ------------------------------------------------------------------
+  stability-report:
+    needs: [resolve-matrix, stability-test]
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.label.name == 'run-stability')
+      )
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all stability results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: stability-results-*
+          path: /tmp/stability-results
+          merge-multiple: false
+
+      - name: Rearrange artifacts into expected layout
+        run: |
+          mkdir -p /tmp/stability-merged
+          FOUND=0
+          for dir in /tmp/stability-results/stability-results-*/; do
+            [[ -d "$dir" ]] || continue
+            mode=$(basename "$dir" | sed 's/^stability-results-//')
+            cp -a "$dir" "/tmp/stability-merged/${mode}"
+            FOUND=$((FOUND + 1))
+          done
+          if [[ $FOUND -eq 0 ]]; then
+            echo "::warning::No stability results found to merge"
+          fi
+          echo "Merged layout:"
+          find /tmp/stability-merged -maxdepth 2 -type d | head -30
+
+      - name: Generate stability report
+        run: |
+          MODES='${{ join(fromJson(needs.resolve-matrix.outputs.modes), ' ') }}'
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          REPORT="/tmp/stability-merged/stability-report-${TIMESTAMP}.md"
+
+          python3 scripts/aggregate-stability.py \
+            --results-dir /tmp/stability-merged \
+            --output "$REPORT" \
+            --modes "$MODES"
+
+          echo "REPORT_FILE=${REPORT}" >> "$GITHUB_ENV"
+
+      - name: Post summary
         if: always()
         run: |
-          echo "## ptp-operator: ${{ matrix.mode }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- OS: ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Kernel: $(uname -r)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "${REPORT_FILE:-}" && -f "${REPORT_FILE}" ]]; then
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "No report generated. Check the stability-results artifacts for raw data." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload combined report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stability-report-combined
+          path: /tmp/stability-merged/stability-report-*.md
+          if-no-files-found: ignore
+
+      - name: Remove label
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.label.name == 'run-stability'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --remove-label run-stability \
+            --repo ${{ github.repository }} || true

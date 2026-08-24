@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"testing"
 
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
@@ -13,6 +14,7 @@ import (
 	"github.com/redhat-cne/l2discovery-lib/exports"
 	corev1 "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -39,9 +41,36 @@ func makePtpIf(node, iface string) *exports.PtpIf {
 	}
 }
 
+// restoreL2Config snapshots GlobalConfig.L2Config and restores it after the test
+// so package-level tests do not leak L2 discovery state into each other.
+func restoreL2Config(t *testing.T) {
+	t.Helper()
+	prev := GlobalConfig.L2Config
+	t.Cleanup(func() { GlobalConfig.L2Config = prev })
+}
+
+// isolateGlobalConfig snapshots the whole package TestConfig. GetDesiredConfig and
+// GetFullDiscoveredConfig mutate GlobalConfig in place; without this, shuffle order
+// leaks discovered pods/interfaces into later tests.
+func isolateGlobalConfig(t *testing.T) {
+	t.Helper()
+	prev := GlobalConfig
+	t.Cleanup(func() { GlobalConfig = prev })
+	GlobalConfig = TestConfig{}
+	Reset()
+}
+
 // setupPreferDiffNode wires up the package-level data and GlobalConfig so
 // preferDiffNodeSolution can run without the full solver/discovery stack.
-func setupPreferDiffNode(ifList []*exports.PtpIf, roleMap []int, solutions [][]int, problem string) {
+func setupPreferDiffNode(t *testing.T, ifList []*exports.PtpIf, roleMap []int, solutions [][]int, problem string) {
+	t.Helper()
+	restoreL2Config(t)
+	prevSolutions := data.solutions
+	prevRoles := data.testClockRolesAlgoMapping
+	t.Cleanup(func() {
+		data.solutions = prevSolutions
+		data.testClockRolesAlgoMapping = prevRoles
+	})
 	data.solutions = map[string]*[][]int{problem: &solutions}
 	data.testClockRolesAlgoMapping = map[string]*[]int{problem: &roleMap}
 	GlobalConfig.L2Config = &mockL2Info{ifList: ifList}
@@ -173,7 +202,7 @@ func TestPreferDiffNodeSolution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setupPreferDiffNode(tt.ifList, tt.roleMap, tt.solutions, tt.problem)
+			setupPreferDiffNode(t, tt.ifList, tt.roleMap, tt.solutions, tt.problem)
 			got := preferDiffNodeSolution(tt.problem, tt.roles...)
 			if got != tt.wantIdx {
 				t.Errorf("preferDiffNodeSolution() = %d, want %d", got, tt.wantIdx)
@@ -208,7 +237,7 @@ func TestPreferDiffNodeSolution_ThreeNodeCluster(t *testing.T) {
 		{4, 3, 2, 0},
 	}
 
-	setupPreferDiffNode(ifList, roleMap, solutions, AlgoBCWithSlavesString)
+	setupPreferDiffNode(t, ifList, roleMap, solutions, AlgoBCWithSlavesString)
 	got := preferDiffNodeSolution(AlgoBCWithSlavesString, Grandmaster, BC1Slave, Slave1)
 	if got != 1 {
 		t.Errorf("preferDiffNodeSolution() = %d, want 1", got)
@@ -223,6 +252,7 @@ const (
 )
 
 func TestGetDesiredConfig(t *testing.T) {
+	isolateGlobalConfig(t)
 	tests := []struct {
 		name        string
 		mode        string
@@ -395,6 +425,7 @@ func TestGetDesiredConfig(t *testing.T) {
 }
 
 func TestGetFullDiscoveredConfig(t *testing.T) {
+	isolateGlobalConfig(t)
 	type args struct {
 		namespace string
 		mode      PTPMode
@@ -415,6 +446,8 @@ func TestGetFullDiscoveredConfig(t *testing.T) {
 				Status:                            DiscoverySuccessStatus,
 				DiscoveredClockUnderTestPtpConfig: (*ptpDiscoveryRes)(mockPtpConfig(config1, namespace1, ptpv1.Slave, OrdinaryClock)),
 				DiscoveredClockUnderTestSecondaryPtpConfig: nil,
+				DiscoveredClockUnderTestPod:                mockLinuxptpDaemonPod("node1"),
+				DiscoveredFollowerInterfaces:               []string{"eth0"},
 			},
 		},
 		{
@@ -427,6 +460,9 @@ func TestGetFullDiscoveredConfig(t *testing.T) {
 				Status:                            DiscoverySuccessStatus,
 				DiscoveredClockUnderTestPtpConfig: (*ptpDiscoveryRes)(mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock)),
 				DiscoveredClockUnderTestSecondaryPtpConfig: nil,
+				DiscoveredClockUnderTestPod:                mockLinuxptpDaemonPod("node1"),
+				DiscoveredFollowerInterfaces:               []string{"eth0"},
+				DiscoveredMasterInterfaces:                 []string{"eth1", "eth2"},
 			},
 		},
 		{
@@ -439,6 +475,9 @@ func TestGetFullDiscoveredConfig(t *testing.T) {
 				Status:                            DiscoverySuccessStatus,
 				DiscoveredClockUnderTestPtpConfig: (*ptpDiscoveryRes)(mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock)),
 				DiscoveredClockUnderTestSecondaryPtpConfig: (*ptpDiscoveryRes)(mockPtpConfig(config3, namespace1, ptpv1.Slave, DualNICBoundaryClock)),
+				DiscoveredClockUnderTestPod:                mockLinuxptpDaemonPod("node1"),
+				DiscoveredFollowerInterfaces:               []string{"eth0", "eth0"},
+				DiscoveredMasterInterfaces:                 []string{"eth1", "eth1", "eth2", "eth2"},
 			},
 		},
 	}
@@ -447,7 +486,10 @@ func TestGetFullDiscoveredConfig(t *testing.T) {
 
 		t.Run(tt.name, func(t *testing.T) {
 			GeneratePTPObjects(tt.args.mode)
-			if got := GetFullDiscoveredConfig(tt.args.namespace, true); !reflect.DeepEqual(got, tt.want) {
+			got := GetFullDiscoveredConfig(tt.args.namespace, true)
+			sort.Strings(got.DiscoveredMasterInterfaces)
+			sort.Strings(got.DiscoveredFollowerInterfaces)
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("GetFullDiscoveredConfig() = %v, want %v", got, tt.want)
 			}
 			testclient.ClearTestClientsHolder()
@@ -582,29 +624,230 @@ func mockNode(name string) *corev1.Node {
 	aNode.Labels[pkg.PtpClockUnderTestNodeLabel] = ""
 	return &aNode
 }
+
+func mockLinuxptpDaemonPod(nodeName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "linuxptp-daemon-" + nodeName,
+			Namespace: pkg.PtpLinuxDaemonNamespace,
+			Labels:    map[string]string{"app": "linuxptp-daemon"},
+		},
+		Spec: corev1.PodSpec{NodeName: nodeName},
+	}
+}
+
 func GeneratePTPObjects(mode PTPMode) {
 	testclient.ClearTestClientsHolder()
+	daemonPod := mockLinuxptpDaemonPod("node1")
+	node := mockNode("node1")
 	switch mode {
 	case OrdinaryClock:
-		var mockClientObjects []runtime.Object
-		mockClientObjects = append(mockClientObjects, mockPtpConfig(config1, namespace1, ptpv1.Slave, OrdinaryClock))
-		mockClientObjects = append(mockClientObjects, mockNode("node1"))
-		_ = testclient.GetTestClientSet(mockClientObjects)
+		_ = testclient.GetTestClientSet([]runtime.Object{
+			mockPtpConfig(config1, namespace1, ptpv1.Slave, OrdinaryClock),
+			node,
+			daemonPod,
+		})
 	case BoundaryClock:
-		var mockClientObjects []runtime.Object
-		mockClientObjects = append(mockClientObjects, mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock))
-		mockClientObjects = append(mockClientObjects, mockNode("node1"))
-		_ = testclient.GetTestClientSet(mockClientObjects)
+		_ = testclient.GetTestClientSet([]runtime.Object{
+			mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock),
+			node,
+			daemonPod,
+		})
 	case DualNICBoundaryClock:
-		var mockClientObjects []runtime.Object
-		mockClientObjects = append(mockClientObjects, mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock))
-		mockClientObjects = append(mockClientObjects, mockPtpConfig(config3, namespace1, ptpv1.Slave, DualNICBoundaryClock))
-		mockClientObjects = append(mockClientObjects, mockNode("node1"))
-		_ = testclient.GetTestClientSet(mockClientObjects)
+		_ = testclient.GetTestClientSet([]runtime.Object{
+			mockPtpConfig(config2, namespace1, ptpv1.Slave, BoundaryClock),
+			mockPtpConfig(config3, namespace1, ptpv1.Slave, DualNICBoundaryClock),
+			node,
+			daemonPod,
+		})
 	case TelcoBoundaryClock:
-		var mockClientObjects []runtime.Object
-		mockClientObjects = append(mockClientObjects, mockPtpConfig(config1, namespace1, ptpv1.Slave, TelcoBoundaryClock))
-		mockClientObjects = append(mockClientObjects, mockNode("node1"))
-		_ = testclient.GetTestClientSet(mockClientObjects)
+		_ = testclient.GetTestClientSet([]runtime.Object{
+			mockPtpConfig(config1, namespace1, ptpv1.Slave, TelcoBoundaryClock),
+			node,
+			daemonPod,
+		})
+	}
+}
+
+func TestStripPhc2sysRealtimeOpts(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "-a -r -n 24 -m -N 8 -R 16", want: "-a -n 24 -m -N 8 -R 16"},
+		{in: "-a -r -r -n 24", want: "-a -n 24"},
+		{in: "-a -n 24", want: "-a -n 24"},
+		{in: "  -a   -r  -m  ", want: "-a -m"},
+	}
+	for _, tt := range tests {
+		if got := stripPhc2sysRealtimeOpts(tt.in); got != tt.want {
+			t.Fatalf("stripPhc2sysRealtimeOpts(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func makePtpIfWithPHC(node, iface string, phc int, rawClock bool) *exports.PtpIf {
+	p := makePtpIf(node, iface)
+	p.IfName = iface
+	p.IfPTPCaps.PhcIndex = phc
+	p.IfPTPCaps.HwRawClock = rawClock
+	return p
+}
+
+func TestNeedBoundaryClockJbod(t *testing.T) {
+	restoreL2Config(t)
+
+	shared := []*exports.PtpIf{
+		makePtpIfWithPHC("kind-netdevsim-worker2", "ens3f0", 3, true),
+		makePtpIfWithPHC("kind-netdevsim-worker2", "ens3f2", 3, true),
+		makePtpIfWithPHC("kind-netdevsim-worker", "ens1f0", 1, true),
+		makePtpIfWithPHC("kind-netdevsim-worker", "ens1f1", 1, true),
+		makePtpIfWithPHC("kind-netdevsim-worker3", "ens7f0", 0, true),
+		makePtpIfWithPHC("kind-netdevsim-worker3", "ens7f1", 0, true),
+		makePtpIfWithPHC("kind-netdevsim-worker3", "ens8f0", 2, true),
+		makePtpIfWithPHC("kind-netdevsim-worker3", "ens8f1", 2, true),
+	}
+	perPort := []*exports.PtpIf{
+		makePtpIfWithPHC("cnfdg32", "ens5f0", 4, true),
+		makePtpIfWithPHC("cnfdg32", "ens5f1", 5, true),
+	}
+
+	tests := []struct {
+		name     string
+		l2       []*exports.PtpIf
+		node     string
+		ifaces   []string
+		want     bool
+		wantLine string
+	}{
+		{
+			name:     "netdevsim one PHC per NIC omits jbod",
+			l2:       shared,
+			node:     "kind-netdevsim-worker2",
+			ifaces:   []string{"ens3f2", "ens3f0"},
+			want:     false,
+			wantLine: "",
+		},
+		{
+			name:     "dual-port same PHC on gnss NIC omits jbod",
+			l2:       shared,
+			node:     "kind-netdevsim-worker",
+			ifaces:   []string{"ens1f0", "ens1f1"},
+			want:     false,
+			wantLine: "",
+		},
+		{
+			name:     "E810 per-port PHCs keep jbod",
+			l2:       perPort,
+			node:     "cnfdg32",
+			ifaces:   []string{"ens5f0", "ens5f1"},
+			want:     true,
+			wantLine: "boundary_clock_jbod 1\n",
+		},
+		{
+			name:     "missing L2 keeps jbod for hardware CI",
+			l2:       nil,
+			node:     "cnfdg32",
+			ifaces:   []string{"ens5f0", "ens5f1"},
+			want:     true,
+			wantLine: "boundary_clock_jbod 1\n",
+		},
+		{
+			name:     "unknown iface keeps jbod",
+			l2:       shared,
+			node:     "kind-netdevsim-worker2",
+			ifaces:   []string{"ens3f0", "missing"},
+			want:     true,
+			wantLine: "boundary_clock_jbod 1\n",
+		},
+		{
+			name:     "unset PTPCaps keeps jbod",
+			l2:       []*exports.PtpIf{makePtpIf("node", "eth0"), makePtpIf("node", "eth1")},
+			node:     "node",
+			ifaces:   []string{"eth0", "eth1"},
+			want:     true,
+			wantLine: "boundary_clock_jbod 1\n",
+		},
+		{
+			name:     "HwRawClock with PhcIndex 0 is /dev/ptp0 not unset",
+			l2:       shared,
+			node:     "kind-netdevsim-worker3",
+			ifaces:   []string{"ens7f0", "ens7f1"},
+			want:     false,
+			wantLine: "",
+		},
+		{
+			name:     "DualNIC ports on different PHCs keep jbod",
+			l2:       shared,
+			node:     "kind-netdevsim-worker3",
+			ifaces:   []string{"ens7f0", "ens8f0"},
+			want:     true,
+			wantLine: "boundary_clock_jbod 1\n",
+		},
+		{
+			name:     "DualNIC same-NIC pair omits jbod",
+			l2:       shared,
+			node:     "kind-netdevsim-worker3",
+			ifaces:   []string{"ens8f0", "ens8f1"},
+			want:     false,
+			wantLine: "",
+		},
+		{
+			name: "InterfaceName match when IfName differs",
+			l2: []*exports.PtpIf{
+				func() *exports.PtpIf {
+					p := makePtpIfWithPHC("n", "ens3f0", 7, true)
+					p.IfName = "ens3f0"
+					return p
+				}(),
+				func() *exports.PtpIf {
+					p := makePtpIfWithPHC("n", "ens3f1", 7, true)
+					p.IfName = "ens3f1"
+					return p
+				}(),
+			},
+			node:     "n",
+			ifaces:   []string{"ens3f0", "ens3f1"},
+			want:     false,
+			wantLine: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.l2 == nil {
+				GlobalConfig.L2Config = nil
+			} else {
+				GlobalConfig.L2Config = &mockL2Info{ifList: tt.l2}
+			}
+			if got := needBoundaryClockJbod(tt.node, tt.ifaces...); got != tt.want {
+				t.Fatalf("needBoundaryClockJbod() = %v, want %v", got, tt.want)
+			}
+			if got := ptp4lJbodLine(tt.node, tt.ifaces...); got != tt.wantLine {
+				t.Fatalf("ptp4lJbodLine() = %q, want %q", got, tt.wantLine)
+			}
+		})
+	}
+}
+
+func TestIsTelcoGMMode(t *testing.T) {
+	t.Parallel()
+	gm := map[PTPMode]bool{
+		TelcoGrandMasterClock: true,
+		TelcoGMOC:             true,
+		TelcoGMBC:             true,
+	}
+	nonGM := []PTPMode{
+		OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA,
+		DualFollowerClock, Discovery, TelcoBoundaryClock, None,
+	}
+	for mode, want := range gm {
+		if got := isTelcoGMMode(mode); got != want {
+			t.Errorf("isTelcoGMMode(%s) = %v, want %v", mode, got, want)
+		}
+	}
+	for _, mode := range nonGM {
+		if isTelcoGMMode(mode) {
+			t.Errorf("isTelcoGMMode(%s) = true, want false", mode)
+		}
 	}
 }

@@ -120,7 +120,7 @@ func GetTestClientSet(k8sMockObjects []runtime.Object) *ClientSet {
 		// K8s Client Objects
 		case *ptpv1api.PtpConfig:
 			ptpClientObjects = append(ptpClientObjects, v)
-		case *corev1.Node:
+		case *corev1.Node, *corev1.Pod:
 			k8sClientObjects = append(k8sClientObjects, v)
 		}
 
