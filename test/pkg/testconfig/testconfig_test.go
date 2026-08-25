@@ -608,3 +608,20 @@ func GeneratePTPObjects(mode PTPMode) {
 		_ = testclient.GetTestClientSet(mockClientObjects)
 	}
 }
+
+func TestStripPhc2sysRealtimeOpts(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "-a -r -n 24 -m -N 8 -R 16", want: "-a -n 24 -m -N 8 -R 16"},
+		{in: "-a -r -r -n 24", want: "-a -n 24"},
+		{in: "-a -n 24", want: "-a -n 24"},
+		{in: "  -a   -r  -m  ", want: "-a -m"},
+	}
+	for _, tt := range tests {
+		if got := stripPhc2sysRealtimeOpts(tt.in); got != tt.want {
+			t.Fatalf("stripPhc2sysRealtimeOpts(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
