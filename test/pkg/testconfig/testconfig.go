@@ -700,14 +700,15 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 0, 1}}, //        and on the same NIC
 	}
 
-	// T-BC with local GM: WPC NIC required, receiver, two transmitters on same NIC, local GM
+	// T-BC with local software GM: WPC receiver + two transmitters on the same NIC.
+	// CUT is the T-BC. GM is a regular ptp4l grandmaster (not WPC), other node,
+	// same LAN as the receiver. PtpConfigTelcoBC already deploys CreatePtpConfigGrandMaster.
 	data.problems[AlgoTelcoBCString] = &[][][]int{
 		{{int(solver.StepIsWPCNic), 1, 0}},   // step1: T-BC receiver must be on WPC NIC
 		{{int(solver.StepSameNic), 2, 0, 1}}, // step2: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 0, 2}}, // step3: transmitter 2 on same NIC as receiver
 		{{int(solver.StepSameLan2), 2, 0, 3}, // step4: local grandmaster on same LAN as receiver
 			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but NOT on the same node
-		{{int(solver.StepIsWPCNic), 1, 3}}, // step5: local grandmaster is a WPC NIC
 	}
 
 	// T-BC with external GM: WPC NIC required, PTP receiver, two transmitters on same NIC
