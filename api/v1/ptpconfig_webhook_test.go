@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,96 +60,81 @@ func newTestPtpConfigWithSettings(settings map[string]string) *PtpConfig {
 	}
 }
 
-func TestPtpConfigValidator_SysOffsetThreshold(t *testing.T) {
+func TestPtpConfigValidator_OSClockThresholdFieldsAccepted(t *testing.T) {
+	// The OS-clock E3 settings are typed *int64 fields on PtpClockThreshold. The
+	// admission webhook must accept them (they are validated for type/int by the
+	// CRD schema) and preserve them through create/update.
+	inSync := int64(50)
+	outOfSync := int64(200)
+	samples := int64(8)
+	profileName := "test-profile"
+	ptpConfig := &PtpConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ptpconfig",
+			Namespace: "openshift-ptp",
+		},
+		Spec: PtpConfigSpec{
+			Profile: []PtpProfile{
+				{
+					Name: &profileName,
+					PtpClockThreshold: &PtpClockThreshold{
+						HoldOverTimeout:             5,
+						MaxOffsetThreshold:          100,
+						SysOffsetInSyncThreshold:    &inSync,
+						SysOffsetOutOfSyncThreshold: &outOfSync,
+						SysOffsetSamples:            &samples,
+					},
+				},
+			},
+		},
+	}
+
 	validator := &ptpConfigValidator{}
 	ctx := context.Background()
 
-	tests := []struct {
-		name        string
-		value       string
-		expectError bool
-	}{
-		{name: "valid sysOffsetThreshold accepted", value: "200", expectError: false},
-		{name: "non-numeric sysOffsetThreshold rejected", value: "abc", expectError: true},
-	}
+	warnings, err := validator.ValidateCreate(ctx, ptpConfig)
+	assert.NoError(t, err)
+	assert.Empty(t, warnings)
+	assert.Equal(t, int64(50), *ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetInSyncThreshold)
+	assert.Equal(t, int64(200), *ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetOutOfSyncThreshold)
+	assert.Equal(t, int64(8), *ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetSamples)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ptpConfig := newTestPtpConfigWithSettings(map[string]string{"sysOffsetThreshold": tt.value})
-
-			warnings, err := validator.ValidateCreate(ctx, ptpConfig)
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "sysOffsetThreshold")
-				assert.Contains(t, err.Error(), "must be an unsigned integer")
-			} else {
-				assert.NoError(t, err)
-				assert.Empty(t, warnings)
-			}
-
-			warnings, err = validator.ValidateUpdate(ctx, ptpConfig, ptpConfig)
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "sysOffsetThreshold")
-				assert.Contains(t, err.Error(), "must be an unsigned integer")
-			} else {
-				assert.NoError(t, err)
-				assert.Empty(t, warnings)
-			}
-		})
-	}
+	warnings, err = validator.ValidateUpdate(ctx, ptpConfig, ptpConfig)
+	assert.NoError(t, err)
+	assert.Empty(t, warnings)
 }
 
-func TestPtpConfigValidator_SysOffsetSamples(t *testing.T) {
-	validator := &ptpConfigValidator{}
-	ctx := context.Background()
-	sampleKeys := []string{"sysOffsetInSyncSamples", "sysOffsetOutOfSyncSamples"}
-
-	for _, sampleKey := range sampleKeys {
-		t.Run(sampleKey+" accepted independently", func(t *testing.T) {
-			ptpConfig := newTestPtpConfigWithSettings(map[string]string{sampleKey: "10"})
-
-			warnings, err := validator.ValidateCreate(ctx, ptpConfig)
-			assert.NoError(t, err)
-			assert.Empty(t, warnings)
-			assert.Equal(t, "10", ptpConfig.Spec.Profile[0].PtpSettings[sampleKey])
-		})
+func TestPtpConfigValidator_OSClockThresholdFieldsUnsetAccepted(t *testing.T) {
+	// When unset (nil), the fields are accepted and the daemon applies defaults
+	// (maxOffsetThreshold for thresholds, 10 for samples).
+	profileName := "test-profile"
+	ptpConfig := &PtpConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ptpconfig",
+			Namespace: "openshift-ptp",
+		},
+		Spec: PtpConfigSpec{
+			Profile: []PtpProfile{
+				{
+					Name: &profileName,
+					PtpClockThreshold: &PtpClockThreshold{
+						HoldOverTimeout:    5,
+						MaxOffsetThreshold: 100,
+					},
+				},
+			},
+		},
 	}
 
-	tests := []struct {
-		name  string
-		value string
-	}{
-		{name: "negative value rejected", value: "-5"},
-		{name: "fractional value rejected", value: "3.5"},
-		{name: "non-numeric value rejected", value: "abc"},
-	}
-
-	for _, sampleKey := range sampleKeys {
-		for _, tt := range tests {
-			t.Run(sampleKey+" "+tt.name, func(t *testing.T) {
-				ptpConfig := newTestPtpConfigWithSettings(map[string]string{sampleKey: tt.value})
-
-				_, err := validator.ValidateCreate(ctx, ptpConfig)
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), sampleKey)
-				assert.Contains(t, err.Error(), "must be an unsigned integer")
-			})
-		}
-	}
-}
-
-func TestPtpConfigValidator_SysOffsetSettings_RejectsInvalidUpdate(t *testing.T) {
 	validator := &ptpConfigValidator{}
 	ctx := context.Background()
 
-	oldConfig := newTestPtpConfigWithSettings(map[string]string{"sysOffsetOutOfSyncSamples": "10"})
-	newConfig := newTestPtpConfigWithSettings(map[string]string{"sysOffsetOutOfSyncSamples": "abc"})
-
-	_, err := validator.ValidateUpdate(ctx, oldConfig, newConfig)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "sysOffsetOutOfSyncSamples")
-	assert.Contains(t, err.Error(), "must be an unsigned integer")
+	warnings, err := validator.ValidateCreate(ctx, ptpConfig)
+	assert.NoError(t, err)
+	assert.Empty(t, warnings)
+	assert.Nil(t, ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetInSyncThreshold)
+	assert.Nil(t, ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetOutOfSyncThreshold)
+	assert.Nil(t, ptpConfig.Spec.Profile[0].PtpClockThreshold.SysOffsetSamples)
 }
 
 func TestPtpConfigValidator_ExistingProfilesUnaffected(t *testing.T) {
@@ -170,4 +156,65 @@ func TestPtpConfigValidator_ExistingProfilesUnaffected(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Empty(t, warnings)
 	})
+}
+
+func TestPtpConfigValidator_PtpSettingsAccepted(t *testing.T) {
+	validator := &ptpConfigValidator{}
+	ctx := context.Background()
+
+	validSettings := []map[string]string{
+		{"stdoutFilter": ".*ptp4l.*"},
+		{"logReduce": "enhanced 30s 10"},
+		{"haProfiles": "profile-a,profile-b"},
+		{"clockType": "T-BC"},
+		{"inSyncConditionTimes": "4"},
+		{"clockId": "8888888888"},
+		{"controllingProfile": "profile-a"},
+		{"upstreamPort": "eth0"},
+		{"leadingInterface": "eth0"},
+	}
+
+	for i, settings := range validSettings {
+		t.Run(fmt.Sprintf("accepted %d", i), func(t *testing.T) {
+			ptpConfig := newTestPtpConfigWithSettings(settings)
+
+			warnings, err := validator.ValidateCreate(ctx, ptpConfig)
+			assert.NoError(t, err)
+			assert.Empty(t, warnings)
+
+			warnings, err = validator.ValidateUpdate(ctx, ptpConfig, ptpConfig)
+			assert.NoError(t, err)
+			assert.Empty(t, warnings)
+		})
+	}
+}
+
+func TestPtpConfigValidator_PtpSettingsRejected(t *testing.T) {
+	validator := &ptpConfigValidator{}
+	ctx := context.Background()
+
+	invalidSettings := []struct {
+		name string
+		key  string
+		val  string
+	}{
+		{"invalid stdoutFilter", "stdoutFilter", "["},
+		{"invalid logReduce mode", "logReduce", "verbose"},
+		{"logReduce invalid duration", "logReduce", "enhanced notaduration"},
+		{"logReduce invalid threshold", "logReduce", "enhanced 30s -5"},
+		{"invalid haProfiles", "haProfiles", "not a profile"},
+		{"invalid clockType", "clockType", "OCX"},
+		{"invalid inSyncConditionTimes", "inSyncConditionTimes", "-1"},
+		{"invalid clockId", "clockId", "not-a-clock-id"},
+		{"unknown setting rejected", "sysOffsetThreshold", "100"},
+	}
+
+	for _, tt := range invalidSettings {
+		t.Run(tt.name, func(t *testing.T) {
+			ptpConfig := newTestPtpConfigWithSettings(map[string]string{tt.key: tt.val})
+
+			_, err := validator.ValidateCreate(ctx, ptpConfig)
+			assert.Error(t, err)
+		})
+	}
 }

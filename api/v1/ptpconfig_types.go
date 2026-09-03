@@ -141,16 +141,10 @@ type PtpProfile struct {
 	PtpClockThreshold     *PtpClockThreshold `json:"ptpClockThreshold,omitempty"`
 	// PtpSettings holds free-form, string-typed configuration knobs validated individually
 	// by the PtpConfig admission webhook. Recognized keys include (non-exhaustive):
-	//   - sysOffsetInSyncThreshold: phc2sys-to-CLOCK_REALTIME offset threshold, in
-	//     nanoseconds, that must be met to gate the OS Clock Sync (E3) LOCKED state.
-	//     No default; must be explicitly configured for the parameter to take effect.
-	//   - sysOffsetOutOfSyncThreshold: phc2sys-to-CLOCK_REALTIME offset threshold, in
-	//     nanoseconds, that when exceeded gates the OS Clock Sync (E3) FREERUN state.
-	//     Independent of sysOffsetInSyncThreshold; together they form a hysteresis band.
-	//     No default; must be explicitly configured for the parameter to take effect.
-	//   - sysOffsetSamples: number of consecutive phc2sys samples required for E3
-	//     state transitions in either direction (relative to sysOffsetInSyncThreshold
-	//     for LOCKED, or sysOffsetOutOfSyncThreshold for FREERUN). Default: 10.
+	//   - logReduce: log reduction mode ('true', 'false', 'basic', 'enhanced').
+	//   - inSyncConditionThreshold: ptp4l offset threshold (ns) used by the T-BC state machine.
+	//   - inSyncConditionTimes: number of consecutive in-sync samples before T-BC reports LOCKED.
+	//   - stdoutFilter: regexp filtering ptp4l/phc2sys stdout.
 	PtpSettings map[string]string              `json:"ptpSettings,omitempty"`
 	Plugins     map[string]*apiextensions.JSON `json:"plugins,omitempty"`
 }
@@ -165,6 +159,18 @@ type PtpClockThreshold struct {
 	// DEPRECATED: min offset in nano secs. This field is no longer used for offset-range evaluation; the system now evaluates abs(offset) against maxOffsetThreshold only. The field is retained for backward compatibility with existing PtpConfig resources and its value is ignored. Do not set this field in new configurations.
 	// Deprecated: MinOffsetThreshold is no longer used for offset-range evaluation; abs(offset) < MaxOffsetThreshold is evaluated instead.
 	MinOffsetThreshold int64 `json:"minOffsetThreshold,omitempty"`
+	// sysOffsetInSyncThreshold is the phc2sys-to-CLOCK_REALTIME offset threshold, in nanoseconds, that must be met to gate the OS Clock Sync (E3) LOCKED state. abs(offset) <= this threshold for sysOffsetSamples consecutive samples triggers LOCKED. When unset, it defaults to maxOffsetThreshold.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	SysOffsetInSyncThreshold *int64 `json:"sysOffsetInSyncThreshold,omitempty"`
+	// sysOffsetOutOfSyncThreshold is the phc2sys-to-CLOCK_REALTIME offset threshold, in nanoseconds, that when exceeded gates the OS Clock Sync (E3) FREERUN state. abs(offset) > this threshold for sysOffsetSamples consecutive samples triggers FREERUN. Independent of sysOffsetInSyncThreshold; together they form a hysteresis band. When unset, it defaults to maxOffsetThreshold.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	SysOffsetOutOfSyncThreshold *int64 `json:"sysOffsetOutOfSyncThreshold,omitempty"`
+	// sysOffsetSamples is the number of consecutive phc2sys offset samples required for an E3 LOCKED/FREERUN state transition in either direction (relative to sysOffsetInSyncThreshold for LOCKED, or sysOffsetOutOfSyncThreshold for FREERUN). When unset, it defaults to 10.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	SysOffsetSamples *int64 `json:"sysOffsetSamples,omitempty"`
 	// Acceptable process downtime in seconds for each process
 	ProcessDowntimeThresholds *ProcessDowntimeThresholds `json:"processDowntimeThresholds,omitempty"`
 }
