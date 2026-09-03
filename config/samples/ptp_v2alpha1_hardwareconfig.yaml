@@ -10,5 +10,3 @@ spec:
     clockChain:
       structure:
       - name: "nic1"
-        dpll:
-          networkInterface: "ens787f1"

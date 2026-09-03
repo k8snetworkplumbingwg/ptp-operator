@@ -200,21 +200,6 @@ func (r *PtpConfig) validate() error {
 					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
 						return errors.New("inSyncConditionThreshold='" + v + "' is invalid; must be an unsigned integer")
 					}
-				case k == "sysOffsetThreshold":
-					// Validate sysOffsetThreshold is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("sysOffsetThreshold='" + v + "' is invalid; must be an unsigned integer")
-					}
-				case k == "sysOffsetInSyncSamples":
-					// Validate sysOffsetInSyncSamples is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("sysOffsetInSyncSamples='" + v + "' is invalid; must be an unsigned integer")
-					}
-				case k == "sysOffsetOutOfSyncSamples":
-					// Validate sysOffsetOutOfSyncSamples is an unsigned integer
-					if _, err := strconv.ParseUint(v, 10, 32); err != nil {
-						return errors.New("sysOffsetOutOfSyncSamples='" + v + "' is invalid; must be an unsigned integer")
-					}
 
 				case strings.Contains(k, "clockId"):
 					// Allow explicit clockId

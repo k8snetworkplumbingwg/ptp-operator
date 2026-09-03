@@ -67,9 +67,6 @@ metadata:
               "clockChain": {
                 "structure": [
                   {
-                    "dpll": {
-                      "networkInterface": "ens787f1"
-                    },
                     "name": "nic1"
                   }
                 ]
@@ -85,7 +82,7 @@ metadata:
     categories: Networking
     certified: "false"
     containerImage: quay.io/openshift/origin-ptp-operator:5.0
-    createdAt: "2026-09-02T10:48:35Z"
+    createdAt: "2026-08-26T10:30:35Z"
     description: This software enables configuration of Precision Time Protocol(PTP)
       on Kubernetes. It detects hardware capable PTP devices on each node, and configures
       linuxptp processes such as ptp4l, phc2sys and timemaster.

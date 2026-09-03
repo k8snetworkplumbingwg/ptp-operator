@@ -137,22 +137,10 @@ type PtpProfile struct {
 	PtpSchedulingPolicy *string `json:"ptpSchedulingPolicy,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65
-	PtpSchedulingPriority *int64             `json:"ptpSchedulingPriority,omitempty"`
-	PtpClockThreshold     *PtpClockThreshold `json:"ptpClockThreshold,omitempty"`
-	// PtpSettings holds free-form, string-typed configuration knobs validated individually
-	// by the PtpConfig admission webhook. Recognized keys include (non-exhaustive):
-	//   - sysOffsetInSyncThreshold: phc2sys-to-CLOCK_REALTIME offset threshold, in
-	//     nanoseconds, that must be met to gate the OS Clock Sync (E3) LOCKED state.
-	//     No default; must be explicitly configured for the parameter to take effect.
-	//   - sysOffsetOutOfSyncThreshold: phc2sys-to-CLOCK_REALTIME offset threshold, in
-	//     nanoseconds, that when exceeded gates the OS Clock Sync (E3) FREERUN state.
-	//     Independent of sysOffsetInSyncThreshold; together they form a hysteresis band.
-	//     No default; must be explicitly configured for the parameter to take effect.
-	//   - sysOffsetSamples: number of consecutive phc2sys samples required for E3
-	//     state transitions in either direction (relative to sysOffsetInSyncThreshold
-	//     for LOCKED, or sysOffsetOutOfSyncThreshold for FREERUN). Default: 10.
-	PtpSettings map[string]string              `json:"ptpSettings,omitempty"`
-	Plugins     map[string]*apiextensions.JSON `json:"plugins,omitempty"`
+	PtpSchedulingPriority *int64                         `json:"ptpSchedulingPriority,omitempty"`
+	PtpClockThreshold     *PtpClockThreshold             `json:"ptpClockThreshold,omitempty"`
+	PtpSettings           map[string]string              `json:"ptpSettings,omitempty"`
+	Plugins               map[string]*apiextensions.JSON `json:"plugins,omitempty"`
 }
 
 type PtpClockThreshold struct {

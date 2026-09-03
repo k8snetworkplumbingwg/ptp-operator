@@ -50,30 +50,6 @@ metadata:
           "spec": {
             "daemonNodeSelector": {}
           }
-        },
-        {
-          "apiVersion": "ptp.openshift.io/v2alpha1",
-          "kind": "HardwareConfig",
-          "metadata": {
-            "name": "example-hardwareconfig"
-          },
-          "spec": {
-            "profile": {
-              "clockChain": {
-                "structure": [
-                  {
-                    "dpll": {
-                      "networkInterface": "ens787f1"
-                    },
-                    "name": "nic1"
-                  }
-                ]
-              },
-              "clockType": "T-GM",
-              "name": "example-profile"
-            },
-            "relatedPtpProfileName": "profile1"
-          }
         }
       ]
     capabilities: Basic Install
