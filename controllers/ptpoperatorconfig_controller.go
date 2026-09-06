@@ -279,6 +279,12 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 		glog.Infof("ptp operator enabled plugins: %s", enabledPlugins)
 	}
 
+	verbosity, err := daemonVerbosityFromEnv()
+	if err != nil {
+		glog.Warningf("%v, using default verbosity %s", err, defaultDaemonVerbosity)
+	}
+	data.Data["Verbosity"] = verbosity
+
 	r.setTLSTemplateData(&data)
 
 	objs, err = render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/ptp-daemon.yaml"), &data)
