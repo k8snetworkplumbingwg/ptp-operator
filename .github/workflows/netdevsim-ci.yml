@@ -16,7 +16,7 @@ env:
   DKMS_PKG: netdevsim
   DKMS_VER: "6.9.5"
   DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
-  DKMS_BRANCH: fix-dashboard
+  DKMS_BRANCH: main
   # Optional: set to "true" to stream run-on-vm child command logs.
   # RUN_ON_VM_VERBOSE: "true"
 
