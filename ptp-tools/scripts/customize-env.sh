@@ -2,9 +2,14 @@
 IMG_PREFIX=$1
 ENV_PATH=$2
 
+# linuxptp-daemon from main serves Prometheus metrics on :9091 and talks to
+# CEPv2 over /var/run/ptp/ipc.sock. The v1 sidecar also binds :9091, so Kind
+# must deploy v2 or daemon metrics (offset, role, clock class) never appear.
+# Reuse :cep (redhat-cne/cloud-event-proxy) rather than a second image build.
+ENABLE_CEPV2="${ENABLE_CEPV2:-true}"
 EVENT_PROXY_IMAGE=""
-if [[ "${ENABLE_CEPV2:-}" == "true" ]]; then
-  EVENT_PROXY_IMAGE="$IMG_PREFIX:cepv2"
+if [[ "${ENABLE_CEPV2}" == "true" ]]; then
+  EVENT_PROXY_IMAGE="$IMG_PREFIX:cep"
 fi
 
 cat <<EOF > $ENV_PATH/env.yaml

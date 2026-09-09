@@ -212,7 +212,6 @@ KUSTOMIZE_VERSION ?= v5.4.2
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
 
 
-KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary. If wrong version is installed, it will be removed before downloading.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -220,7 +219,22 @@ $(KUSTOMIZE): $(LOCALBIN)
 		echo "$(LOCALBIN)/kustomize version is not expected $(KUSTOMIZE_VERSION). Removing it before installing."; \
 		rm -rf $(LOCALBIN)/kustomize; \
 	fi
-	test -s $(LOCALBIN)/kustomize || { curl -Ss $(KUSTOMIZE_INSTALL_SCRIPT) | bash -s -- $(subst v,,$(KUSTOMIZE_VERSION)) $(LOCALBIN); }
+	@test -s $(LOCALBIN)/kustomize || { \
+		set -e; \
+		OS=$$(go env GOOS); ARCH=$$(go env GOARCH); \
+		TMP=$$(mktemp -d); \
+		URL="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F$(KUSTOMIZE_VERSION)/kustomize_$(KUSTOMIZE_VERSION)_$${OS}_$${ARCH}.tar.gz"; \
+		echo "Downloading kustomize $(KUSTOMIZE_VERSION) from $$URL"; \
+		for i in 1 2 3 4 5; do \
+			curl --retry 3 --retry-delay 2 -fsSL "$$URL" -o "$$TMP/kustomize.tgz" && break; \
+			echo "kustomize download attempt $$i failed; retrying..."; \
+			sleep $$((i * 2)); \
+			if [ $$i -eq 5 ]; then rm -rf "$$TMP"; exit 1; fi; \
+		done; \
+		tar -xzf "$$TMP/kustomize.tgz" -C $(LOCALBIN) kustomize; \
+		chmod +x $(LOCALBIN)/kustomize; \
+		rm -rf "$$TMP"; \
+	}
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary. If wrong version is installed, it will be overwritten.

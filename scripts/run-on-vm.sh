@@ -5,7 +5,7 @@ export DKMS_MODE="${DKMS_MODE:-false}"
 # Stream child command output live (default: quiet, dump log only on failure).
 # Override with --verbose or RUN_ON_VM_VERBOSE=true|1|yes.
 RUN_ON_VM_VERBOSE="${RUN_ON_VM_VERBOSE:-false}"
-TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
+TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm,tgmoc,tgmbc"
 RUN_PHASE="all"
 REGISTRY_IP=""
 TARBALL=""
@@ -150,7 +150,7 @@ run_step_rows_begin() {
   # Skip in CI: /dev/tty may exist but cannot be opened (bash still errors on failed exec).
   if [[ -z "${CI:-}${GITHUB_ACTIONS:-}${GITLAB_CI:-}${BUILD_ID:-}" ]]; then
     set +e
-    exec 9>/dev/tty 2>/dev/null
+    { exec 9>/dev/tty; } 2>/dev/null
     local _tty_rc=$?
     set -e
     if ((_tty_rc == 0)); then
@@ -294,8 +294,10 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
+# Kill leftover gnss-sim from a previous run
+pkill -f gnss-sim || true
 
-# ── Images phase (--images) ──────────────────────────────────────────
+# ── Images phase (--images only: build + save tarballs) ─────────────
 if [[ "$RUN_PHASE" == "images" ]]; then
 
     export IMG_PREFIX="$VM_IP/test"
@@ -356,10 +358,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
     tar xf "$TARBALL" -C "${PTP_RUN_DIR}/ptp-images-load"
 
     step "Retagging images for local registry"
-    # Derive the tag list from ptp-tools/Makefile VALUES so it stays in sync
-    # with what the build/save phase produced (e.g. cepv2).
-    read_ptp_tool_images
-    TAGS=("${_ptp_tool_images[@]}")
+    TAGS=(lptpd cep ptpop krp openvswitch prometheus ptpmg debug gnss-sim)
     for t in "${TAGS[@]}"; do
         podman load -i "${PTP_RUN_DIR}/ptp-images-load/$t.tar"
     done
@@ -413,7 +412,8 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Deploying ptp-operator manifests"
     cd "${PTP_TOOLS_DIR}"
-    run_quiet_with_log_dump_on_failure "make-deploy-all" sh -c "make deploy-all || true"
+    run_quiet_with_log_dump_on_failure "make-deploy-all" \
+      sh -c 'for i in 1 2 3; do make deploy-all && break || { echo "deploy-all attempt $i failed, retrying in 10s..."; sleep 10; }; done'
     cd -
 
     step "Patching webhook for cert-manager CA injection (kind)"
