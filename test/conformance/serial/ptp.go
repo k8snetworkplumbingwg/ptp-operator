@@ -66,7 +66,7 @@ var (
 )
 var DesiredMode = testconfig.GetDesiredConfig(true).PtpModeDesired
 
-var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, func() {
+var _ = strings.EqualFold(os.Getenv("PTP_TEST_MODE"), "smoke") || Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, func() {
 	BeforeEach(func() {
 		Expect(client.Client).NotTo(BeNil())
 		if DesiredMode == testconfig.DualNICBoundaryClockHA || DesiredMode == testconfig.DualFollowerClock {

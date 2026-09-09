@@ -63,6 +63,8 @@ VALIDATION_SUIT_SUBSTR="validation"
 go version
 if [[ $SUITE == *"$VALIDATION_SUIT_SUBSTR"* ]]; then
   GOFLAGS=-mod=vendor ginkgo --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v -p "$SUITE"
+elif [[ "${PTP_TEST_MODE:-}" == "smoke" ]]; then
+  GOFLAGS=-mod=vendor ginkgo --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
 else
   GOFLAGS=-mod=vendor ginkgo --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v -p "$SUITE"/serial "$SUITE"/parallel
 fi
