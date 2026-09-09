@@ -408,6 +408,8 @@ spec:
                 - name: EVENT_PROXY_IMAGE
                 - name: LINUXPTP_VERBOSITY
                   value: "10"
+                - name: ENABLE_EVENT_AUTH
+                  value: "true"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
