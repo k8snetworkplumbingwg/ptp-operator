@@ -2415,7 +2415,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
-
 			// OsClockSyncState goes FREERUN when BC upstream is lost (reverse phc2sys)
 			// and recovers to LOCKED when the link is restored.
 			//
