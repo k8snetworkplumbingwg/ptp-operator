@@ -126,7 +126,7 @@ spec:
           imagePullPolicy: {{.ImagePullPolicy}}
           command: [ "/bin/bash", "-c", "--" ]
           args:
-          {{ $cmd := "/usr/local/bin/ptp --alsologtostderr -v 10" }}
+          {{ $cmd := printf "/usr/local/bin/ptp --alsologtostderr -v %s" .Verbosity }}
           {{- if (eq .EnableEventPublisher true) }}
             - "until [ $(curl -s -w '%{http_code}' 'http://localhost:9043/api/ocloudNotifications/v2/health' -o /dev/null) -eq 200 ]; do echo 'waiting for cloud event proxy to start'; sleep 10s; done; {{ $cmd }}"
           {{- else }}
