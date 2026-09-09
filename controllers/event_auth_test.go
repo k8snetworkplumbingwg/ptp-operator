@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,10 +9,94 @@ import (
 	configv1 "github.com/openshift/api/config/v1"
 	libgocrypto "github.com/openshift/library-go/pkg/crypto"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/render"
 )
+
+// authTestNamespace matches makeTestRenderData's Namespace.
+const authTestNamespace = "openshift-ptp"
+
+// newAuthTestReconciler builds a reconciler backed by a fake client preloaded
+// with the given objects.
+func newAuthTestReconciler(t *testing.T, objs ...client.Object) *PtpOperatorConfigReconciler {
+	t.Helper()
+	// syncEventAuth renders via names.ManifestDir ("./bindata"), which is
+	// relative to the repo root; tests run from ./controllers.
+	t.Chdir("..")
+	scheme := runtime.NewScheme()
+	assert.NoError(t, clientgoscheme.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	return &PtpOperatorConfigReconciler{Client: c, Scheme: scheme}
+}
+
+// authRenderData returns render data with the fields the auth-config manifest
+// needs to render.
+func authRenderData() *render.RenderData {
+	data := makeTestRenderData()
+	data.Data["TLSMinVersion"] = ""
+	data.Data["TLSCipherSuitesJSON"] = "[]"
+	return data
+}
+
+// authResourceExists reports whether the named object is present in the client.
+func authResourceExists(t *testing.T, r *PtpOperatorConfigReconciler, obj client.Object, name, namespace string) bool {
+	t.Helper()
+	err := r.Get(context.Background(), types.NamespacedName{Name: name, Namespace: namespace}, obj)
+	if err == nil {
+		return true
+	}
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	t.Fatalf("unexpected error getting %s/%s: %v", namespace, name, err)
+	return false
+}
+
+// TestSyncEventAuthDisabledDeletesResources verifies that when authentication is
+// disabled the previously-created auth resources - including the cluster-scoped
+// ClusterRoleBinding - are torn down rather than orphaned.
+func TestSyncEventAuthDisabledDeletesResources(t *testing.T) {
+	seed := []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-ca-bundle", Namespace: authTestNamespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-server", Namespace: authTestNamespace}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-auth", Namespace: authTestNamespace}},
+		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "linuxptp-daemon-auth-delegator"}},
+	}
+	r := newAuthTestReconciler(t, seed...)
+
+	assert.NoError(t, r.syncEventAuth(context.Background(), authRenderData(), false))
+
+	assert.False(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-ca-bundle", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &corev1.Service{}, "ptp-event-publisher-server", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-auth", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &rbacv1.ClusterRoleBinding{}, "linuxptp-daemon-auth-delegator", ""))
+
+	// Deleting again when nothing is present must be a no-op (NotFound tolerated).
+	assert.NoError(t, r.syncEventAuth(context.Background(), authRenderData(), false))
+}
+
+// TestSyncEventAuthEnabledCreatesResources verifies the enabled path creates the
+// full set of auth resources.
+func TestSyncEventAuthEnabledCreatesResources(t *testing.T) {
+	r := newAuthTestReconciler(t)
+
+	assert.NoError(t, r.syncEventAuth(context.Background(), authRenderData(), true))
+
+	assert.True(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-ca-bundle", authTestNamespace))
+	assert.True(t, authResourceExists(t, r, &corev1.Service{}, "ptp-event-publisher-server", authTestNamespace))
+	assert.True(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-auth", authTestNamespace))
+	assert.True(t, authResourceExists(t, r, &rbacv1.ClusterRoleBinding{}, "linuxptp-daemon-auth-delegator", ""))
+}
 
 // daemonSidecarArgs returns the args of the cloud-event-proxy container from a
 // rendered ptp-daemon.yaml DaemonSet object.

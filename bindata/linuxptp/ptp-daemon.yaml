@@ -216,7 +216,7 @@ spec:
           hostPath:
             path: /var/run/ptp
             type: DirectoryOrCreate
-        {{- if .EnableEventAuth }}
+        {{- if and (eq .EnableEventPublisher true) .EnableEventAuth }}
         - name: server-certs
           secret:
             secretName: ptp-event-publisher-server-tls

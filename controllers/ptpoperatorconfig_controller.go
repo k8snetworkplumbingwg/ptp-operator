@@ -314,20 +314,9 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 		return nil
 	}
 
-	// When the event publisher is enabled, render and apply the authentication
-	// manifest (mTLS serving cert service, injected CA bundle, auth-config
-	// ConfigMap and the TokenReview RBAC). These are cluster/namespace scoped
-	// and rendered once, independent of the per-node event services below.
-	if defaultCfg.Spec.EventConfig.EnableEventPublisher && data.Data["EnableEventAuth"] == true {
-		authObjs, aErr := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), &data)
-		if aErr != nil {
-			return fmt.Errorf("failed to render event auth-config manifest: %v", aErr)
-		}
-		for _, obj := range authObjs {
-			if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
-				return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
-			}
-		}
+	authEnabled := defaultCfg.Spec.EventConfig.EnableEventPublisher && data.Data["EnableEventAuth"] == true
+	if err = r.syncEventAuth(ctx, &data, authEnabled); err != nil {
+		return err
 	}
 
 	if defaultCfg.Spec.EventConfig.EnableEventPublisher {
@@ -345,6 +334,35 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 		}
 	}
 
+	return nil
+}
+
+// syncEventAuth reconciles the event-publisher authentication manifest (mTLS
+// serving-cert Service, injected CA bundle, auth-config ConfigMap and the
+// TokenReview ClusterRoleBinding). It renders the manifest unconditionally so
+// that when authentication is disabled - either the publisher is off or auth
+// was turned off - any resources left over from a previously-enabled state are
+// torn down. Otherwise the cluster-scoped ClusterRoleBinding and the
+// serving-cert Service would be orphaned after a user turns authentication off.
+func (r *PtpOperatorConfigReconciler) syncEventAuth(ctx context.Context, data *render.RenderData, enabled bool) error {
+	authObjs, err := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), data)
+	if err != nil {
+		return fmt.Errorf("failed to render event auth-config manifest: %v", err)
+	}
+	if enabled {
+		for _, obj := range authObjs {
+			if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
+				return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
+			}
+		}
+		return nil
+	}
+	for _, obj := range authObjs {
+		if err = r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete auth-config object %s/%s with err: %v",
+				obj.GetKind(), obj.GetName(), err)
+		}
+	}
 	return nil
 }
 
