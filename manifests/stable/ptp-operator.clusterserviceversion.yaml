@@ -361,6 +361,8 @@ spec:
                   value: quay.io/openshift/origin-cloud-event-proxy:5.1
                 - name: LINUXPTP_VERBOSITY
                   value: "10"
+                - name: ENABLE_EVENT_AUTH
+                  value: "true"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
