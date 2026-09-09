@@ -183,10 +183,10 @@ deploy: manifests kustomize update-env-yaml ## Deploy controller to the K8s clus
 ifeq ($(FREE_RUN),1)
 	@mkdir -p "$(FREE_RUN_DIR)"
 endif
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(call APPLY_CMD,deploy-default)
+	trap 'if [ -f $(ENV_YAML_BACKUP) ]; then mv $(ENV_YAML_BACKUP) config/manager/env.yaml; fi' EXIT; \
+	(cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}); \
+	$(KUSTOMIZE) build config/default | $(call APPLY_CMD,deploy-default); \
 	$(KUSTOMIZE) build config/custom | $(call APPLY_CMD,deploy-custom)
-	@$(MAKE) restore-env-yaml
 
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Set FREE_RUN=1 to render to FREE_RUN_DIR instead of deleting.
 ifeq ($(FREE_RUN),1)
@@ -246,7 +246,7 @@ ENV_YAML_BACKUP := config/manager/env.yaml.bak
 
 .PHONY: update-env-yaml
 update-env-yaml: ## Update config/manager/env.yaml with image variables if provided (creates backup)
-	@if [ -n "$(LINUXPTP_DAEMON_IMAGE)$(KUBE_RBAC_PROXY_IMAGE)$(SIDECAR_EVENT_IMAGE)" ]; then \
+	@if [ -n "$(LINUXPTP_DAEMON_IMAGE)$(KUBE_RBAC_PROXY_IMAGE)$(SIDECAR_EVENT_IMAGE)$(EVENT_PROXY_IMAGE)" ]; then \
 		cp config/manager/env.yaml $(ENV_YAML_BACKUP); \
 		if [ -n "$(LINUXPTP_DAEMON_IMAGE)" ]; then \
 			if [ "$(OS)" = "Darwin" ]; then \
@@ -269,6 +269,13 @@ update-env-yaml: ## Update config/manager/env.yaml with image variables if provi
 				sed -i '/- name: SIDECAR_EVENT_IMAGE$$/,/value:/s|value: ".*"|value: "$(SIDECAR_EVENT_IMAGE)"|' config/manager/env.yaml; \
 			fi; \
 		fi; \
+		if [ -n "$(EVENT_PROXY_IMAGE)" ]; then \
+			if [ "$(OS)" = "Darwin" ]; then \
+				sed -i '' '/- name: EVENT_PROXY_IMAGE$$/,/value:/s|value: ".*"|value: "$(EVENT_PROXY_IMAGE)"|' config/manager/env.yaml; \
+			else \
+				sed -i '/- name: EVENT_PROXY_IMAGE$$/,/value:/s|value: ".*"|value: "$(EVENT_PROXY_IMAGE)"|' config/manager/env.yaml; \
+			fi; \
+		fi; \
 	fi
 
 .PHONY: restore-env-yaml
@@ -279,19 +286,19 @@ restore-env-yaml: ## Restore config/manager/env.yaml from backup
 
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk update-env-yaml ## Generate bundle manifests and metadata, then validate generated files.
-	$(OPERATOR_SDK) generate kustomize manifests --interactive=false -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
-	$(OPERATOR_SDK) bundle validate ./bundle
-	rm -rf manifests/stable
-	cp -r bundle/manifests manifests/stable
-	# Use double quotes in values of olm.skipRange to match the expected regexp in art.yaml
-ifeq ($(OS), Darwin)
-	find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '' '/olm.skipRange:/s#'\''#"#g'
-else
-	find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '/olm.skipRange:/s#'\''#"#g'
-endif
-	@$(MAKE) restore-env-yaml
+	trap 'if [ -f $(ENV_YAML_BACKUP) ]; then mv $(ENV_YAML_BACKUP) config/manager/env.yaml; fi' EXIT; \
+	$(OPERATOR_SDK) generate kustomize manifests --interactive=false -q; \
+	(cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)); \
+	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS); \
+	$(OPERATOR_SDK) bundle validate ./bundle; \
+	rm -rf manifests/stable; \
+	cp -r bundle/manifests manifests/stable; \
+	: "Use double quotes in values of olm.skipRange to match the expected regexp in art.yaml"; \
+	if [ "$(OS)" = "Darwin" ]; then \
+		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '' '/olm.skipRange:/s#'\''#"#g'; \
+	else \
+		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '/olm.skipRange:/s#'\''#"#g'; \
+	fi
 
 .PHONY: bundle-build ## Build the bundle image.
 bundle-build:
