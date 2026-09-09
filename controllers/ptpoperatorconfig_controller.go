@@ -239,6 +239,12 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	data.Data["NodeName"] = os.Getenv("NODE_NAME")
 	data.Data["StorageType"] = DefaultStorageType
 	data.Data["EventApiVersion"] = DefaultApiVersion
+	// EnableEventAuth turns on mTLS + OAuth on the event publisher APIs. It
+	// depends on the OpenShift Service CA operator to mint serving certificates
+	// and inject the CA bundle, so it is opt-in (default off) to keep the
+	// operator usable on clusters without Service CA. The OpenShift deployment
+	// sets ENABLE_EVENT_AUTH=true.
+	data.Data["EnableEventAuth"] = os.Getenv("ENABLE_EVENT_AUTH") == "true"
 	// configure EventConfig
 	if defaultCfg.Spec.EventConfig == nil {
 		data.Data["EnableEventPublisher"] = false
@@ -306,6 +312,22 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 
 	if defaultCfg.Spec.EventConfig == nil {
 		return nil
+	}
+
+	// When the event publisher is enabled, render and apply the authentication
+	// manifest (mTLS serving cert service, injected CA bundle, auth-config
+	// ConfigMap and the TokenReview RBAC). These are cluster/namespace scoped
+	// and rendered once, independent of the per-node event services below.
+	if defaultCfg.Spec.EventConfig.EnableEventPublisher && data.Data["EnableEventAuth"] == true {
+		authObjs, aErr := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), &data)
+		if aErr != nil {
+			return fmt.Errorf("failed to render event auth-config manifest: %v", aErr)
+		}
+		for _, obj := range authObjs {
+			if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
+				return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
+			}
+		}
 	}
 
 	if defaultCfg.Spec.EventConfig.EnableEventPublisher {
@@ -451,12 +473,29 @@ func (r *PtpOperatorConfigReconciler) setTLSTemplateData(data *render.RenderData
 		ianaCiphers := libgocrypto.OpenSSLToIANACipherSuites(r.TLSProfileSpec.Ciphers)
 		data.Data["TLSMinVersion"] = string(r.TLSProfileSpec.MinTLSVersion)
 		data.Data["TLSCipherSuites"] = strings.Join(ianaCiphers, ",")
+		// Same profile in JSON-array form for the cloud-event-proxy auth-config.
+		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(ianaCiphers)
 		// TODO: pass TLSGroups to kube-rbac-proxy once it supports --tls-curve-preferences
 		// (upstream: https://github.com/kube-rbac-proxy/kube-rbac-proxy/issues/414)
 	} else {
 		data.Data["TLSMinVersion"] = ""
 		data.Data["TLSCipherSuites"] = legacyCipherSuites
+		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(strings.Split(legacyCipherSuites, ","))
 	}
+}
+
+// ciphersToJSONArray renders IANA cipher-suite names as a JSON array literal for
+// embedding in the cloud-event-proxy auth-config template.
+func ciphersToJSONArray(ciphers []string) string {
+	quoted := make([]string, 0, len(ciphers))
+	for _, c := range ciphers {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		quoted = append(quoted, fmt.Sprintf("%q", c))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func (r *PtpOperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {

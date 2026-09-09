@@ -406,6 +406,8 @@ spec:
                 - name: SIDECAR_EVENT_IMAGE
                   value: quay.io/openshift/origin-cloud-event-proxy:5.0
                 - name: EVENT_PROXY_IMAGE
+                - name: ENABLE_EVENT_AUTH
+                  value: "true"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
