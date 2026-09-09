@@ -54,6 +54,7 @@ import (
 	ptpv2alpha1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v2alpha1"
 	"github.com/k8snetworkplumbingwg/ptp-operator/controllers"
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/leaderelection"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	//+kubebuilder:scaffold:imports
 )
@@ -146,6 +147,23 @@ func main() {
 	}
 
 	namespace := os.Getenv("WATCH_NAMESPACE")
+	byObject := map[client.Object]cache.ByObject{
+		&corev1.Secret{}: {
+			Namespaces: map[string]cache.Config{
+				names.Namespace: {},
+			},
+		},
+		&appsv1.DaemonSet{}: {
+			Namespaces: map[string]cache.Config{
+				names.Namespace: {},
+			},
+		},
+		&corev1.ConfigMap{}: {
+			Namespaces: map[string]cache.Config{
+				names.Namespace: {},
+			},
+		},
+	}
 	// create multi namespace cache if list of namespaces
 	if namespace != "" {
 		defaultNamespaces := map[string]cache.Config{}
@@ -156,29 +174,19 @@ func main() {
 
 		options.NewCache = func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
 			opts.DefaultNamespaces = defaultNamespaces
-			// Restrict Secret watching to openshift-ptp namespace only
-			opts.ByObject = map[client.Object]cache.ByObject{
-				&corev1.Secret{}: {
-					Namespaces: map[string]cache.Config{
-						names.Namespace: {},
-					},
-				},
-			}
+			opts.ByObject = byObject
 			return cache.New(config, opts)
 		}
 		setupLog.Info(fmt.Sprintf("Namespaces added to the cache: %s", namespace))
 	} else {
-		// If no WATCH_NAMESPACE is set, still restrict Secret watching to openshift-ptp namespace
+		// If no WATCH_NAMESPACE is set, restrict cache to openshift-ptp namespace
 		options.Cache = cache.Options{
-			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Secret{}: {
-					Namespaces: map[string]cache.Config{
-						names.Namespace: {},
-					},
-				},
+			DefaultNamespaces: map[string]cache.Config{
+				names.Namespace: {},
 			},
+			ByObject: byObject,
 		}
-		setupLog.Info("Restricting Secret watching to openshift-ptp namespace only")
+		setupLog.Info("Restricting cache to openshift-ptp namespace")
 	}
 
 	mgr, err := ctrl.NewManager(restConfig, options)
