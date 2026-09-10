@@ -427,7 +427,7 @@ spec:
                   value: quay.io/openshift/origin-cloud-event-proxy:5.0
                 - name: EVENT_PROXY_IMAGE
                 - name: ENABLE_EVENT_AUTH
-                  value: "true"
+                  value: "false"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
