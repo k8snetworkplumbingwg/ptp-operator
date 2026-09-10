@@ -429,7 +429,7 @@ spec:
                 - name: LINUXPTP_VERBOSITY
                   value: "10"
                 - name: ENABLE_EVENT_AUTH
-                  value: "true"
+                  value: "false"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:
