@@ -313,12 +313,19 @@ spec:
           - clusterrolebindings
           verbs:
           - create
-          - delete
-          - get
           - list
-          - patch
-          - update
           - watch
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - linuxptp-daemon-auth-delegator
+          resources:
+          - clusterrolebindings
+          verbs:
+          - get
+          - update
+          - patch
+          - delete
         - apiGroups:
           - rbac.authorization.k8s.io
           resourceNames:

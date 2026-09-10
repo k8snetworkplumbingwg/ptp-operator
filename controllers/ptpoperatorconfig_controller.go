@@ -311,6 +311,13 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	}
 
 	if defaultCfg.Spec.EventConfig == nil {
+		// The publisher (and therefore auth) is off. Reconcile the auth manifest
+		// with authEnabled=false so that any resources left over from a
+		// previously-enabled EventConfig - e.g. the CR had EventConfig removed
+		// entirely - are torn down instead of orphaned.
+		if err = r.syncEventAuth(ctx, &data, false); err != nil {
+			return err
+		}
 		return nil
 	}
 
