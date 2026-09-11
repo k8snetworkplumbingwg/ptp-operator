@@ -239,6 +239,12 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	data.Data["NodeName"] = os.Getenv("NODE_NAME")
 	data.Data["StorageType"] = DefaultStorageType
 	data.Data["EventApiVersion"] = DefaultApiVersion
+	// EnableEventAuth turns on mTLS + OAuth on the event publisher APIs. It
+	// depends on the OpenShift Service CA operator to mint serving certificates
+	// and inject the CA bundle, so it is opt-in (default off) to keep the
+	// operator usable on clusters without Service CA. The OpenShift deployment
+	// sets ENABLE_EVENT_AUTH=true.
+	data.Data["EnableEventAuth"] = os.Getenv("ENABLE_EVENT_AUTH") == "true"
 	// configure EventConfig
 	if defaultCfg.Spec.EventConfig == nil {
 		data.Data["EnableEventPublisher"] = false
@@ -305,7 +311,19 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	}
 
 	if defaultCfg.Spec.EventConfig == nil {
+		// The publisher (and therefore auth) is off. Reconcile the auth manifest
+		// with authEnabled=false so that any resources left over from a
+		// previously-enabled EventConfig - e.g. the CR had EventConfig removed
+		// entirely - are torn down instead of orphaned.
+		if err = r.syncEventAuth(ctx, &data, false); err != nil {
+			return err
+		}
 		return nil
+	}
+
+	authEnabled := defaultCfg.Spec.EventConfig.EnableEventPublisher && data.Data["EnableEventAuth"] == true
+	if err = r.syncEventAuth(ctx, &data, authEnabled); err != nil {
+		return err
 	}
 
 	if defaultCfg.Spec.EventConfig.EnableEventPublisher {
@@ -323,6 +341,35 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 		}
 	}
 
+	return nil
+}
+
+// syncEventAuth reconciles the event-publisher authentication manifest (mTLS
+// serving-cert Service, injected CA bundle, auth-config ConfigMap and the
+// TokenReview ClusterRoleBinding). It renders the manifest unconditionally so
+// that when authentication is disabled - either the publisher is off or auth
+// was turned off - any resources left over from a previously-enabled state are
+// torn down. Otherwise the cluster-scoped ClusterRoleBinding and the
+// serving-cert Service would be orphaned after a user turns authentication off.
+func (r *PtpOperatorConfigReconciler) syncEventAuth(ctx context.Context, data *render.RenderData, enabled bool) error {
+	authObjs, err := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), data)
+	if err != nil {
+		return fmt.Errorf("failed to render event auth-config manifest: %v", err)
+	}
+	if enabled {
+		for _, obj := range authObjs {
+			if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
+				return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
+			}
+		}
+		return nil
+	}
+	for _, obj := range authObjs {
+		if err = r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete auth-config object %s/%s with err: %v",
+				obj.GetKind(), obj.GetName(), err)
+		}
+	}
 	return nil
 }
 
@@ -451,12 +498,29 @@ func (r *PtpOperatorConfigReconciler) setTLSTemplateData(data *render.RenderData
 		ianaCiphers := libgocrypto.OpenSSLToIANACipherSuites(r.TLSProfileSpec.Ciphers)
 		data.Data["TLSMinVersion"] = string(r.TLSProfileSpec.MinTLSVersion)
 		data.Data["TLSCipherSuites"] = strings.Join(ianaCiphers, ",")
+		// Same profile in JSON-array form for the cloud-event-proxy auth-config.
+		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(ianaCiphers)
 		// TODO: pass TLSGroups to kube-rbac-proxy once it supports --tls-curve-preferences
 		// (upstream: https://github.com/kube-rbac-proxy/kube-rbac-proxy/issues/414)
 	} else {
 		data.Data["TLSMinVersion"] = ""
 		data.Data["TLSCipherSuites"] = legacyCipherSuites
+		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(strings.Split(legacyCipherSuites, ","))
 	}
+}
+
+// ciphersToJSONArray renders IANA cipher-suite names as a JSON array literal for
+// embedding in the cloud-event-proxy auth-config template.
+func ciphersToJSONArray(ciphers []string) string {
+	quoted := make([]string, 0, len(ciphers))
+	for _, c := range ciphers {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		quoted = append(quoted, fmt.Sprintf("%q", c))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func (r *PtpOperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {

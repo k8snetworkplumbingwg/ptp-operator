@@ -308,6 +308,33 @@ spec:
           verbs:
           - '*'
         - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterrolebindings
+          verbs:
+          - create
+          - list
+          - watch
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - linuxptp-daemon-auth-delegator
+          resources:
+          - clusterrolebindings
+          verbs:
+          - get
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - system:auth-delegator
+          resources:
+          - clusterroles
+          verbs:
+          - bind
+        - apiGroups:
           - config.openshift.io
           resources:
           - apiservers
@@ -406,6 +433,8 @@ spec:
                 - name: SIDECAR_EVENT_IMAGE
                   value: quay.io/openshift/origin-cloud-event-proxy:5.0
                 - name: EVENT_PROXY_IMAGE
+                - name: ENABLE_EVENT_AUTH
+                  value: "false"
                 - name: OPERATOR_NAMESPACE
                   valueFrom:
                     fieldRef:

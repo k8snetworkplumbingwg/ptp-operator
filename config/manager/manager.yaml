@@ -77,3 +77,5 @@ spec:
               value: $SIDECAR_EVENT_IMAGE
             - name: EVENT_PROXY_IMAGE
               value: $EVENT_PROXY_IMAGE
+            - name: ENABLE_EVENT_AUTH
+              value: "$ENABLE_EVENT_AUTH"
