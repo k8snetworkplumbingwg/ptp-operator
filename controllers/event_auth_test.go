@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
+	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
+	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
+	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/render"
 	configv1 "github.com/openshift/api/config/v1"
 	libgocrypto "github.com/openshift/library-go/pkg/crypto"
 	"github.com/stretchr/testify/assert"
@@ -19,8 +23,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/render"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // authTestNamespace matches makeTestRenderData's Namespace.
@@ -96,6 +99,69 @@ func TestSyncEventAuthEnabledCreatesResources(t *testing.T) {
 	assert.True(t, authResourceExists(t, r, &corev1.Service{}, "ptp-event-publisher-server", authTestNamespace))
 	assert.True(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-auth", authTestNamespace))
 	assert.True(t, authResourceExists(t, r, &rbacv1.ClusterRoleBinding{}, "linuxptp-daemon-auth-delegator", ""))
+}
+
+// seedAuthResources returns the full set of event-auth objects as they exist
+// once authentication has been enabled.
+func seedAuthResources() []client.Object {
+	return []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-ca-bundle", Namespace: authTestNamespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-server", Namespace: authTestNamespace}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ptp-event-publisher-auth", Namespace: authTestNamespace}},
+		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "linuxptp-daemon-auth-delegator"}},
+	}
+}
+
+// assertAuthResourcesGone asserts none of the event-auth objects remain.
+func assertAuthResourcesGone(t *testing.T, r *PtpOperatorConfigReconciler) {
+	t.Helper()
+	assert.False(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-ca-bundle", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &corev1.Service{}, "ptp-event-publisher-server", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &corev1.ConfigMap{}, "ptp-event-publisher-auth", authTestNamespace))
+	assert.False(t, authResourceExists(t, r, &rbacv1.ClusterRoleBinding{}, "linuxptp-daemon-auth-delegator", ""))
+}
+
+// TestTeardownEventAuthRemovesResources verifies the shared teardown helper
+// deletes every auth resource and is idempotent when they are already gone.
+func TestTeardownEventAuthRemovesResources(t *testing.T) {
+	r := newAuthTestReconciler(t, seedAuthResources()...)
+
+	assert.NoError(t, r.teardownEventAuth(context.Background()))
+	assertAuthResourcesGone(t, r)
+
+	// Idempotent: a second teardown with nothing present must not error.
+	assert.NoError(t, r.teardownEventAuth(context.Background()))
+}
+
+// TestReconcileDeletedConfigTearsDownAuth is the delete/recreate regression:
+// when the PtpOperatorConfig is deleted, Reconcile hits the NotFound path,
+// which must tear down the orphan-prone auth resources (notably the
+// cluster-scoped auth-delegator ClusterRoleBinding) before recreating the
+// default config. Without the explicit teardown these would survive the delete.
+func TestReconcileDeletedConfigTearsDownAuth(t *testing.T) {
+	scheme := runtime.NewScheme()
+	assert.NoError(t, clientgoscheme.AddToScheme(scheme))
+	assert.NoError(t, ptpv1.AddToScheme(scheme))
+
+	// syncEventAuth/teardownEventAuth render from names.ManifestDir ("./bindata"),
+	// which is relative to the repo root; tests run from ./controllers.
+	t.Chdir("..")
+
+	// Seed the auth resources but NOT the PtpOperatorConfig, simulating a config
+	// that has just been deleted.
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(seedAuthResources()...).Build()
+	r := &PtpOperatorConfigReconciler{Client: c, Scheme: scheme, Log: logr.Discard()}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: names.DefaultOperatorConfigName, Namespace: names.Namespace},
+	})
+	assert.NoError(t, err)
+
+	// Auth resources must be gone...
+	assertAuthResourcesGone(t, r)
+
+	// ...and the default config must have been recreated.
+	assert.True(t, authResourceExists(t, r, &ptpv1.PtpOperatorConfig{}, names.DefaultOperatorConfigName, names.Namespace))
 }
 
 // daemonSidecarArgs returns the args of the cloud-event-proxy container from a

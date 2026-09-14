@@ -88,7 +88,16 @@ func (r *PtpOperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
-			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
+			// Owned objects are automatically garbage collected. The event-publisher
+			// authentication resources, however, are not owned by the PtpOperatorConfig -
+			// the ClusterRoleBinding is cluster-scoped (and grants system:auth-delegator
+			// access) and the other objects carry no owner reference - so they would be
+			// left orphaned. Tear them down explicitly before recreating the default
+			// config so no stale auth resources or TokenReview access survive a delete.
+			if err = r.teardownEventAuth(ctx); err != nil {
+				reqLogger.Error(err, "failed to tear down event auth on config deletion")
+				return reconcile.Result{}, err
+			}
 			defaultCfg.SetNamespace(names.Namespace)
 			defaultCfg.SetName(names.DefaultOperatorConfigName)
 			defaultCfg.Spec = ptpv1.PtpOperatorConfigSpec{
@@ -358,17 +367,39 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 // torn down. Otherwise the cluster-scoped ClusterRoleBinding and the
 // serving-cert Service would be orphaned after a user turns authentication off.
 func (r *PtpOperatorConfigReconciler) syncEventAuth(ctx context.Context, data *render.RenderData, enabled bool) error {
+	if !enabled {
+		return r.teardownEventAuth(ctx)
+	}
 	authObjs, err := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), data)
 	if err != nil {
 		return fmt.Errorf("failed to render event auth-config manifest: %v", err)
 	}
-	if enabled {
-		for _, obj := range authObjs {
-			if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
-				return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
-			}
+	for _, obj := range authObjs {
+		if err = apply.ApplyObject(ctx, r.Client, obj); err != nil {
+			return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
 		}
-		return nil
+	}
+	return nil
+}
+
+// teardownEventAuth deletes every event-publisher authentication resource
+// (mTLS serving-cert Service, injected CA bundle, auth-config ConfigMap and the
+// TokenReview ClusterRoleBinding). It renders the auth manifest with a minimal
+// render context - only the object names and namespace matter for a
+// delete-by-name - so it can be called even when no PtpOperatorConfig exists
+// (e.g. the config was just deleted). Deletion is idempotent: NotFound is
+// ignored. This guarantees the cluster-scoped ClusterRoleBinding granting
+// system:auth-delegator and the serving-cert Service are never left orphaned,
+// whether authentication is reconciled off or the config itself is removed.
+func (r *PtpOperatorConfigReconciler) teardownEventAuth(ctx context.Context) error {
+	data := render.MakeRenderData()
+	data.Data["Namespace"] = names.Namespace
+	// The TLS fields only affect ConfigMap payloads, which are irrelevant for a
+	// delete-by-name, but must be present so template rendering succeeds.
+	r.setTLSTemplateData(&data)
+	authObjs, err := render.RenderTemplate(filepath.Join(names.ManifestDir, "linuxptp/auth-config.yaml"), &data)
+	if err != nil {
+		return fmt.Errorf("failed to render event auth-config manifest: %v", err)
 	}
 	for _, obj := range authObjs {
 		if err = r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
