@@ -47,6 +47,10 @@ BUNDLE_VERSION ?= $(VERSION).0
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(BUNDLE_VERSION) $(BUNDLE_METADATA_OPTS) --extra-service-accounts "linuxptp-daemon"
 
+# CREATED_AT is the fixed value used for the CSV createdAt annotation so that
+# bundle regeneration does not stamp a new timestamp on every run.
+CREATED_AT ?= 2025-09-10T10:13:05
+
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.38.0-ocp
@@ -294,10 +298,11 @@ bundle: manifests kustomize operator-sdk update-env-yaml ## Generate bundle mani
 	rm -rf manifests/stable; \
 	cp -r bundle/manifests manifests/stable; \
 	: "Use double quotes in values of olm.skipRange to match the expected regexp in art.yaml"; \
+	: "Pin the createdAt annotation to $(CREATED_AT) to keep bundle generation deterministic"; \
 	if [ "$(OS)" = "Darwin" ]; then \
-		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '' '/olm.skipRange:/s#'\''#"#g'; \
+		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '' -e '/olm.skipRange:/s#'\''#"#g' -e 's/createdAt: ".*"/createdAt: "$(CREATED_AT)"/g'; \
 	else \
-		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i '/olm.skipRange:/s#'\''#"#g'; \
+		find . -type f -name "*.clusterserviceversion.yaml" -print0 | xargs -0 sed -i -e '/olm.skipRange:/s#'\''#"#g' -e 's/createdAt: ".*"/createdAt: "$(CREATED_AT)"/g'; \
 	fi
 
 .PHONY: bundle-build ## Build the bundle image.
