@@ -217,6 +217,93 @@ func TestSourceTypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid gnss without match (autodetect)",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						Constellations: []ConstellationID{"GPS"},
+						SurveyIn: GNSSSurveyParameters{
+							ObservationTime: 300,
+							Accuracy:        5,
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "gnss with both ttyDevice and ethernetInterface",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						Constellations: []ConstellationID{"GPS"},
+						SurveyIn:       GNSSSurveyParameters{ObservationTime: 300, Accuracy: 5},
+					},
+					Match: &GNSSMatcher{
+						TTYDevice:         "/dev/gnss0",
+						EthernetInterface: "eth0",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "exactly one of ttyDevice or ethernetInterface must be provided",
+		},
+		{
+			name: "gnss with empty match (neither ttyDevice nor ethernetInterface)",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						Constellations: []ConstellationID{"GPS"},
+						SurveyIn:       GNSSSurveyParameters{ObservationTime: 300, Accuracy: 5},
+					},
+					Match: &GNSSMatcher{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "exactly one of ttyDevice or ethernetInterface must be provided",
+		},
+		{
+			name: "gnss with empty constellations",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						Constellations: []ConstellationID{},
+						SurveyIn:       GNSSSurveyParameters{ObservationTime: 300, Accuracy: 5},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one constellation must be specified",
+		},
+		{
+			name: "gnss with invalid constellation",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{
+						Constellations: []ConstellationID{"GPS", "InvalidConstellation"},
+						SurveyIn:       GNSSSurveyParameters{ObservationTime: 300, Accuracy: 5},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid constellation",
+		},
+		{
 			name: "valid dpllPhaseLocked source",
 			source: &SourceConfig{
 				Subsystem:  "subsystem",
