@@ -2,8 +2,13 @@
 # CA bundle used to verify peer certificates for the event publisher's mTLS.
 # The OpenShift Service CA operator injects the cluster service CA into
 # service-ca.crt. All serving certificates minted below are signed by this CA,
-# so it is trusted for both the server certificate and presented client
-# certificates.
+# so it is trusted for both the server certificate and Service CA-signed client
+# certificates. The ptp-operator additionally maintains a combined ca-bundle.crt
+# key (service-ca.crt ++ any client CA published in ptp-event-publisher-client-ca)
+# which cloud-event-proxy loads via caCertPath - see syncEventCABundle. This
+# manifest carries no data on purpose; MergeConfigMapForUpdate preserves the
+# injected and operator-derived keys across reconciles (removing the former
+# scale-operator-to-0 workaround).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -57,7 +62,7 @@ data:
     {
       "enableMTLS": true,
       "useServiceCA": true,
-      "caCertPath": "/etc/cloud-event-proxy/ca-bundle/service-ca.crt",
+      "caCertPath": "/etc/cloud-event-proxy/ca-bundle/ca-bundle.crt",
       "serverCertPath": "/etc/cloud-event-proxy/server-certs/tls.crt",
       "serverKeyPath": "/etc/cloud-event-proxy/server-certs/tls.key",
       "enableOAuth": true,

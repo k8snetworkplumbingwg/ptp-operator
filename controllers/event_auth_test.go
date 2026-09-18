@@ -164,6 +164,72 @@ func TestReconcileDeletedConfigTearsDownAuth(t *testing.T) {
 	assert.True(t, authResourceExists(t, r, &ptpv1.PtpOperatorConfig{}, names.DefaultOperatorConfigName, names.Namespace))
 }
 
+// getConfigMapData returns the .data of the named ConfigMap.
+func getConfigMapData(t *testing.T, r *PtpOperatorConfigReconciler, name string) map[string]string {
+	t.Helper()
+	cm := &corev1.ConfigMap{}
+	assert.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: name, Namespace: authTestNamespace}, cm))
+	return cm.Data
+}
+
+// TestSyncEventCABundleCombinesCAs verifies the operator folds the injected
+// Service CA and an out-of-band client CA into the operator-owned ca-bundle.crt
+// key, which is what removes the scale-operator-to-0 workaround.
+func TestSyncEventCABundleCombinesCAs(t *testing.T) {
+	r := newAuthTestReconciler(t,
+		// Bundle CM as it looks once the Service CA operator has injected its cert.
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: names.EventPublisherCABundleConfigMapName, Namespace: authTestNamespace},
+			Data:       map[string]string{names.ServiceCAKey: "SERVICE-CA-PEM"},
+		},
+		// Out-of-band client CA published by e.g. make deploy-consumer.
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: names.EventPublisherClientCAConfigMapName, Namespace: authTestNamespace},
+			Data:       map[string]string{"client-ca.crt": "CLIENT-CA-PEM"},
+		},
+	)
+
+	assert.NoError(t, r.syncEventCABundle(context.Background()))
+
+	data := getConfigMapData(t, r, names.EventPublisherCABundleConfigMapName)
+	assert.Equal(t, "SERVICE-CA-PEM\nCLIENT-CA-PEM\n", data[names.EventPublisherCABundleKey])
+	// The injected key must be left untouched.
+	assert.Equal(t, "SERVICE-CA-PEM", data[names.ServiceCAKey])
+}
+
+// TestSyncEventCABundleServiceCAOnly verifies that without a client CA the bundle
+// is just the injected Service CA (mTLS still works for Service CA-signed peers).
+func TestSyncEventCABundleServiceCAOnly(t *testing.T) {
+	r := newAuthTestReconciler(t,
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: names.EventPublisherCABundleConfigMapName, Namespace: authTestNamespace},
+			Data:       map[string]string{names.ServiceCAKey: "SERVICE-CA-PEM"},
+		},
+	)
+
+	assert.NoError(t, r.syncEventCABundle(context.Background()))
+
+	data := getConfigMapData(t, r, names.EventPublisherCABundleConfigMapName)
+	assert.Equal(t, "SERVICE-CA-PEM\n", data[names.EventPublisherCABundleKey])
+}
+
+// TestSyncEventCABundleWaitsForServiceCA verifies the bundle is not written until
+// the Service CA operator has injected service-ca.crt (avoids an empty trust file
+// that would make cloud-event-proxy reject all clients).
+func TestSyncEventCABundleWaitsForServiceCA(t *testing.T) {
+	r := newAuthTestReconciler(t,
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: names.EventPublisherCABundleConfigMapName, Namespace: authTestNamespace},
+		},
+	)
+
+	assert.NoError(t, r.syncEventCABundle(context.Background()))
+
+	data := getConfigMapData(t, r, names.EventPublisherCABundleConfigMapName)
+	_, present := data[names.EventPublisherCABundleKey]
+	assert.False(t, present, "ca-bundle.crt must not be written before Service CA injection")
+}
+
 // daemonSidecarArgs returns the args of the cloud-event-proxy container from a
 // rendered ptp-daemon.yaml DaemonSet object.
 func daemonSidecarArgs(t *testing.T, objs []*unstructured.Unstructured) []string {
