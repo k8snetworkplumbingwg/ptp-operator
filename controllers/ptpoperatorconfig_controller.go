@@ -47,6 +47,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -379,7 +380,95 @@ func (r *PtpOperatorConfigReconciler) syncEventAuth(ctx context.Context, data *r
 			return fmt.Errorf("failed to apply auth-config object %v with err: %v", obj, err)
 		}
 	}
+	if err = r.syncEventCABundle(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+// syncEventCABundle maintains the combined trust anchor the event publisher uses
+// to verify mTLS peer certificates. The ptp-event-publisher-ca-bundle ConfigMap
+// carries the service.beta.openshift.io/inject-cabundle annotation, so the
+// OpenShift Service CA operator writes service-ca.crt into it (trusting the
+// server certificate and any Service CA-signed client certs). A consumer that
+// presents a client certificate signed by its own CA - e.g. an out-of-cluster
+// test consumer - cannot use a Service CA-issued client cert (Service CA serving
+// certs are serverAuth-only), so its CA must also be trusted. That CA is
+// published out-of-band into the optional ptp-event-publisher-client-ca
+// ConfigMap; this function folds it together with service-ca.crt into the
+// operator-owned ca-bundle.crt key that cloud-event-proxy loads via caCertPath.
+//
+// Building the bundle in the operator - instead of overwriting the injected
+// ConfigMap by hand - is what removes the previous "scale the operator to 0"
+// workaround: the derived key is operator-owned, so re-applying it is correct
+// rather than destructive, while the Service CA operator still owns
+// service-ca.crt (preserved across applies by MergeConfigMapForUpdate).
+func (r *PtpOperatorConfigReconciler) syncEventCABundle(ctx context.Context) error {
+	bundle := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: names.Namespace, Name: names.EventPublisherCABundleConfigMapName}, bundle); err != nil {
+		if errors.IsNotFound(err) {
+			// Created by the auth manifest earlier in the same reconcile; it is
+			// populated on a later reconcile (the ConfigMap watch fires once the
+			// Service CA operator injects service-ca.crt).
+			return nil
+		}
+		return fmt.Errorf("failed to get event CA bundle configmap: %v", err)
+	}
+
+	serviceCA := strings.TrimSpace(bundle.Data[names.ServiceCAKey])
+	if serviceCA == "" {
+		// Service CA operator has not injected the CA yet; wait for the watch to
+		// re-trigger reconciliation once service-ca.crt appears.
+		glog.Infof("event CA bundle: waiting for Service CA injection of %q", names.ServiceCAKey)
+		return nil
+	}
+
+	combined := serviceCA + "\n"
+
+	// Fold in an optional externally-supplied client CA (e.g. a test consumer's
+	// clientAuth CA). Absent -> mTLS still works for Service CA-signed clients.
+	clientCA := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{
+		Namespace: names.Namespace, Name: names.EventPublisherClientCAConfigMapName}, clientCA)
+	switch {
+	case err == nil:
+		for _, k := range sortedStringKeys(clientCA.Data) {
+			v := strings.TrimSpace(clientCA.Data[k])
+			if v == "" {
+				continue
+			}
+			combined += v + "\n"
+		}
+	case errors.IsNotFound(err):
+		// No extra client CA to trust.
+	default:
+		return fmt.Errorf("failed to get event client CA configmap: %v", err)
+	}
+
+	if bundle.Data[names.EventPublisherCABundleKey] == combined {
+		return nil // already up to date
+	}
+	if bundle.Data == nil {
+		bundle.Data = map[string]string{}
+	}
+	bundle.Data[names.EventPublisherCABundleKey] = combined
+	if err := r.Update(ctx, bundle); err != nil {
+		return fmt.Errorf("failed to update event CA bundle configmap: %v", err)
+	}
+	glog.Infof("event CA bundle %q updated (%d bytes)", names.EventPublisherCABundleKey, len(combined))
+	return nil
+}
+
+// sortedStringKeys returns the keys of m in deterministic order so the derived
+// CA bundle is stable across reconciles (avoids spurious updates).
+func sortedStringKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // teardownEventAuth deletes every event-publisher authentication resource
@@ -564,7 +653,26 @@ func (r *PtpOperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ptpv1.PtpOperatorConfig{}).
 		Owns(&appsv1.DaemonSet{}).
+		// The event-publisher CA bundle is assembled from ConfigMaps the operator
+		// does not own outright - the Service CA operator injects service-ca.crt
+		// and an optional client CA is published out-of-band - so watch them to
+		// rebuild the bundle promptly instead of waiting for the resync period.
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapCAConfigMapToRequest)).
 		Complete(r)
+}
+
+// mapCAConfigMapToRequest enqueues a reconcile of the default PtpOperatorConfig
+// when one of the CA-bundle input ConfigMaps changes.
+func (r *PtpOperatorConfigReconciler) mapCAConfigMapToRequest(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetNamespace() != names.Namespace {
+		return nil
+	}
+	switch obj.GetName() {
+	case names.EventPublisherCABundleConfigMapName, names.EventPublisherClientCAConfigMapName:
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Namespace: names.Namespace, Name: names.DefaultOperatorConfigName}}}
+	}
+	return nil
 }
 
 // EventTransportHostAvailabilityCheck ... check availability for transporthost
