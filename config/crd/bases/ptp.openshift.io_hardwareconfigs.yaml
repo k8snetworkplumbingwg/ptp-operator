@@ -366,11 +366,31 @@ spec:
                                             device by its /dev/xxxx character device
                                             path
                                           type: string
+                                        usbDevice:
+                                          description: USBDevice defines the GNSS
+                                            device by its USB vendor and product IDs.
+                                          properties:
+                                            product:
+                                              description: Product is the four-digit
+                                                hexadecimal USB product ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                            vendor:
+                                              description: Vendor is the four-digit
+                                                hexadecimal USB vendor ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                          required:
+                                          - product
+                                          - vendor
+                                          type: object
                                       type: object
                                       x-kubernetes-validations:
-                                      - message: Exactly one of ttyDevice or ethernetInterface
-                                          must be provided.
-                                        rule: has(self.ttyDevice) != has(self.ethernetInterface)
+                                      - message: Exactly one of ttyDevice, ethernetInterface,
+                                          or usbDevice must be provided.
+                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetInterface)
+                                          ? 1 : 0) + (has(self.usbDevice) ? 1 : 0)
+                                          == 1'
                                   required:
                                   - init
                                   type: object

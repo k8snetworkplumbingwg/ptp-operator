@@ -217,6 +217,21 @@ func TestSourceTypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid gnss with USB device matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						USBDevice: &USBDevice{Vendor: "1546", Product: "01a9"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid dpllPhaseLocked source",
 			source: &SourceConfig{
 				Subsystem:  "subsystem",
