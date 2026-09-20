@@ -356,11 +356,37 @@ spec:
                                         a GNSS device on the system.  If omitted,
                                         autodetects the best-available GNSS source
                                       properties:
-                                        ethernetInterface:
-                                          description: EthernetInterface defines the
-                                            GNSS device as the one attached to the
-                                            physical ethernet device name listed
-                                          type: string
+                                        ethernetDevice:
+                                          description: |-
+                                            EthernetDevice defines the Ethernet device to which the GNSS device is
+                                            attached. Name takes precedence as a direct interface lookup; when Name
+                                            is omitted, the other fields are used as matching criteria.
+                                          properties:
+                                            deviceID:
+                                              description: DeviceID is the four-digit
+                                                hexadecimal PCI device ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                            name:
+                                              description: Name is the Linux Ethernet
+                                                interface name, such as eno8703.
+                                              type: string
+                                            pciSlot:
+                                              description: PCISlot is the PCI bus
+                                                address of the Ethernet device.
+                                              pattern: ^([0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$
+                                              type: string
+                                            vendor:
+                                              description: Vendor is the four-digit
+                                                hexadecimal PCI vendor ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: At least one Ethernet device
+                                              selection criterion must be provided.
+                                            rule: has(self.name) || has(self.pciSlot)
+                                              || has(self.vendor) || has(self.deviceID)
                                         ttyDevice:
                                           description: TTYDevice defines the GNSS
                                             device by its /dev/xxxx character device
@@ -386,9 +412,9 @@ spec:
                                           type: object
                                       type: object
                                       x-kubernetes-validations:
-                                      - message: Exactly one of ttyDevice, ethernetInterface,
+                                      - message: Exactly one of ttyDevice, ethernetDevice,
                                           or usbDevice must be provided.
-                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetInterface)
+                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetDevice)
                                           ? 1 : 0) + (has(self.usbDevice) ? 1 : 0)
                                           == 1'
                                   required:

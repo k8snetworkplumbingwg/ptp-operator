@@ -232,6 +232,21 @@ func TestSourceTypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid gnss with Ethernet device PCI matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						EthernetDevice: &EthernetDevice{PCISlot: "0000:86:00.0"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid dpllPhaseLocked source",
 			source: &SourceConfig{
 				Subsystem:  "subsystem",
