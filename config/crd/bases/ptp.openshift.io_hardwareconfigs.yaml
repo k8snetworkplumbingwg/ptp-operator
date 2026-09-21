@@ -387,6 +387,37 @@ spec:
                                               selection criterion must be provided.
                                             rule: has(self.name) || has(self.pciSlot)
                                               || has(self.vendor) || has(self.deviceID)
+                                        serialDevice:
+                                          description: SerialDevice defines a platform
+                                            serial device by stable hardware identity.
+                                          properties:
+                                            acpi:
+                                              description: ACPI identifies an ACPI-enumerated
+                                                serial controller.
+                                              properties:
+                                                hid:
+                                                  description: HID is the ACPI hardware
+                                                    ID, such as INTC10EE for the HPE
+                                                    EL140 GNSS UART.
+                                                  pattern: ^[A-Za-z0-9._-]+$
+                                                  type: string
+                                                uid:
+                                                  description: UID is the optional
+                                                    Linux ACPI device instance suffix,
+                                                    such as 00.
+                                                  type: string
+                                              required:
+                                              - hid
+                                              type: object
+                                              x-kubernetes-validations:
+                                              - message: An ACPI hardware ID must
+                                                  be provided.
+                                                rule: has(self.hid)
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: An ACPI serial device selector
+                                              must be provided.
+                                            rule: has(self.acpi)
                                         ttyDevice:
                                           description: TTYDevice defines the GNSS
                                             device by its /dev/xxxx character device
@@ -412,11 +443,12 @@ spec:
                                           type: object
                                       type: object
                                       x-kubernetes-validations:
-                                      - message: Exactly one of ttyDevice, ethernetDevice,
-                                          or usbDevice must be provided.
-                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetDevice)
-                                          ? 1 : 0) + (has(self.usbDevice) ? 1 : 0)
-                                          == 1'
+                                      - message: Exactly one of ttyDevice, serialDevice,
+                                          ethernetDevice, or usbDevice must be provided.
+                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice)
+                                          ? 1 : 0) + (has(self.ethernetDevice) ? 1
+                                          : 0) + (has(self.usbDevice) ? 1 : 0) ==
+                                          1'
                                   required:
                                   - init
                                   type: object

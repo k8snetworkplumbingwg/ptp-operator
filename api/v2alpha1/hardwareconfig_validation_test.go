@@ -232,6 +232,23 @@ func TestSourceTypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid gnss with ACPI serial device matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						SerialDevice: &SerialDevice{
+							ACPI: &ACPIDevice{HID: "INTC10EE", UID: "00"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid gnss with Ethernet device PCI matcher",
 			source: &SourceConfig{
 				Subsystem:  "subsystem",

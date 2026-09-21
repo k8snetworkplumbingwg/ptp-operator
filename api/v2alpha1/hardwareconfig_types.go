@@ -185,11 +185,14 @@ type GNSSInit struct {
 }
 
 // GNSSMatcher defines a mechanism to match GNSS devices.
-// Exactly one of TTYDevice, EthernetDevice, or USBDevice must be provided.
-// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetDevice) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, ethernetDevice, or usbDevice must be provided."
+// Exactly one of TTYDevice, SerialDevice, EthernetDevice, or USBDevice must be provided.
+// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice) ? 1 : 0) + (has(self.ethernetDevice) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, serialDevice, ethernetDevice, or usbDevice must be provided."
 type GNSSMatcher struct {
 	// TTYDevice defines the GNSS device by its /dev/xxxx character device path
 	TTYDevice string `json:"ttyDevice,omitempty" yaml:"ttyDevice,omitempty"`
+
+	// SerialDevice defines a platform serial device by stable hardware identity.
+	SerialDevice *SerialDevice `json:"serialDevice,omitempty" yaml:"serialDevice,omitempty"`
 
 	// EthernetDevice defines the Ethernet device to which the GNSS device is
 	// attached. Name takes precedence as a direct interface lookup; when Name
@@ -198,6 +201,28 @@ type GNSSMatcher struct {
 
 	// USBDevice defines the GNSS device by its USB vendor and product IDs.
 	USBDevice *USBDevice `json:"usbDevice,omitempty" yaml:"usbDevice,omitempty"`
+}
+
+// SerialDevice identifies a serial device using stable platform hardware
+// attributes instead of the dynamically assigned tty name.
+// +kubebuilder:validation:XValidation:rule="has(self.acpi)", message="An ACPI serial device selector must be provided."
+type SerialDevice struct {
+	// ACPI identifies an ACPI-enumerated serial controller.
+	ACPI *ACPIDevice `json:"acpi,omitempty" yaml:"acpi,omitempty"`
+}
+
+// ACPIDevice identifies an ACPI device. HID is the ACPI hardware ID, and UID
+// optionally matches the Linux ACPI device instance suffix in sysfs (for example,
+// the "00" in INTC10EE:00). It is not the value of the ACPI _UID attribute.
+// +kubebuilder:validation:XValidation:rule="has(self.hid)", message="An ACPI hardware ID must be provided."
+type ACPIDevice struct {
+	// HID is the ACPI hardware ID, such as INTC10EE for the HPE EL140 GNSS UART.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	HID string `json:"hid" yaml:"hid"`
+
+	// UID is the optional Linux ACPI device instance suffix, such as 00.
+	// +optional
+	UID string `json:"uid,omitempty" yaml:"uid,omitempty"`
 }
 
 // EthernetDevice identifies an Ethernet device using the selection criteria
