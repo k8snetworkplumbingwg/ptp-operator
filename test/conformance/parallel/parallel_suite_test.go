@@ -54,9 +54,14 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	testclient.Client = testclient.New("")
 	Expect(testclient.Client).NotTo(BeNil())
 
-	// discovers valid ptp configurations based on clock type
 	err = testconfig.CreatePtpConfigurationsWithRetry(3)
-	Expect(err).To(BeNil(), "Could not create a ptp config")
+	if err != nil {
+		if strings.Contains(err.Error(), "no solution found") ||
+			strings.Contains(err.Error(), "no T-BC solution found") {
+			Skip(fmt.Sprintf("Could not create a ptp config (insufficient topology), err=%s", err))
+		}
+		Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
+	}
 
 	By("Refreshing configuration", func() {
 		ptphelper.WaitForPtpDaemonToExist()

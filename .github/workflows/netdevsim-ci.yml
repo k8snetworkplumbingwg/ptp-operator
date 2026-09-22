@@ -152,6 +152,13 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force 2>/dev/null || true
+          sudo apt-get clean
+          df -h
+
       - name: Install podman 5.x
         run: |
           sudo mkdir -p /etc/apt/keyrings
@@ -162,15 +169,25 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y podman
+          # Ubuntu noble ships crun 1.14.1; Podman 5 needs >= 1.14.3 or root hits
+          # "OCI runtime error: crun: unknown version specified" when starting registry.
+          # Install a current static binary for both the runner user and root.
+          CRUN_VER=1.28
+          ARCH=$(dpkg --print-architecture)
+          case "$ARCH" in
+            amd64) CRUN_ARCH=amd64 ;;
+            arm64) CRUN_ARCH=arm64 ;;
+            *) echo "::error::unsupported arch $ARCH for crun"; exit 1 ;;
+          esac
+          curl -fsSL -o /tmp/crun \
+            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-${CRUN_ARCH}"
+          sudo install -m 0755 /tmp/crun /usr/local/bin/crun
+          sudo install -m 0755 /tmp/crun /usr/bin/crun
+          hash -r
           podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
+          crun --version
+          sudo crun --version
+          sudo podman run --rm quay.io/libpod/alpine:latest echo ok
           # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
           sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
@@ -182,6 +199,7 @@ jobs:
           sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -209,7 +227,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
+        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |
@@ -229,15 +247,25 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y podman
+          # Ubuntu noble ships crun 1.14.1; Podman 5 needs >= 1.14.3 or root hits
+          # "OCI runtime error: crun: unknown version specified" when starting registry.
+          # Install a current static binary for both the runner user and root.
+          CRUN_VER=1.28
+          ARCH=$(dpkg --print-architecture)
+          case "$ARCH" in
+            amd64) CRUN_ARCH=amd64 ;;
+            arm64) CRUN_ARCH=arm64 ;;
+            *) echo "::error::unsupported arch $ARCH for crun"; exit 1 ;;
+          esac
+          curl -fsSL -o /tmp/crun \
+            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-${CRUN_ARCH}"
+          sudo install -m 0755 /tmp/crun /usr/local/bin/crun
+          sudo install -m 0755 /tmp/crun /usr/bin/crun
+          hash -r
           podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
+          crun --version
+          sudo crun --version
+          sudo podman run --rm quay.io/libpod/alpine:latest echo ok
           # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
           sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
@@ -285,6 +313,7 @@ jobs:
           sudo bash -l <<'LOAD'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
@@ -307,6 +336,7 @@ jobs:
           sudo bash -l <<'DEPLOY'
           set -euo pipefail
           set -x
+          export GITHUB_ACTIONS=true
           export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
           export ENABLE_CEPV2=true

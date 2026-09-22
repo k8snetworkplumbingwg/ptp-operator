@@ -768,8 +768,7 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		key := compositeEventKey(v.Resource, string(v.DataType))
-		values[key] = v.Value
+		values[compositeEventKey(v.Resource, string(v.DataType))] = v.Value
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil

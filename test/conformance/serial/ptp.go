@@ -368,6 +368,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			err := testconfig.CreatePtpConfigurationsWithRetry(3)
 			if err != nil {
 				fullConfig.Status = testconfig.DiscoveryFailureStatus
+				// Only topology "no … solution found" is a Skip. Operator/API/apply
+				// failures must Fail so they cannot hide behind a suite Skip.
+				if strings.Contains(err.Error(), "no solution found") ||
+					strings.Contains(err.Error(), "no T-BC solution found") {
+					Skip(fmt.Sprintf("Could not create a ptp config (insufficient topology), err=%s", err))
+				}
 				Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
 			}
 			fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, false)
@@ -558,19 +564,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					if err != nil {
 						Fail(fmt.Sprintf("check Grandmaster clock type, err=%s", err))
 					}
-					if isClockUnderTest {
-						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
-							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
-							profileSlave, false, pkg.TimeoutIn3Minutes)
-						if err != nil {
-							Fail(fmt.Sprintf("could not get slave profile name, err=%s", err))
-						}
-					} else if isGrandmaster && fullConfig.DiscoveredGrandMasterPtpConfig != nil {
+					// In TGMBC the GM and BC share a node (both labels present);
+					// check grandmaster first so we look for the correct profile.
+					if isGrandmaster && fullConfig.DiscoveredGrandMasterPtpConfig != nil {
 						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
 							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
 							profileMaster, false, pkg.TimeoutIn5Minutes)
 						if err != nil {
 							Fail(fmt.Sprintf("could not get master profile name, err=%s", err))
+						}
+					} else if isClockUnderTest {
+						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
+							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+							profileSlave, false, pkg.TimeoutIn3Minutes)
+						if err != nil {
+							Fail(fmt.Sprintf("could not get slave profile name, err=%s", err))
 						}
 					}
 				}
@@ -599,24 +607,30 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 
 			It("Slave can sync to master", func() {
-				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
-					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping: clock-under-test is a standalone TGM profile")
 				}
 				isExternalMaster := ptphelper.IsExternalGM()
 				var grandmasterID *string
 				if fullConfig.L2Config != nil && !isExternalMaster {
 					aLabel := pkg.PtpGrandmasterNodeLabel
+					gmProfileName := pkg.PtpGrandMasterPolicyName
+					if fullConfig.PtpModeDiscovered == testconfig.TelcoGMOC || fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+						gmProfileName = pkg.PtpWPCGrandMasterPolicyName
+					}
 					var aString string
 					Expect(fullConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(), "expected discovered grandmaster config")
 					gmConfigName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredGrandMasterPtpConfig).Name
 					Eventually(func() error {
 						var getErr error
-						aString, getErr = ptphelper.GetClockIDMaster(gmConfigName, pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
+						aString, getErr = ptphelper.GetClockIDMaster(gmConfigName, gmProfileName, &aLabel, nil, true)
 						return getErr
 					}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 						"Timeout to get grandmaster clock ID")
 					grandmasterID = &aString
 				}
+
+				waitForWPCGMReady(fullConfig)
 
 				err = ptptesthelper.BasicClockSyncCheck(fullConfig, (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), grandmasterID, metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
 				Expect(err).To(BeNil())
@@ -643,8 +657,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Skip("Authentication negative test requires PTP_AUTH_ENABLED=true")
 				}
 
-				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
-					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
+					Skip("Skipping as slave interface is not available with a standalone TGM profile")
 				}
 
 				// Save original GM config for restoration
@@ -792,7 +806,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if fullConfig.PtpModeDesired != testconfig.DualFollowerClock {
 					Skip("Test reserved for dual follower scenario")
 				}
-				Expect(len(fullConfig.DiscoveredFollowerInterfaces) == 2)
+				Expect(len(fullConfig.DiscoveredFollowerInterfaces)).To(Equal(2), "dual follower requires exactly 2 follower interfaces")
 				isExternalMaster := ptphelper.IsExternalGM()
 				var grandmasterID *string
 				if fullConfig.L2Config != nil && !isExternalMaster {
@@ -895,25 +909,22 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// - verifies that the BCSlave foreign master has the expected boundary clock ID
 			// - use metrics to verify that the offset with boundary clock is below threshold
 			It("Downstream slave can sync to BC master", func() {
-				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
-					Skip("test not valid for WPC GM testing only valid for BC config in multi-node cluster ")
-				}
-
 				if fullConfig.PtpModeDiscovered != testconfig.BoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClock &&
 					fullConfig.PtpModeDiscovered != testconfig.DualNICBoundaryClockHA &&
-					fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
-					Skip("test only valid for Boundary clock in multi-node clusters")
+					fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock &&
+					fullConfig.PtpModeDiscovered != testconfig.TelcoGMBC {
+					Skip("test only valid for Boundary clock or TGMBC in multi-node clusters")
 				}
 
-				if !fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoBCWithSlavesExtGMString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesString] &&
-					!fullConfig.FoundSolutions[testconfig.AlgoTelcoBCWithSlavesExtGMString] {
-					Skip("test only valid for Boundary clock in multi-node clusters with slaves")
+				// FoundSolutions lists every solvable L2 topology, not the one that was
+				// applied. DualNIC often falls back to DualNicBC (no OC slaves) while
+				// BCWithSlaves is still "found" on the same graph — gate on the
+				// discovered downstream slave config that this test actually uses.
+				if fullConfig.DiscoveredSlave1PtpConfig == nil {
+					Skip("test only valid when a downstream OC slave ptpconfig is configured")
 				}
+				waitForWPCGMReady(fullConfig)
 				aLabel := pkg.PtpClockUnderTestNodeLabel
 				name := pkg.PtpBcMaster1PolicyName
 				Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).ToNot(BeNil(), "BC mode requires DiscoveredClockUnderTestPtpConfig")
@@ -932,7 +943,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(err).To(BeNil())
 
 				if (fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClock || fullConfig.PtpModeDiscovered == testconfig.DualNICBoundaryClockHA) &&
-					(fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesExtGMString] || fullConfig.FoundSolutions[testconfig.AlgoDualNicBCWithSlavesString]) {
+					fullConfig.DiscoveredSlave2PtpConfig != nil {
 					aLabel := pkg.PtpClockUnderTestNodeLabel
 					var masterIDBc2 string
 					bc2ConfigName := bc1ConfigName
@@ -973,14 +984,17 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
 							Skip("WPC GM (T-GM) mode is not supported for this test")
 						}
+						if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+							Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
+						}
 						switch fullConfig.PtpModeDiscovered {
 						case testconfig.Discovery, testconfig.None:
 							Skip("Skipping because Discovery or None is not supported yet for this test")
-						case testconfig.OrdinaryClock:
+						case testconfig.OrdinaryClock, testconfig.TelcoGMOC:
 							policyName = pkg.PtpSlave1PolicyName
 						case testconfig.DualFollowerClock:
 							policyName = pkg.PtpSlave1PolicyName
-						case testconfig.BoundaryClock:
+						case testconfig.BoundaryClock, testconfig.TelcoGMBC:
 							policyName = pkg.PtpBcMaster1PolicyName
 						case testconfig.DualNICBoundaryClock, testconfig.DualNICBoundaryClockHA:
 							policyName = pkg.PtpBcMaster1PolicyName
@@ -1036,6 +1050,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				It("Can provide a profile with higher priority", func() {
 					By("Checking if Node has Profile and check sync", func() {
+						waitForWPCGMReady(fullConfig)
 						// Don't pass gmID upfront: creating the temp config triggers
 						// operator reconciliation which may restart the GM daemon
 						// asynchronously, changing its clock ID. First confirm the
@@ -1046,12 +1061,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 						if fullConfig.L2Config != nil && !isExternalMaster {
 							aLabel := pkg.PtpGrandmasterNodeLabel
+							gmProfileName := pkg.PtpGrandMasterPolicyName
+							if fullConfig.PtpModeDiscovered == testconfig.TelcoGMOC || fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+								gmProfileName = pkg.PtpWPCGrandMasterPolicyName
+							}
 							var gmClockID string
 							Expect(fullConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(), "expected discovered grandmaster config")
 							gmConfigName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredGrandMasterPtpConfig).Name
 							Eventually(func() error {
 								var getErr error
-								gmClockID, getErr = ptphelper.GetClockIDMaster(gmConfigName, pkg.PtpGrandMasterPolicyName, &aLabel, nil, true)
+								gmClockID, getErr = ptphelper.GetClockIDMaster(gmConfigName, gmProfileName, &aLabel, nil, true)
 								return getErr
 							}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(BeNil(),
 								"Timeout to get grandmaster clock ID")
@@ -1192,9 +1211,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				logrus.Infof("phc2sys log matching line: %v", logMatches[len(logMatches)-1][0])
 				newSelectedInterface = logMatches[len(logMatches)-1][1]
 
-				// Verify that phc2sys switched to a different interface
 				Expect(newSelectedInterface).ToNot(Equal(selectedInterface), "phc2sys should have switched to a different interface")
-
 				By("Verifying the new selected interface " + newSelectedInterface + " is a secondary BC's slave interface")
 				if !slices.Contains(secondaryBCSlaveInterfaces, newSelectedInterface) {
 					Fail(fmt.Sprintf("Selected interface %s does not belong to the secondary boundary clock config. Secondary interfaces: %v", newSelectedInterface, secondaryBCSlaveInterfaces))
@@ -1208,7 +1225,6 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Waiting 5 seconds for the primary BC's slave interface to be selected again")
 				time.Sleep(5 * time.Second)
 
-				// Check the new interface is the primary one.
 				// On recovery, ptp4l briefly promotes the interface to MASTER before a better master
 				// is found and it transitions to SLAVE. This causes one phc2sys transition:
 				// secondary (during brief MASTER state) -> primary (on SLAVE transition).
@@ -1469,7 +1485,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			// 27324
 			It("verifies on slave", func() {
 				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-					Skip("Skipping: test not valid for WPC GM (Telco Grandmaster Clock) config")
+					Skip("Skipping: clock-under-test is a standalone TGM profile")
 				}
 				Eventually(func() string {
 					buf, _, _ := pods.ExecCommand(client.Client, false, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
@@ -1488,6 +1504,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					requireDiscoveryAfterRefresh(&fullConfig, testconfig.None)
 					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
 					Expect(err).NotTo(HaveOccurred())
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
@@ -1500,6 +1517,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				ptpPods, err = client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(), metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(ptpPods.Items)).To(BeNumerically(">", 0), "linuxptp-daemon is not deployed on cluster")
+				waitForWPCGMReady(fullConfig)
 			})
 
 			// Subscribe to PTP events and assert an event payload is delivered to
@@ -1640,6 +1658,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					By("Waiting for cloud-event-proxy to be ready")
 					Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
 						"cloud-event-proxy did not become ready after restart")
+					waitForWPCGMReady(fullConfig)
 					crashDone = true
 				})
 
@@ -1655,7 +1674,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				It("recovers clockClass via Event API after cloud-event-proxy restart", func() {
 					Expect(crashDone).To(BeTrue(), "cloud-event-proxy crash setup did not complete")
 					By(fmt.Sprintf("Verifying clockClass is %s via Event API after restart", expectedClockClassStr))
-					verifyClockClassCurrentState(int(expectedClockClass), 90*time.Second)
+					verifyClockClassCurrentState(int(expectedClockClass), pkg.TimeoutIn3Minutes)
 				})
 
 				It("recovers gm.ClockClass via PMC after cloud-event-proxy restart", func() {
@@ -2341,11 +2360,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"clock-under-test pod missing after refresh; label node with "+pkg.PtpClockUnderTestNodeLabel)
 				Expect(fullConfig.DiscoveredClockUnderTestPtpConfig).NotTo(BeNil(),
 					"clock-under-test PtpConfig missing after refresh")
+				if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
+					waitForWPCGMReady(fullConfig)
+				}
 			})
 
 			It("The slave node network interface is taken down and up", func() {
 				if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
-					Skip("test not valid for WPC GM config")
+					Skip("test not valid for standalone TGM config")
 				}
 				if fullConfig.PtpModeDesired == testconfig.DualFollowerClock {
 					Skip("Test not valid for dual follower scenario")
@@ -2660,17 +2682,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		Context("WPC GM Verification Tests", func() {
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
+				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM verification expects gpsd/hardware GNSS; gnss-sim PTY is in use")
 				}
 				By("Refreshing configuration", func() {
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					requireDiscoveryAfterRefresh(&fullConfig, testconfig.TelcoGrandMasterClock)
 					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
 					Expect(err).NotTo(HaveOccurred())
 					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
-
 				})
-
 			})
 			It("is verifying WPC GM state based on logs", func() {
 
@@ -2755,7 +2779,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			})
 			It("is verifying WPC GM state based on metrics", func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
 				}
 				By("checking GM required processes status", func() {
 					/*
@@ -2825,7 +2849,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 			It("gpsd and gpspipe restart quickly updates process status metrics", func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
 				}
 
 				By("Ensuring gpsd and gpspipe are running (process_status == 1)")
@@ -2982,8 +3006,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		Context("WPC GM GNSS signal loss tests", func() {
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("ubxtool/GNSS loss tests require hardware GNSS; gnss-sim PTY is in use")
+				}
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+				requireDiscoveryAfterRefresh(&fullConfig, testconfig.TelcoGrandMasterClock)
 			})
 			/*
 				Step | Action
@@ -3044,8 +3073,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		Context("WPC GM ts2phc termination tests", func() {
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("ts2phc termination GM event tests target hardware GNSS path")
+				}
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+				requireDiscoveryAfterRefresh(&fullConfig, testconfig.TelcoGrandMasterClock)
 			})
 
 			It("Continuously terminating ts2phc triggers FREERUN event and then recovers to LOCKED", func() {
@@ -3109,7 +3143,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		Context("WPC GM Events verification (V1)", func() {
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
+				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM v1 events expect hardware GNSS")
 				}
 			})
 		})
@@ -3117,8 +3154,13 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		Context("WPC GM Events verification (V2)", func() {
 			BeforeEach(func() {
 				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
-					Skip("test valid only for GM test config")
+					Skip("test valid only for standalone TGM config")
 				}
+				if ptphelper.UseGnssSimulation() {
+					Skip("WPC GM v2 GNSS reboot events expect ubxtool/hardware GNSS (use Simulated T-GM events when gnss-sim is active)")
+				}
+				fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+				requireDiscoveryAfterRefresh(&fullConfig, testconfig.TelcoGrandMasterClock)
 
 				// Set up consumer pod for event monitoring
 				if fullConfig.DiscoveredClockUnderTestPod != nil {
@@ -3126,10 +3168,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					if nodeName != "" {
 						logrus.Info("Deploy consumer app for testing event API v2")
 						err := event.CreateConsumerApp(nodeName)
-						if err != nil {
-							logrus.Errorf("PTP events are not available due to consumer app creation error err=%s", err)
-							Skip("Consumer app setup failed")
-						}
+						Expect(err).ToNot(HaveOccurred(), "Consumer app setup failed")
 
 						// Wait a bit more for the consumer pod to be fully ready
 						logrus.Info("Waiting for consumer pod to be fully ready...")
@@ -3211,6 +3250,582 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Verifying PTP state Locked")
 				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.LOCKED)
 
+			})
+		})
+
+		Context("Simulated T-GM Verification Tests", func() {
+			BeforeEach(func() {
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
+					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
+				}
+				By("Refreshing configuration", func() {
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					requireDiscoveryAfterRefresh(&fullConfig, testconfig.TelcoGrandMasterClock)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+				})
+			})
+
+			It("is verifying simulated T-GM process status (without gpsd/gpspipe)", func() {
+				By("checking that gnss-sim is healthy", func() {
+					Eventually(func() bool {
+						return ptphelper.GNSSSimIsHealthy()
+					}, pkg.TimeoutIn1Minute, 5*time.Second).Should(BeTrue(),
+						"gnss-sim health check failed")
+				})
+
+				gmPod := getGMPod()
+
+				By("checking sim GM required processes status (ts2phc, ptp4l, phc2sys)", func() {
+					processesArr := [...]string{"ts2phc", "ptp4l", "phc2sys"}
+					for _, val := range processesArr {
+						logMatches, err := pods.GetPodLogsRegex(openshiftPtpNamespace, gmPod.Name, pkg.PtpContainerName, val, true, pkg.TimeoutIn1Minute)
+						Expect(err).To(BeNil(), fmt.Sprintf("Error encountered looking for %s", val))
+						Expect(logMatches).ToNot(BeEmpty(), fmt.Sprintf("Expected %s to be running for simulated GM", val))
+					}
+				})
+
+				By("checking sim GM process metrics (skip gpsd/gpspipe; phc2sys -r is required)", func() {
+					Eventually(func() string {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						return buf.String()
+					}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring(metrics.OpenshiftPtpProcessStatus),
+						"Process status metrics are not detected")
+
+					Eventually(func() bool {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						ret, err := processRunningSimGM(buf.String(), "1")
+						if err != nil {
+							return false
+						}
+						return ret["ptp4l"] && ret["ts2phc"] && ret["phc2sys"]
+					}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(BeTrue(),
+						"Expected ptp4l, ts2phc, and phc2sys to report process_status 1 for simulated GM")
+				})
+
+				By("checking CLOCK_REALTIME is LOCKED via phc2sys -r", func() {
+					nodeName := gmPod.Spec.NodeName
+					Eventually(func() error {
+						return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+						"simulated T-GM CLOCK_REALTIME (phc2sys -r) must reach LOCKED")
+				})
+			})
+
+			It("is verifying simulated T-GM clock state via metrics", func() {
+				gmPod := getGMPod()
+
+				By("checking clock class state is locked (CC6)", func() {
+					Eventually(func() bool {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+					}, pkg.TimeoutIn5Minutes, pkg.Timeout1Seconds).Should(BeTrue(),
+						"Expected GM ptp4l clock class to eventually be 6 (LOCKED)")
+				})
+
+				By("checking PTP NMEA status for ts2phc", func() {
+					nmeaStatusPattern := `openshift_ptp_nmea_status\{(?:from="[^"]+",)?iface="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
+					nmeaStatusRe := regexp.MustCompile(nmeaStatusPattern)
+					Eventually(func() bool {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+						for scanner.Scan() {
+							if matches := nmeaStatusRe.FindStringSubmatch(scanner.Text()); matches != nil {
+								if strings.TrimSpace(matches[3]) == "ts2phc" && strings.TrimSpace(matches[4]) == "1" {
+									return true
+								}
+							}
+						}
+						return false
+					}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeTrue(),
+						"Expected ts2phc nmea_status 1 on GM pod")
+				})
+
+				By("checking GM clock state locked via metrics", func() {
+					Eventually(func() bool {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						ret, err := clockStateByProcesses(buf.String(), "1")
+						if err != nil {
+							return false
+						}
+						return ret["GM"]
+					}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeTrue(),
+						"Expected GM clock state to be 1 (LOCKED)")
+				})
+			})
+
+			It("is verifying simulated T-GM DPLL state via gnss-sim API", func() {
+				By("checking DPLL is in LOCKED state via gnss-sim API", func() {
+					Eventually(func() string {
+						dpllState, err := ptphelper.GNSSSimGetDPLLState()
+						if err != nil {
+							logrus.Warnf("gnss-sim DPLL query failed: %v", err)
+							return ""
+						}
+						return dpllState.State
+					}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(Equal("LOCKED"),
+						"Expected gnss-sim DPLL to be in LOCKED state")
+				})
+
+				By("verifying DPLL clock class is 6 via gnss-sim API", func() {
+					dpllState, err := ptphelper.GNSSSimGetDPLLState()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(dpllState.ClockClass).To(Equal(6), "Expected gnss-sim DPLL clock class 6")
+					Expect(dpllState.FrequencyStatus).To(Equal(3), "Expected gnss-sim DPLL frequency_status 3 (LOCKED_HO_ACQ)")
+					Expect(dpllState.PhaseStatus).To(Equal(3), "Expected gnss-sim DPLL phase_status 3 (LOCKED_HO_ACQ)")
+					Expect(dpllState.PPSStatus).To(Equal(1), "Expected gnss-sim DPLL pps_status 1")
+				})
+			})
+		})
+
+		Context("Simulated T-GM GNSS signal loss tests", func() {
+			BeforeEach(func() {
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
+					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
+				}
+				waitForWPCGMReady(fullConfig)
+			})
+
+			It("Testing simulated T-GM holdover through GNSS signal loss via API", func() {
+				gmPod := getGMPod()
+
+				waitForGMClockClass := func(expected string) {
+					Eventually(func() bool {
+						buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+						return checkClockClassInMetrics(buf.String(), expected)
+					}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(BeTrue(),
+						fmt.Sprintf("Expected GM clock class to reach %s", expected))
+				}
+
+				By("Ensuring initial stability: clock class 6, DPLL LOCKED", func() {
+					waitForGMClockClass(strconv.Itoa(int(fbprotocol.ClockClass6)))
+					Eventually(func() string {
+						dpll, err := ptphelper.GNSSSimGetDPLLState()
+						if err != nil {
+							return ""
+						}
+						return dpll.State
+					}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(Equal("LOCKED"))
+				})
+
+				By("Triggering GNSS signal loss via gnss-sim API", func() {
+					err := ptphelper.GNSSSimSignalLoss()
+					Expect(err).ToNot(HaveOccurred(), "failed to trigger signal loss on gnss-sim")
+				})
+				defer func() {
+					_ = ptphelper.GNSSSimSignalRestore()
+				}()
+
+				By("Waiting for DPLL to transition to HOLDOVER via gnss-sim API", func() {
+					Eventually(func() string {
+						dpll, err := ptphelper.GNSSSimGetDPLLState()
+						if err != nil {
+							return ""
+						}
+						return dpll.State
+					}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(Equal("HOLDOVER"),
+						"Expected DPLL to transition to HOLDOVER after signal loss")
+				})
+
+				By("Verifying DPLL clock class transitions to 7 (holdover in-spec)", func() {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(dpll.ClockClass).To(Equal(7))
+				})
+
+				By("Waiting for clock class 7 in Prometheus metrics", func() {
+					waitForGMClockClass(strconv.Itoa(int(fbprotocol.ClockClass7)))
+				})
+
+				By("Waiting for DPLL to transition to FREERUN after holdover timeout", func() {
+					Eventually(func() string {
+						dpll, err := ptphelper.GNSSSimGetDPLLState()
+						if err != nil {
+							return ""
+						}
+						return dpll.State
+					}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(Equal("FREERUN"),
+						"Expected DPLL to transition to FREERUN after holdover timeout")
+				})
+
+				By("Verifying DPLL clock class transitions to 248 (freerun)", func() {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(dpll.ClockClass).To(Equal(248))
+				})
+
+				By("Restoring GNSS signal via gnss-sim API", func() {
+					err := ptphelper.GNSSSimSignalRestore()
+					Expect(err).ToNot(HaveOccurred(), "failed to restore signal on gnss-sim")
+				})
+
+				By("Waiting for DPLL to recover to LOCKED", func() {
+					Eventually(func() string {
+						dpll, err := ptphelper.GNSSSimGetDPLLState()
+						if err != nil {
+							return ""
+						}
+						return dpll.State
+					}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(Equal("LOCKED"),
+						"Expected DPLL to recover to LOCKED after signal restore")
+				})
+
+				By("Verifying clock class returns to 6", func() {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(dpll.ClockClass).To(Equal(6))
+				})
+
+				By("Waiting for clock class 6 in Prometheus metrics", func() {
+					waitForGMClockClass(strconv.Itoa(int(fbprotocol.ClockClass6)))
+				})
+			})
+		})
+
+		Context("Simulated T-GM Events verification (V2)", func() {
+			BeforeEach(func() {
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				if fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
+					Skip("simulated T-GM config was not discovered as TelcoGrandMasterClock")
+				}
+				waitForWPCGMReady(fullConfig)
+
+				gmPod := getGMPod()
+				nodeName := gmPod.Spec.NodeName
+				if nodeName != "" {
+					logrus.Info("Deploy consumer app for simulated T-GM event API v2")
+					err := event.CreateConsumerApp(nodeName)
+					Expect(err).ToNot(HaveOccurred(), "Consumer app setup failed")
+					time.Sleep(10 * time.Second)
+					event.InitPubSub()
+				}
+			})
+
+			AfterEach(func() {
+				DeferCleanup(func() {
+					err := event.DeleteConsumerNamespace()
+					if err != nil {
+						logrus.Debugf("Deleting consumer namespace failed: err=%s", err)
+					}
+				})
+				if event.PubSub != nil {
+					event.PubSub.Close()
+				}
+			})
+
+			It("Testing simulated T-GM events on GNSS loss and recovery", func() {
+				By("Ensuring initial LOCKED state via clock class 6")
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
+
+				const incomingEventsBuffer = 100
+				subs, cleanup := event.SubscribeToGMChangeEvents(incomingEventsBuffer, true, 60*time.Second)
+				defer cleanup()
+
+				term, err := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term) }()
+				Expect(err).ToNot(HaveOccurred(), "could not start listening to events")
+
+				By("Triggering GNSS signal loss via gnss-sim API")
+				simErr := ptphelper.GNSSSimSignalLoss()
+				Expect(simErr).ToNot(HaveOccurred())
+				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
+
+				By("Waiting for GM clock class to degrade in metrics before collecting events")
+				checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass7)), pkg.TimeoutIn5Minutes)
+
+				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
+				fmt.Fprintf(GinkgoWriter, "Sim T-GM loss events: %v\n", events)
+
+				By("Verifying ClockClass transitions to 7 (holdover)")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass7))
+				By("Verifying PTP state HOLDOVER")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.HOLDOVER)
+				stopMonitor(term)
+
+				term2, err2 := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term2) }()
+				Expect(err2).ToNot(HaveOccurred())
+
+				By("Restoring GNSS signal via gnss-sim API")
+				simErr = ptphelper.GNSSSimSignalRestore()
+				Expect(simErr).ToNot(HaveOccurred())
+
+				By("Waiting for GNSS recovery via clock class metrics")
+				waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
+
+				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
+				fmt.Fprintf(GinkgoWriter, "Sim T-GM recovery events: %v\n", events)
+
+				By("Verifying GNSS state Synchronized")
+				verifyEvent(events[ptpEvent.GnssStateChange], ptpEvent.SYNCHRONIZED)
+				By("Verifying ClockClass returns to 6")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass6))
+				By("Verifying PTP state Locked")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.LOCKED)
+			})
+		})
+
+		// TGMOC dedicated tests removed: OC tests run for TGMOC since the
+		// clock-under-test is the OC slave (swapped in testconfig.go).
+
+		// TGMBC "Verifies WPC T-GM and downstream BC reach Locked clock class"
+		// removed: now covered by Simulated T-GM Verification Tests (GM) and
+		// "Downstream slave can sync to BC master" (BC).
+		Context("TGMBC - Cascading holdover", func() {
+			BeforeEach(func() {
+				if fullConfig.PtpModeDesired != testconfig.TelcoGMBC {
+					Skip("test valid only for TGMBC mode")
+				}
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				By("Refreshing configuration", func() {
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+				})
+				waitForWPCGMReady(fullConfig)
+			})
+
+			It("Verifies cascading holdover on GNSS signal loss", func() {
+				gmPod := getGMPod()
+
+				bcPtpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+				Expect(bcPtpConfig).ToNot(BeNil(), "BC PtpConfig was not discovered")
+				bcPod, err := ptphelper.GetPTPPodWithPTPConfig(bcPtpConfig)
+				Expect(err).ToNot(HaveOccurred())
+				fullConfig.DiscoveredClockUnderTestPod = bcPod
+
+				By("ensuring initial GM clock class is 6 (LOCKED)")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "6")
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue())
+
+				By("ensuring initial BC parent gm.ClockClass is 6 (LOCKED)")
+				Eventually(func() int {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					if err != nil {
+						return -1
+					}
+					return cc
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(int(fbprotocol.ClockClass6)))
+
+				By("triggering GNSS signal loss via gnss-sim API")
+				simErr := ptphelper.GNSSSimSignalLoss()
+				Expect(simErr).ToNot(HaveOccurred())
+				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
+
+				By("waiting for GM DPLL to transition to HOLDOVER after GNSS loss")
+				Eventually(func() string {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					if err != nil {
+						return ""
+					}
+					return dpll.State
+				}, 5*time.Minute, 2*time.Second).Should(Equal("HOLDOVER"),
+					"Expected GM DPLL to enter HOLDOVER after GNSS signal loss")
+
+				By("waiting for GM clock class to reach CC7 (holdover) in metrics")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "7")
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected GM clock class to reach CC7 (holdover) in Prometheus metrics after DPLL HOLDOVER")
+
+				By("waiting for BC parent gm.ClockClass to cascade to CC7 (holdover)")
+				Eventually(func() bool {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					return err == nil && cc == int(fbprotocol.ClockClass7)
+				}, pkg.TimeoutIn10Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected BC parent gm.ClockClass to cascade to CC7 after upstream GM GNSS loss")
+
+				By("restoring GNSS signal via gnss-sim API")
+				simErr = ptphelper.GNSSSimSignalRestore()
+				Expect(simErr).ToNot(HaveOccurred())
+
+				By("waiting for GM DPLL to recover to LOCKED")
+				Eventually(func() string {
+					dpll, err := ptphelper.GNSSSimGetDPLLState()
+					if err != nil {
+						return ""
+					}
+					return dpll.State
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal("LOCKED"),
+					"Expected GM DPLL to recover to LOCKED after signal restore")
+
+				By("waiting for GM clock class to recover to Locked (6)")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "6")
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected GM clock class to recover to 6 before asserting BC cascade-recover")
+
+				By("waiting for BC parent gm.ClockClass to cascade-recover to Locked (6)")
+				Eventually(func() int {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					if err != nil {
+						return -1
+					}
+					return cc
+				}, pkg.TimeoutIn10Minutes, 2*time.Second).Should(Equal(int(fbprotocol.ClockClass6)),
+					"Expected BC parent gm.ClockClass to cascade-recover to 6")
+
+				logrus.Info("Successfully verified T-GM -> BC cascading holdover and recovery")
+			})
+		})
+
+		Context("TGMBC - Events verification (V2)", func() {
+			BeforeEach(func() {
+				if fullConfig.PtpModeDesired != testconfig.TelcoGMBC {
+					Skip("test valid only for TGMBC mode")
+				}
+				if !ptphelper.IsGnssSimulatedCI() {
+					Skip("test valid only when gnss-sim PTY is used (hardware GNSS not present on cluster)")
+				}
+				By("Refreshing configuration", func() {
+					ptphelper.WaitForPtpDaemonToExist()
+					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
+					Expect(err).NotTo(HaveOccurred())
+					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
+				})
+				waitForWPCGMReady(fullConfig)
+
+				gmPod := getGMPod()
+				nodeName := gmPod.Spec.NodeName
+				if nodeName != "" {
+					logrus.Info("Deploy consumer app for TGMBC event API v2")
+					err := event.CreateConsumerApp(nodeName)
+					Expect(err).ToNot(HaveOccurred(), "Consumer app setup failed")
+					time.Sleep(10 * time.Second)
+					event.InitPubSub()
+				}
+			})
+
+			AfterEach(func() {
+				DeferCleanup(func() {
+					err := event.DeleteConsumerNamespace()
+					if err != nil {
+						logrus.Debugf("Deleting consumer namespace failed: err=%s", err)
+					}
+				})
+				if event.PubSub != nil {
+					event.PubSub.Close()
+				}
+			})
+
+			It("Verifies cascading events on GNSS loss and recovery", func() {
+				gmPod := getGMPod()
+
+				bcPtpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+				Expect(bcPtpConfig).ToNot(BeNil(), "BC PtpConfig was not discovered")
+				bcPod, err := ptphelper.GetPTPPodWithPTPConfig(bcPtpConfig)
+				Expect(err).ToNot(HaveOccurred())
+				fullConfig.DiscoveredClockUnderTestPod = bcPod
+
+				By("Ensuring initial LOCKED state: GM metrics CC6 and BC parent gm.ClockClass 6")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected GM clock class 6 before event test")
+				Eventually(func() int {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					if err != nil {
+						return -1
+					}
+					return cc
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(Equal(int(fbprotocol.ClockClass6)),
+					"Expected BC parent gm.ClockClass 6 before event test")
+
+				const incomingEventsBuffer = 100
+				subs, cleanup := event.SubscribeToGMChangeEvents(incomingEventsBuffer, true, 60*time.Second)
+				defer cleanup()
+
+				term, err := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term) }()
+				Expect(err).ToNot(HaveOccurred(), "could not start listening to events")
+
+				By("Triggering GNSS signal loss via gnss-sim API")
+				simErr := ptphelper.GNSSSimSignalLoss()
+				Expect(simErr).ToNot(HaveOccurred())
+				defer func() { _ = ptphelper.GNSSSimSignalRestore() }()
+
+				// Assert holdover cascade immediately. A long event-collection wait
+				// after this lets gnss-sim leave HOLDOVER (CC7) for FREERUN (CC248),
+				// so a later CC7-only PMC check would miss the holdover window.
+				By("Waiting for GM clock class to reach CC7 (holdover) in metrics")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), "7")
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected GM clock class to reach CC7 (holdover) before collecting events")
+
+				By("Verifying BC parent gm.ClockClass cascades to CC7 via PMC while still in holdover")
+				Eventually(func() bool {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					return err == nil && cc == int(fbprotocol.ClockClass7)
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected BC parent gm.ClockClass to cascade to CC7 after GM holdover")
+
+				events := getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
+				fmt.Fprintf(GinkgoWriter, "TGMBC GM loss events: %v\n", events)
+
+				By("Verifying GM ClockClass transitions to 7 (holdover)")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass7))
+				By("Verifying GM PTP state HOLDOVER")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.HOLDOVER)
+				stopMonitor(term)
+
+				term2, err2 := event.MonitorPodLogsRegex()
+				defer func() { stopMonitor(term2) }()
+				Expect(err2).ToNot(HaveOccurred())
+
+				By("Restoring GNSS signal via gnss-sim API")
+				simErr = ptphelper.GNSSSimSignalRestore()
+				Expect(simErr).ToNot(HaveOccurred())
+
+				By("Waiting for GM clock class recovery to CC6")
+				Eventually(func() bool {
+					buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+					return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+				}, pkg.TimeoutIn5Minutes, 2*time.Second).Should(BeTrue(),
+					"Expected GM clock class to recover to 6 before collecting recovery events")
+
+				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 30*time.Second)
+				fmt.Fprintf(GinkgoWriter, "TGMBC GM recovery events: %v\n", events)
+
+				By("Verifying GM GNSS state Synchronized")
+				verifyEvent(events[ptpEvent.GnssStateChange], ptpEvent.SYNCHRONIZED)
+				By("Verifying GM ClockClass returns to 6")
+				verifyMetric(events[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass6))
+				By("Verifying GM PTP state Locked")
+				verifyEvent(events[ptpEvent.PtpStateChange], ptpEvent.LOCKED)
+
+				By("Verifying BC parent gm.ClockClass cascades back to CC6 via PMC")
+				Eventually(func() int {
+					cc, err := ptptesthelper.GetClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config")
+					if err != nil {
+						return -1
+					}
+					return cc
+				}, pkg.TimeoutIn10Minutes, 2*time.Second).Should(Equal(int(fbprotocol.ClockClass6)),
+					"Expected BC parent gm.ClockClass to cascade-recover to CC6 after GM recovery event")
+
+				logrus.Info("Successfully verified TGMBC cascading events on GNSS loss and recovery")
 			})
 		})
 
@@ -3761,8 +4376,182 @@ func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkPTPNMEAStatus(fullConfig, "1")
 }
 
-func testCaseEnabled(testCase TestCase) bool {
+// checkStabilityOfSimGMUsingMetrics checks simulated T-GM stability
+// using only the processes and metrics available in the simulated environment.
+func checkStabilityOfSimGMUsingMetrics(fullConfig testconfig.TestConfig) {
+	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
+	checkClockState(fullConfig, "1")
+	checkPTPNMEAStatus(fullConfig, "1")
+	if fullConfig.DiscoveredClockUnderTestPod != nil {
+		nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+		Eventually(func() error {
+			return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+		}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+			"simulated T-GM CLOCK_REALTIME (phc2sys -r) must reach LOCKED")
+	}
+}
 
+func verifyEventsV1(expectedState string) {
+	//TODO
+	switch expectedState {
+	case "LOCKED":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state LOCKED
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state LOCKED
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status LOCKED
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class LOCKED
+		*/
+	case "HOLDOVER":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state HOLDOVER
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state HOLDOVER
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status HOLDOVER
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class HOLDOVER
+
+		*/
+
+	case "FREERUN":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state FREERUN
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state FREERUN
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status FREERUN
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class FREERUN
+
+		*/
+
+	}
+
+}
+
+func verifyEventsV2(expectedState string) {
+	//TODO
+	switch expectedState {
+	case "LOCKED":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state LOCKED
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state LOCKED
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status LOCKED
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class LOCKED
+		*/
+	case "HOLDOVER":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state HOLDOVER
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state HOLDOVER
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status HOLDOVER
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class HOLDOVER
+
+		*/
+
+	case "FREERUN":
+		/*
+			7.2.3.1 Synchronization State (implemented)
+			event.sync.sync-status.synchronization-state-change
+			/sync/sync-status/sync-state FREERUN
+
+			7.2.3.3 PTP Synchronization State (implemented)
+			event.sync.ptp-status.ptp-state-change
+			/sync/ptp-status/lock-state FREERUN
+
+			7.2.3.6 GNSS-Sync-State (implemented)
+			event.sync.gnss-status.gnss-state-change
+			/sync/gnss-status/gnss-sync-status FREERUN
+
+			7.2.3.8 OS Clock Sync-State (implemented)
+			event.sync.sync-status.os-clock-sync-state-change
+			/sync/sync-status/os-clock-sync-state
+
+
+			7.2.3.10 PTP Clock Class Change (implemented)
+			event.sync.ptp-status.ptp-clock-class-change
+			/sync/ptp-status/clock-class FREERUN
+
+		*/
+
+	}
+
+}
+
+func testCaseEnabled(testCase TestCase) bool {
 	enabledTests, isSet := os.LookupEnv("ENABLE_TEST_CASE")
 
 	if isSet {
@@ -3810,6 +4599,36 @@ func processRunning(input string, state string) (map[string]bool, error) {
 		return nil, err
 	}
 	return processRunning, nil
+}
+
+// processRunningSimGM is like processRunning but only checks processes that
+// exist in the simulated T-GM environment (no gpsd or gpspipe — gnss-sim
+// owns /dev/gnssN). phc2sys -r still runs so CLOCK_REALTIME is disciplined.
+func processRunningSimGM(input string, state string) (map[string]bool, error) {
+	processStatusPattern := `openshift_ptp_process_status\{config="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
+	processStatusRe := regexp.MustCompile(processStatusPattern)
+
+	result := map[string]bool{"ptp4l": false, "ts2phc": false, "phc2sys": false}
+
+	scanner := bufio.NewScanner(strings.NewReader(input))
+	timeout := 10 * time.Second
+	start := time.Now()
+	for scanner.Scan() {
+		if time.Since(start) > timeout {
+			fmt.Println("Timed out when reading metrics")
+			break
+		}
+		line := scanner.Text()
+		if matches := processStatusRe.FindStringSubmatch(line); matches != nil {
+			if _, ok := result[matches[3]]; ok && matches[4] == state {
+				result[matches[3]] = true
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func clockStateByProcesses(input string, state string) (map[string]bool, error) {
@@ -3921,7 +4740,7 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		}
 		return buf.String()
 	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(ContainSubstring("phc2sys"),
-		"phc2ys process status not detected")
+		"phc2sys process status not detected")
 
 	time.Sleep(10 * time.Second)
 	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
@@ -4144,12 +4963,32 @@ func getProcessStatusByProcess(metricsText, process string) (string, bool) {
 // ensureGMPtpConfigRestored is a DeferCleanup helper that recreates the GM PtpConfig
 // if it was deleted during a test, ensuring subsequent tests have a valid configuration.
 func ensureGMPtpConfigRestored() {
+	if testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig == nil {
+		logrus.Warn("ensureGMPtpConfigRestored: DiscoveredGrandMasterPtpConfig is nil; cannot recreate GM PtpConfig")
+		return
+	}
 	tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
 	tempPtpConfig.SetResourceVersion("")
 	_, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
 		context.Background(), tempPtpConfig, metav1.CreateOptions{})
 	if err != nil && !kerrors.IsAlreadyExists(err) {
 		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// requireDiscoveryAfterRefresh fails when a forced rediscovery lost PtpConfigs or
+// the clock-under-test pod (e.g. wiped mid-run). Soft Skip hid those regressions.
+func requireDiscoveryAfterRefresh(cfg *testconfig.TestConfig, wantMode testconfig.PTPMode) {
+	Expect(cfg.Status).To(Equal(testconfig.DiscoverySuccessStatus),
+		fmt.Sprintf("PTP discovery failed after refresh (status=%s, mode=%s); "+
+			"PtpConfigs may have been wiped by a concurrent suite",
+			cfg.Status, cfg.PtpModeDiscovered))
+	Expect(cfg.DiscoveredClockUnderTestPod).NotTo(BeNil(),
+		"DiscoveredClockUnderTestPod is nil after refresh")
+	if wantMode != testconfig.None {
+		Expect(cfg.PtpModeDiscovered).To(Equal(wantMode),
+			fmt.Sprintf("discovered mode %s != required %s after refresh",
+				cfg.PtpModeDiscovered, wantMode))
 	}
 }
 
@@ -4427,6 +5266,95 @@ func checkClockClassStateReturnBool(fullConfig testconfig.TestConfig, expectedSt
 	return false
 }
 
+// anyClockClassDifferent returns true when at least one ptp4l instance on the
+// clock-under-test pod reports a clock class other than excludedClass. This is
+// needed for TGMBC where the pod runs two ptp4l processes (GM + BC); checking
+// !checkClockClassStateReturnBool would fail because the GM always reports 6.
+func anyClockClassDifferent(fullConfig testconfig.TestConfig, excludedClass string) bool {
+	buf, _, _ := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if matches := clockClassRe.FindStringSubmatch(line); matches != nil {
+			process := matches[2]
+			class := matches[3]
+			if strings.TrimSpace(process) == "ptp4l" && strings.TrimSpace(class) != excludedClass {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// waitForWPCGMReady blocks until the WPC T-GM advertises clock class 6 and
+// CLOCK_REALTIME is LOCKED. The WPC GM does not hardcode clockClass; it
+// converges dynamically through the GNSS→ts2phc→DPLL→PMC pipeline.
+// Downstream OC/BC profiles that still use the default clock_class_threshold
+// of 7 reject GMs with class > 7, so we must wait before any slave sync
+// assertion. (TGMBC BC configs raise the threshold so cascading holdover can
+// observe CC7.)
+// The function is a no-op when there is no WPC GM in the topology.
+func waitForWPCGMReady(fullConfig testconfig.TestConfig) {
+	if fullConfig.PtpModeDiscovered != testconfig.TelcoGMOC &&
+		fullConfig.PtpModeDiscovered != testconfig.TelcoGMBC &&
+		fullConfig.PtpModeDiscovered != testconfig.TelcoGrandMasterClock {
+		return
+	}
+	By("Waiting for WPC T-GM to reach clock class 6 (LOCKED)")
+	gmPod := getGMPod()
+	Eventually(func() bool {
+		buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		return checkClockClassInMetrics(buf.String(), strconv.Itoa(int(fbprotocol.ClockClass6)))
+	}, pkg.TimeoutIn10Minutes, 5*time.Second).Should(BeTrue(),
+		"WPC T-GM did not reach clock class 6 — downstream clocks cannot leave LISTENING state")
+	By("Waiting for WPC T-GM CLOCK_REALTIME (phc2sys -r) to reach LOCKED")
+	nodeName := gmPod.Spec.NodeName
+	Eventually(func() error {
+		return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
+	}, pkg.TimeoutIn5Minutes, 5*time.Second).Should(Succeed(),
+		"WPC T-GM CLOCK_REALTIME did not reach LOCKED — keep phc2sys -r (VRT per-node CLOCK_REALTIME)")
+}
+
+// getGMPod returns the linuxptp-daemon pod running on the node labeled
+// ptp/test-grandmaster. Used by tests that need the GM pod directly
+// (e.g. TGMBC cascading holdover) regardless of which clock is under test.
+func getGMPod() *v1core.Pod {
+	nodeList, err := client.Client.Nodes().List(context.Background(),
+		metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=", pkg.PtpGrandmasterNodeLabel)})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "failed to list nodes with GM label")
+	ExpectWithOffset(1, nodeList.Items).ToNot(BeEmpty(), "no node with ptp/test-grandmaster label found")
+	gmNodeName := nodeList.Items[0].Name
+
+	ptpPods, err := client.Client.CoreV1().Pods(pkg.PtpLinuxDaemonNamespace).List(context.Background(),
+		metav1.ListOptions{LabelSelector: "app=linuxptp-daemon"})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	for i := range ptpPods.Items {
+		if ptpPods.Items[i].Spec.NodeName == gmNodeName {
+			return &ptpPods.Items[i]
+		}
+	}
+	Fail(fmt.Sprintf("no linuxptp-daemon pod found on GM node %s", gmNodeName))
+	return nil
+}
+
+// checkClockClassInMetrics scans raw metrics output for ptp4l or ts2phc clock
+// class matching expectedState. T-GM often publishes the GNSS-driven class on
+// ts2phc first; ptp4l follows via PMC.
+func checkClockClassInMetrics(metricsOutput string, expectedState string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(metricsOutput))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if matches := clockClassRe.FindStringSubmatch(line); matches != nil {
+			process := strings.TrimSpace(matches[2])
+			class := strings.TrimSpace(matches[3])
+			if (process == "ptp4l" || process == "ts2phc") && class == expectedState {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EventResult holds a parsed event
 type EventResult struct {
 	Type   ptpEvent.EventType
@@ -4443,15 +5371,18 @@ func processEvent(eventType ptpEvent.EventType, ev exports.StoredEvent) (*EventR
 	return &EventResult{Type: eventType, Values: values}, true
 }
 
-// getEvents listens and aggregates events into a map until stopChan is closed
+// getEvents listens and collects all events per type. It always waits for
+// the full timeout so that rapid state transitions (e.g. HOLDOVER→FREERUN
+// within 5s) are captured rather than overwritten. All events are kept so
+// verification can check whether a particular state was ever observed.
 func getGMEvents(
 	gnssEventChan <-chan exports.StoredEvent,
 	ccEventChan <-chan exports.StoredEvent,
 	lsEventChan <-chan exports.StoredEvent,
 	timeout time.Duration,
-) map[ptpEvent.EventType]exports.StoredEventValues {
+) map[ptpEvent.EventType][]exports.StoredEventValues {
 
-	results := make(map[ptpEvent.EventType]exports.StoredEventValues)
+	results := make(map[ptpEvent.EventType][]exports.StoredEventValues)
 	timer := time.NewTimer(timeout)
 
 	for {
@@ -4460,45 +5391,89 @@ func getGMEvents(
 			return results
 		case ev := <-gnssEventChan:
 			if res, ok := processEvent(ptpEvent.GnssStateChange, ev); ok {
-				results[res.Type] = res.Values
 				fmt.Fprintf(GinkgoWriter, "GnssStateChange Event recieved  %v, ", res.Values)
+				results[res.Type] = append(results[res.Type], res.Values)
 			}
 		case ev := <-ccEventChan:
 			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
-				results[res.Type] = res.Values
 				fmt.Fprintf(GinkgoWriter, "PtpClockClassChange Event recieved  %v, ", res.Values)
+				results[res.Type] = append(results[res.Type], res.Values)
 			}
 		case ev := <-lsEventChan:
 			if res, ok := processEvent(ptpEvent.PtpStateChange, ev); ok {
-				results[res.Type] = res.Values
 				fmt.Fprintf(GinkgoWriter, "PtpStateChange Event recieved  %v, ", res.Values)
+				results[res.Type] = append(results[res.Type], res.Values)
 			}
 		}
 	}
 }
 
-// verifyEvent looks for a particular state (string) inside a slice of StoredEventValues
-func verifyEvent(events exports.StoredEventValues, expectedState ptpEvent.SyncState) {
-	found := false
-	if stateVal, ok := event.ValueByDataType(events, "notification"); ok {
-		if state, ok := stateVal.(string); ok && state == string(expectedState) {
-			found = true
-		}
-	}
-	Expect(found).To(BeTrue(),
-		"expected state %q not found in %+v", expectedState, events)
+// eventValueMatchesString reports whether v equals want. v2 event storage
+// keys values by resource path, so callers must scan all map entries.
+func eventValueMatchesString(v interface{}, want string) bool {
+	s, ok := v.(string)
+	return ok && s == want
 }
 
-// verifyMetricThreshold checks if any event has metric within a range
-func verifyMetric(events exports.StoredEventValues, value float64) {
-	found := false
-	if metricVal, ok := event.ValueByDataType(events, "metric"); ok {
-		if metricValue, ok := metricVal.(float64); ok && metricValue == value {
-			found = true
+// eventValueMatchesFloat reports whether v equals want. JSON numbers are
+// usually float64; also accept int and numeric strings for robustness.
+func eventValueMatchesFloat(v interface{}, want float64) bool {
+	switch n := v.(type) {
+	case float64:
+		return n == want
+	case float32:
+		return float64(n) == want
+	case int:
+		return float64(n) == want
+	case int32:
+		return float64(n) == want
+	case int64:
+		return float64(n) == want
+	case json.Number:
+		f, err := n.Float64()
+		return err == nil && f == want
+	case string:
+		f, err := strconv.ParseFloat(n, 64)
+		return err == nil && f == want
+	default:
+		return false
+	}
+}
+
+// verifyEvent checks that at least one collected event carries the expected
+// notification state. Multiple events may arrive during the collection window
+// (e.g. HOLDOVER followed by FREERUN), so we scan all of them.
+// v2 createStoredEvent keys by resource path, so "notification" may be absent.
+func verifyEvent(allEvents []exports.StoredEventValues, expectedState ptpEvent.SyncState) {
+	want := string(expectedState)
+	for _, ev := range allEvents {
+		if eventValueMatchesString(ev["notification"], want) {
+			return
+		}
+		for _, v := range ev {
+			if eventValueMatchesString(v, want) {
+				return
+			}
 		}
 	}
-	Expect(found).To(BeTrue(),
-		"expected a metric [%f] but got %+v", value, events)
+	Fail(fmt.Sprintf("expected state %q not found in %d events: %+v", expectedState, len(allEvents), allEvents))
+}
+
+// verifyMetric checks that at least one collected event carries the expected
+// metric value. Scans all events since rapid transitions may produce multiple values.
+// v2 createStoredEvent keys by resource path (e.g. ".../master": 7), not "metric".
+func verifyMetric(allEvents []exports.StoredEventValues, value float64) {
+	for _, ev := range allEvents {
+		if eventValueMatchesFloat(ev["metric"], value) {
+			return
+		}
+		for _, v := range ev {
+			if eventValueMatchesFloat(v, value) {
+				return
+			}
+		}
+	}
+	Fail(fmt.Sprintf("expected metric [%f] not found in %d events: %+v", value, len(allEvents), allEvents))
 }
 
 func stopMonitor(term chan bool) {
@@ -4530,10 +5505,19 @@ func waitForStateAndCC(subs event.Subscriptions, state ptpEvent.SyncState, cc in
 			return
 		case ev := <-subs.LOCKSTATE:
 			if res, ok := processEvent(ptpEvent.PtpStateChange, ev); ok {
-				// Values are keyed by "<resource>/<dataType>"; look up by dataType.
+				want := string(state)
 				if raw, ok2 := event.ValueByDataType(res.Values, "notification"); ok2 {
-					if s, ok3 := raw.(string); ok3 && s == string(state) {
+					if s, ok3 := raw.(string); ok3 && s == want {
 						stateSeen = true
+					}
+				} else if s, ok2 := res.Values["notification"].(string); ok2 && s == want {
+					stateSeen = true
+				} else {
+					for _, val := range res.Values {
+						if s, ok2 := val.(string); ok2 && s == want {
+							stateSeen = true
+							break
+						}
 					}
 				}
 			}
@@ -4542,6 +5526,15 @@ func waitForStateAndCC(subs event.Subscriptions, state ptpEvent.SyncState, cc in
 				if raw, ok2 := event.ValueByDataType(res.Values, "metric"); ok2 {
 					if v, ok3 := raw.(float64); ok3 && int(v) == cc {
 						ccSeen = true
+					}
+				} else if v, ok2 := res.Values["metric"].(float64); ok2 && int(v) == cc {
+					ccSeen = true
+				} else {
+					for _, val := range res.Values {
+						if v, ok2 := val.(float64); ok2 && int(v) == cc {
+							ccSeen = true
+							break
+						}
 					}
 				}
 			}
@@ -4820,39 +5813,55 @@ func verifyClockClassViaEvent(evCtx bcEventContext, expectedClass int) {
 	verifyMetric(events[ptpEvent.PtpClockClassChange], float64(expectedClass))
 }
 
-// verifyClockClassCurrentState creates a fresh event subscription with pushInitial=true
-// to query the current clock class state from the Event API's getCurrentState endpoint.
-// Unlike verifyClockClassViaEvent (which drains an existing long-lived subscription),
-// this function is safe to call after disruptions such as a cloud-event-proxy restart,
-// where the previous subscription may be stale or disconnected.
+// verifyClockClassCurrentState re-queries Event API getCurrentState until any
+// clock-class value matches. After a cloud-event-proxy restart the first
+// CurrentState can be 255/248 (BC master port or unpopulated stats) while
+// ptp4l metrics already show 6; a single PushInitialEvent would accept that
+// first event and then wait for a CLOCK_CLASS_CHANGE that never comes.
 func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration) {
 	const incomingEventsBuffer = 100
+	const pushTimeout = 15 * time.Second
 	ccTopic := string(ptpEvent.PtpClockClassChange)
-
-	ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
-	defer event.PubSub.Unsubscribe(ccTopic, cID)
-
-	if err := event.PushInitialEvent(ccTopic, timeout); err != nil {
-		Fail(fmt.Sprintf("Failed to push initial clock class event: %v", err))
-	}
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	deadline := time.Now().Add(timeout)
+	want := float64(expectedClockClass)
 
 	for {
-		select {
-		case <-timer.C:
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API", expectedClockClass))
 			return
-		case ev := <-ccCh:
-			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
+		}
+		ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
+		thisPush := pushTimeout
+		if remaining < thisPush {
+			thisPush = remaining
+		}
+		_ = event.PushInitialEvent(ccTopic, thisPush)
+		matched := false
+	drain:
+		for {
+			select {
+			case ev := <-ccCh:
+				res, ok := processEvent(ptpEvent.PtpClockClassChange, ev)
+				if !ok {
+					continue
+				}
 				for _, val := range res.Values {
-					if v, ok2 := val.(float64); ok2 && int(v) == expectedClockClass {
-						fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
-						return
+					if eventValueMatchesFloat(val, want) {
+						matched = true
+						break drain
 					}
 				}
+				fmt.Fprintf(GinkgoWriter, "ClockClass CurrentState did not match %d: %v\n", expectedClockClass, res.Values)
+			default:
+				break drain
 			}
 		}
+		event.PubSub.Unsubscribe(ccTopic, cID)
+		if matched {
+			fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API\n", expectedClockClass)
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
 }
