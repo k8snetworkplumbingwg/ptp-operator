@@ -11,6 +11,14 @@ endif
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 VERSION ?= 5.0
 
+# SECURED is the opt-in switch for mTLS + OAuth on the event-publisher O-RAN v2
+# APIs. Default off, so `make deploy` behaves exactly as before (unsecured event
+# publisher). Set SECURED=true (or use the deploy-secured target) to have
+# update-env-yaml render ENABLE_EVENT_AUTH=true into config/manager/env.yaml.
+# Honored equally as a make variable or an environment variable.
+SECURED ?=
+ENABLE_EVENT_AUTH ?= $(if $(filter true,$(SECURED)),true,false)
+
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "preview,fast,stable")
 # To re-generate a bundle for other specific channels without changing the standard setup, you can:
@@ -192,6 +200,9 @@ endif
 	$(KUSTOMIZE) build config/default | $(call APPLY_CMD,deploy-default); \
 	$(KUSTOMIZE) build config/custom | $(call APPLY_CMD,deploy-custom)
 
+deploy-secured: ## Deploy with mTLS + OAuth enabled on the event-publisher APIs (convenience for SECURED=true make deploy).
+	$(MAKE) deploy SECURED=true
+
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Set FREE_RUN=1 to render to FREE_RUN_DIR instead of deleting.
 ifeq ($(FREE_RUN),1)
 	@mkdir -p "$(FREE_RUN_DIR)"
@@ -249,8 +260,8 @@ endif
 ENV_YAML_BACKUP := config/manager/env.yaml.bak
 
 .PHONY: update-env-yaml
-update-env-yaml: ## Update config/manager/env.yaml with image variables if provided (creates backup)
-	@if [ -n "$(LINUXPTP_DAEMON_IMAGE)$(KUBE_RBAC_PROXY_IMAGE)$(SIDECAR_EVENT_IMAGE)$(EVENT_PROXY_IMAGE)" ]; then \
+update-env-yaml: ## Update config/manager/env.yaml with image variables if provided (creates backup). SECURED=true also renders ENABLE_EVENT_AUTH=true.
+	@if [ -n "$(LINUXPTP_DAEMON_IMAGE)$(KUBE_RBAC_PROXY_IMAGE)$(SIDECAR_EVENT_IMAGE)$(EVENT_PROXY_IMAGE)" ] || [ "$(ENABLE_EVENT_AUTH)" = "true" ]; then \
 		cp config/manager/env.yaml $(ENV_YAML_BACKUP); \
 		if [ -n "$(LINUXPTP_DAEMON_IMAGE)" ]; then \
 			if [ "$(OS)" = "Darwin" ]; then \
@@ -279,6 +290,11 @@ update-env-yaml: ## Update config/manager/env.yaml with image variables if provi
 			else \
 				sed -i '/- name: EVENT_PROXY_IMAGE$$/,/value:/s|value: ".*"|value: "$(EVENT_PROXY_IMAGE)"|' config/manager/env.yaml; \
 			fi; \
+		fi; \
+		if [ "$(OS)" = "Darwin" ]; then \
+			sed -i '' '/- name: ENABLE_EVENT_AUTH$$/,/value:/s|value: ".*"|value: "$(ENABLE_EVENT_AUTH)"|' config/manager/env.yaml; \
+		else \
+			sed -i '/- name: ENABLE_EVENT_AUTH$$/,/value:/s|value: ".*"|value: "$(ENABLE_EVENT_AUTH)"|' config/manager/env.yaml; \
 		fi; \
 	fi
 
