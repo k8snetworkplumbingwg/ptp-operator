@@ -34,43 +34,62 @@ func InitDeletePtpConfig() {
 	logrus.Infof("DeletePtpConfig=%t", DeletePtpConfig)
 }
 
+func isSmokeMode() bool {
+	return strings.EqualFold(os.Getenv("PTP_TEST_MODE"), "smoke")
+}
+
 func TestTest(t *testing.T) {
 	logging.InitLogLevel()
 	RegisterFailHandler(Fail)
 	InitDeletePtpConfig()
 	suiteCfg, repCfg := GinkgoConfiguration()
+	if isSmokeMode() && !suiteCfg.DryRun {
+		testclient.Client = testclient.New("")
+		if testclient.Client == nil {
+			t.Fatal("failed to initialize Kubernetes client")
+		}
+	}
 	repCfg.SilenceSkips = true
 	RunSpecs(t, "PTP e2e integration tests", suiteCfg, repCfg)
 }
 
-var _ = BeforeSuite(func() {
-	logrus.Info("Executed from serial suite")
-	testclient.Client = testclient.New("")
-	Expect(testclient.Client).NotTo(BeNil())
-
-	// Initialize the pub/sub system for event handling
-	event.InitPubSub()
-
-	// Start log collection if enabled
-	suiteName := "serial"
-	if mode := os.Getenv("PTP_TEST_MODE"); mode != "" {
-		suiteName = suiteName + "_" + strings.ToLower(mode)
-	}
-	err := logging.StartLogCollection(suiteName)
-	if err != nil {
-		logrus.Errorf("Failed to start log collection: %v", err)
-	}
-})
-
-var _ = AfterSuite(func() {
-
-	if DeletePtpConfig && testconfig.GetDesiredConfig(false).PtpModeDesired != testconfig.Discovery {
-		clean.All()
+func registerNormalModeSuiteHooks() bool {
+	if isSmokeMode() {
+		return true
 	}
 
-	// Stop log collection
-	logging.StopLogCollection()
-})
+	BeforeSuite(func() {
+		logrus.Info("Executed from serial suite")
+		testclient.Client = testclient.New("")
+		Expect(testclient.Client).NotTo(BeNil())
+
+		// Initialize the pub/sub system for event handling
+		event.InitPubSub()
+
+		// Start log collection if enabled
+		suiteName := "serial"
+		if mode := os.Getenv("PTP_TEST_MODE"); mode != "" {
+			suiteName = suiteName + "_" + strings.ToLower(mode)
+		}
+		err := logging.StartLogCollection(suiteName)
+		if err != nil {
+			logrus.Errorf("Failed to start log collection: %v", err)
+		}
+	})
+
+	AfterSuite(func() {
+		if DeletePtpConfig && testconfig.GetDesiredConfig(false).PtpModeDesired != testconfig.Discovery {
+			clean.All()
+		}
+
+		// Stop log collection
+		logging.StopLogCollection()
+	})
+
+	return true
+}
+
+var _ = registerNormalModeSuiteHooks()
 
 var _ = ReportBeforeEach(func(report SpecReport) {
 	// Write test start marker to all log files
