@@ -356,21 +356,99 @@ spec:
                                         a GNSS device on the system.  If omitted,
                                         autodetects the best-available GNSS source
                                       properties:
-                                        ethernetInterface:
-                                          description: EthernetInterface defines the
-                                            GNSS device as the one attached to the
-                                            physical ethernet device name listed
-                                          type: string
+                                        ethernetDevice:
+                                          description: |-
+                                            EthernetDevice defines the Ethernet device to which the GNSS device is
+                                            attached. Name takes precedence as a direct interface lookup; when Name
+                                            is omitted, the other fields are used as matching criteria.
+                                          properties:
+                                            deviceID:
+                                              description: DeviceID is the four-digit
+                                                hexadecimal PCI device ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                            name:
+                                              description: Name is the Linux Ethernet
+                                                interface name, such as eno8703.
+                                              type: string
+                                            pciSlot:
+                                              description: PCISlot is the PCI bus
+                                                address of the Ethernet device.
+                                              pattern: ^([0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$
+                                              type: string
+                                            vendor:
+                                              description: Vendor is the four-digit
+                                                hexadecimal PCI vendor ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: At least one Ethernet device
+                                              selection criterion must be provided.
+                                            rule: has(self.name) || has(self.pciSlot)
+                                              || has(self.vendor) || has(self.deviceID)
+                                        serialDevice:
+                                          description: SerialDevice defines a platform
+                                            serial device by stable hardware identity.
+                                          properties:
+                                            acpi:
+                                              description: ACPI identifies an ACPI-enumerated
+                                                serial controller.
+                                              properties:
+                                                hid:
+                                                  description: HID is the ACPI hardware
+                                                    ID, such as INTC10EE for the HPE
+                                                    EL140 GNSS UART.
+                                                  pattern: ^[A-Za-z0-9._-]+$
+                                                  type: string
+                                                uid:
+                                                  description: UID is the optional
+                                                    Linux ACPI device instance suffix,
+                                                    such as 00.
+                                                  type: string
+                                              required:
+                                              - hid
+                                              type: object
+                                              x-kubernetes-validations:
+                                              - message: An ACPI hardware ID must
+                                                  be provided.
+                                                rule: has(self.hid)
+                                          type: object
+                                          x-kubernetes-validations:
+                                          - message: An ACPI serial device selector
+                                              must be provided.
+                                            rule: has(self.acpi)
                                         ttyDevice:
                                           description: TTYDevice defines the GNSS
                                             device by its /dev/xxxx character device
                                             path
                                           type: string
+                                        usbDevice:
+                                          description: USBDevice defines the GNSS
+                                            device by its USB vendor and product IDs.
+                                          properties:
+                                            product:
+                                              description: Product is the four-digit
+                                                hexadecimal USB product ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                            vendor:
+                                              description: Vendor is the four-digit
+                                                hexadecimal USB vendor ID.
+                                              pattern: ^[0-9a-fA-F]{4}$
+                                              type: string
+                                          required:
+                                          - product
+                                          - vendor
+                                          type: object
                                       type: object
                                       x-kubernetes-validations:
-                                      - message: Exactly one of ttyDevice or ethernetInterface
-                                          must be provided.
-                                        rule: has(self.ttyDevice) != has(self.ethernetInterface)
+                                      - message: Exactly one of ttyDevice, serialDevice,
+                                          ethernetDevice, or usbDevice must be provided.
+                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice)
+                                          ? 1 : 0) + (has(self.ethernetDevice) ? 1
+                                          : 0) + (has(self.usbDevice) ? 1 : 0) ==
+                                          1'
                                   required:
                                   - init
                                   type: object

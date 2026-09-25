@@ -217,6 +217,53 @@ func TestSourceTypeValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid gnss with USB device matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						USBDevice: &USBDevice{Vendor: "1546", Product: "01a9"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid gnss with ACPI serial device matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						SerialDevice: &SerialDevice{
+							ACPI: &ACPIDevice{HID: "INTC10EE", UID: "00"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid gnss with Ethernet device PCI matcher",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{},
+					Match: &GNSSMatcher{
+						EthernetDevice: &EthernetDevice{PCISlot: "0000:86:00.0"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid dpllPhaseLocked source",
 			source: &SourceConfig{
 				Subsystem:  "subsystem",
