@@ -46,6 +46,16 @@ const EventPublisherCABundleConfigMapName = "ptp-event-publisher-ca-bundle"
 // only Service CA-signed clients are trusted.
 const EventPublisherClientCAConfigMapName = "ptp-event-publisher-client-ca"
 
+// EventPublisherClientTLSSecretName is an optional out-of-band secret holding the
+// clientAuth certificate (tls.crt/tls.key) that cloud-event-proxy presents when it
+// acts as an mTLS *client* on the outbound push leg (delivering initial
+// notifications to a consumer callback). The Service CA only mints serverAuth
+// certificates, so the push client cannot reuse ptp-event-publisher-server-tls; a
+// dedicated clientAuth cert must be supplied here. The daemonset mounts it
+// optionally - when absent, outbound pushes rely on the ServiceAccount bearer
+// token alone (see clientCertPath/clientKeyPath in auth-config.yaml).
+const EventPublisherClientTLSSecretName = "ptp-event-publisher-client-tls"
+
 // ServiceCAKey is the key the OpenShift Service CA operator injects into
 // EventPublisherCABundleConfigMapName.
 const ServiceCAKey = "service-ca.crt"
