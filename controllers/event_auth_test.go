@@ -326,4 +326,39 @@ func TestEventAuthEnabled(t *testing.T) {
 	suites, ok := cfg["tlsCipherSuites"].([]interface{})
 	assert.True(t, ok)
 	assert.NotEmpty(t, suites)
+
+	// The outbound push leg must be wired for client auth: the config must point
+	// at the clientAuth keypair and the ServiceAccount token.
+	assert.Equal(t, "/etc/cloud-event-proxy/client-certs/tls.crt", cfg["clientCertPath"])
+	assert.Equal(t, "/etc/cloud-event-proxy/client-certs/tls.key", cfg["clientKeyPath"])
+	assert.Equal(t, "/var/run/secrets/kubernetes.io/serviceaccount/token", cfg["serviceAccountToken"])
+
+	// The daemonset must mount the clientAuth cert optionally so the daemon still
+	// starts when the out-of-band ptp-event-publisher-client-tls secret is absent.
+	vol := daemonVolume(t, objs, "client-certs")
+	assert.NotNil(t, vol, "client-certs volume must be rendered")
+	secret, ok := vol["secret"].(map[string]interface{})
+	assert.True(t, ok, "client-certs volume must be backed by a secret")
+	assert.Equal(t, "ptp-event-publisher-client-tls", secret["secretName"])
+	assert.Equal(t, true, secret["optional"], "client-certs secret mount must be optional")
+}
+
+// daemonVolume returns the named volume map from the rendered DaemonSet, or nil.
+func daemonVolume(t *testing.T, objs []*unstructured.Unstructured, name string) map[string]interface{} {
+	t.Helper()
+	for _, obj := range objs {
+		if obj.GetKind() != "DaemonSet" {
+			continue
+		}
+		vols, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "volumes")
+		assert.NoError(t, err)
+		assert.True(t, found)
+		for _, v := range vols {
+			vol := v.(map[string]interface{})
+			if vol["name"] == name {
+				return vol
+			}
+		}
+	}
+	return nil
 }

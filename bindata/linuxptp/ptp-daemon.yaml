@@ -56,6 +56,9 @@ spec:
             - name: ca-bundle
               mountPath: /etc/cloud-event-proxy/ca-bundle
               readOnly: true
+            - name: client-certs
+              mountPath: /etc/cloud-event-proxy/client-certs
+              readOnly: true
             - name: auth-config
               mountPath: /etc/cloud-event-proxy/auth
               readOnly: true
@@ -98,6 +101,9 @@ spec:
               readOnly: true
             - name: ca-bundle
               mountPath: /etc/cloud-event-proxy/ca-bundle
+              readOnly: true
+            - name: client-certs
+              mountPath: /etc/cloud-event-proxy/client-certs
               readOnly: true
             - name: auth-config
               mountPath: /etc/cloud-event-proxy/auth
@@ -223,6 +229,14 @@ spec:
         - name: ca-bundle
           configMap:
             name: ptp-event-publisher-ca-bundle
+        # clientAuth cert the publisher presents on the outbound push leg. The
+        # Service CA cannot mint clientAuth certs, so this secret is supplied
+        # out-of-band and mounted optionally: when absent the daemon still starts
+        # and pushes authenticate with the ServiceAccount bearer token alone.
+        - name: client-certs
+          secret:
+            secretName: ptp-event-publisher-client-tls
+            optional: true
         - name: auth-config
           configMap:
             name: ptp-event-publisher-auth

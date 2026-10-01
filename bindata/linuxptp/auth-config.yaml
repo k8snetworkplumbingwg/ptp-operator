@@ -50,6 +50,16 @@ spec:
 # TokenReview API, so no OAuth issuer / JWKS URL is required. The TLS profile
 # (min version and cipher suites) mirrors the cluster-wide TLSSecurityProfile
 # for Post-Quantum Cryptography readiness (CNF-21982).
+#
+# The outbound push leg (cloud-event-proxy delivering initial notifications to a
+# consumer callback) authenticates with BOTH the ServiceAccount bearer token
+# (serviceAccountToken, always mounted) and - when the optional
+# ptp-event-publisher-client-tls secret is provisioned - the clientAuth cert at
+# clientCertPath/clientKeyPath. The Service CA mints serverAuth-only certs, so the
+# serving cert cannot be reused as a client cert; when the client-tls secret is
+# absent these paths simply do not resolve and the push falls back to bearer-token
+# auth only. caCertPath doubles as the RootCAs used to verify the consumer's
+# server certificate on that push.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -65,6 +75,8 @@ data:
       "caCertPath": "/etc/cloud-event-proxy/ca-bundle/ca-bundle.crt",
       "serverCertPath": "/etc/cloud-event-proxy/server-certs/tls.crt",
       "serverKeyPath": "/etc/cloud-event-proxy/server-certs/tls.key",
+      "clientCertPath": "/etc/cloud-event-proxy/client-certs/tls.crt",
+      "clientKeyPath": "/etc/cloud-event-proxy/client-certs/tls.key",
       "enableOAuth": true,
       "useOpenShiftOAuth": true,
       "requiredAudiences": ["https://kubernetes.default.svc"],
