@@ -197,7 +197,12 @@ endif
 	$(KUSTOMIZE) build config/custom | $(call APPLY_CMD,deploy-custom)
 
 deploy-secured: ## Deploy with mTLS + OAuth enabled on the event-publisher APIs (convenience for SECURED=true make deploy).
-	$(MAKE) deploy SECURED=true
+	# Pass ENABLE_EVENT_AUTH=true explicitly, not just SECURED=true: when a local
+	# .env is present the top-level `export` propagates its ENABLE_EVENT_AUTH value
+	# into this recursive make, where the `?=` default can no longer recompute it
+	# from SECURED. A command-line override is the only assignment that always wins,
+	# so secured deploys can never silently inherit ENABLE_EVENT_AUTH=false.
+	$(MAKE) deploy SECURED=true ENABLE_EVENT_AUTH=true
 
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Set FREE_RUN=1 to render to FREE_RUN_DIR instead of deleting.
 ifeq ($(FREE_RUN),1)
