@@ -79,3 +79,5 @@ spec:
               value: $EVENT_PROXY_IMAGE
             - name: LINUXPTP_VERBOSITY
               value: $LINUXPTP_VERBOSITY
+            - name: ENABLE_EVENT_AUTH
+              value: "$ENABLE_EVENT_AUTH"
