@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -21,12 +22,16 @@ import (
 type policyTestClient struct {
 	client.Client
 	objects     map[string]client.Object
+	cachedOnly  bool
 	updateCount int
 }
 
 func policyKey(obj client.Object) string { return obj.GetNamespace() + "/" + obj.GetName() }
 
 func (c *policyTestClient) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	if c.cachedOnly && key.Namespace != names.Namespace {
+		return fmt.Errorf("cached client cannot read namespace %s", key.Namespace)
+	}
 	stored, ok := c.objects[key.Namespace+"/"+key.Name]
 	if !ok {
 		return apierrors.NewNotFound(schema.GroupResource{Resource: "test"}, key.Name)
@@ -98,8 +103,8 @@ func TestOperandNetworkPolicies(t *testing.T) {
 			service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"}, Spec: corev1.ServiceSpec{
 				ClusterIP: tc.ip, Ports: []corev1.ServicePort{{Name: "https", Port: tc.port}},
 			}}
-			c := &policyTestClient{objects: map[string]client.Object{policyKey(owner): owner, policyKey(service): service}}
-			r := &PtpOperatorConfigReconciler{Client: c, Scheme: scheme}
+			c := &policyTestClient{objects: map[string]client.Object{policyKey(owner): owner, policyKey(service): service}, cachedOnly: true}
+			r := &PtpOperatorConfigReconciler{Client: c, APIReader: &policyTestClient{objects: c.objects}, Scheme: scheme}
 			path := filepath.Join("..", "bindata", "linuxptp", "network-policy.yaml")
 			apply := func() {
 				t.Helper()

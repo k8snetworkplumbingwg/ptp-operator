@@ -57,8 +57,9 @@ import (
 // PtpOperatorConfigReconciler reconciles a PtpOperatorConfig object
 type PtpOperatorConfigReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	APIReader client.Reader
+	Log       logr.Logger
+	Scheme    *runtime.Scheme
 	// TLSProfileSpec is the cluster-wide TLS profile to apply to kube-rbac-proxy.
 	// When nil, legacy hardcoded cipher suites are used (pre-TLS adherence behavior).
 	TLSProfileSpec *configv1.TLSProfileSpec
@@ -366,7 +367,7 @@ func (r *PtpOperatorConfigReconciler) applyNetworkPoliciesFromYaml(
 	}
 
 	service := &corev1.Service{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, service); err != nil {
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: "default", Name: "kubernetes"}, service); err != nil {
 		return fmt.Errorf("discover Kubernetes API service: %w", err)
 	}
 	ip := net.ParseIP(service.Spec.ClusterIP)
