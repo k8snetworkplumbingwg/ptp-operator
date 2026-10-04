@@ -134,8 +134,8 @@ func TestOperatorBundlePermissionsAndWebhook(t *testing.T) {
 					if resource == "networkpolicies" {
 						verbs := append([]string(nil), r.Verbs...)
 						sort.Strings(verbs)
-						if !reflect.DeepEqual(verbs, []string{"create", "delete", "get", "list", "update"}) {
-							t.Fatalf("network policy reconciliation grants should be get/list/create/update/delete: %+v", r)
+						if !reflect.DeepEqual(verbs, []string{"create", "delete", "get", "list", "update", "watch"}) {
+							t.Fatalf("network policy reconciliation grants should be get/list/watch/create/update/delete: %+v", r)
 						}
 					}
 				}
