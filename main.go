@@ -199,6 +199,7 @@ func main() {
 
 	if err = (&controllers.PtpOperatorConfigReconciler{
 		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
 		Log:            ctrl.Log.WithName("controllers").WithName("PtpOperatorConfig"),
 		Scheme:         mgr.GetScheme(),
 		TLSProfileSpec: tlsProfileSpecPtr,

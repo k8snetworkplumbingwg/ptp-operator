@@ -1,47 +1,95 @@
----
-# Allow access to the webhook server.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-webhook-traffic
+  name: 06-linuxptp-daemon-default-deny
   namespace: openshift-ptp
 spec:
+  podSelector:
+    matchLabels:
+      app: linuxptp-daemon
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: 07-linuxptp-daemon-egress-dns
+  namespace: openshift-ptp
+spec:
+  podSelector:
+    matchLabels:
+      app: linuxptp-daemon
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-dns
+    ports:
+    - port: 5353
+      protocol: UDP
+    - port: 5353
+      protocol: TCP
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: 08-linuxptp-daemon-egress-api-server
+  namespace: openshift-ptp
+spec:
+  podSelector:
+    matchLabels:
+      app: linuxptp-daemon
+  egress:
+  - ports: # Replaced with the discovered Kubernetes service address and port by reconciliation.
+    - port: 443
+      protocol: TCP
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: 09-linuxptp-daemon-ptp-traffic
+  namespace: openshift-ptp
+spec:
+  podSelector:
+    matchLabels:
+      app: linuxptp-daemon
   ingress:
-    - ports:
-        - port: 9443
-          protocol: TCP
-        - port: 443
-          protocol: TCP
+  - ports:
+    - port: 319
+      protocol: UDP
+    - port: 320
+      protocol: UDP
   egress:
-    - ports:
-        - port: 9443
-          protocol: TCP
-        - port: 443
-          protocol: TCP
-  podSelector:
-    matchLabels:
-      name: ptp-operator  # Target only ptp-operator Pods (adjust if needed)
+  - ports:
+    - port: 319
+      protocol: UDP
+    - port: 320
+      protocol: UDP
   policyTypes:
-    - Ingress
-    - Egress
+  - Ingress
+  - Egress
 ---
-# Allow access to the API server.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-egress-to-api-server
+  name: 11-linuxptp-daemon-ingress-metrics
   namespace: openshift-ptp
 spec:
-  egress:
-    - to:
-        - namespaceSelector: { }  # allow egress to any service inside the cluster
-    - ports:
-        - port: 6443
-          protocol: TCP
-        - port: 443
-          protocol: TCP
   podSelector:
     matchLabels:
-      name: ptp-operator
+      app: linuxptp-daemon
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshift-monitoring
+    ports:
+    - port: 8443
+      protocol: TCP
   policyTypes:
-    - Egress
+  - Ingress
