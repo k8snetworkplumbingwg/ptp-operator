@@ -72,7 +72,13 @@ phc_index_for_iface() {
 	local nsim_id=$1
 	local iface=$2
 	local idx
-	idx=$(ethtool -T "$iface" 2>/dev/null | awk '/PTP Hardware Clock:/ {print $4}')
+	# ethtool 6.19+ prints "Hardware timestamp provider index:" when the
+	# kernel reports a hwtstamp provider; older ethtool prints
+	# "PTP Hardware Clock:".
+	idx=$(ethtool -T "$iface" 2>/dev/null | awk '
+		/PTP Hardware Clock:/ { print $4; exit }
+		/Hardware timestamp provider index:/ { print $5; exit }
+	')
 	if [[ -z "$idx" || "$idx" == "none" ]]; then
 		echo "Error: no PHC on $iface (netdevsim${nsim_id})" >&2
 		return 1
