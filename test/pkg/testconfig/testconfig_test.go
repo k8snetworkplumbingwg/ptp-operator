@@ -11,6 +11,7 @@ import (
 	testclient "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
 	l2lib "github.com/redhat-cne/l2discovery-lib"
 	"github.com/redhat-cne/l2discovery-lib/exports"
+	solver "github.com/redhat-cne/l2discovery-lib/pkg/graphsolver"
 	corev1 "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +37,21 @@ func (m *mockL2Info) GetL2DiscoveryConfig(_, _, _ bool, _ string) (l2lib.L2Info,
 func makePtpIf(node, iface string) *exports.PtpIf {
 	return &exports.PtpIf{
 		IfClusterIndex: exports.IfClusterIndex{NodeName: node, InterfaceName: iface},
+	}
+}
+
+func TestHasGNSSDeviceWrapperFindsSibling(t *testing.T) {
+	config := &mockL2Info{ifList: []*exports.PtpIf{
+		{IfClusterIndex: exports.IfClusterIndex{NodeName: "node1", InterfaceName: "ens1f0"}, Iface: exports.Iface{IfPci: exports.PCIAddress{Device: "0000:01:00"}, IfPTPCaps: exports.PTPCaps{PhcIndex: 0}}},
+		{IfClusterIndex: exports.IfClusterIndex{NodeName: "node1", InterfaceName: "ens1f1"}, Iface: exports.Iface{IfPci: exports.PCIAddress{Device: "0000:01:00"}, IfPTPCaps: exports.PTPCaps{PhcIndex: 0, GnssDevice: "gnss0"}}},
+		{IfClusterIndex: exports.IfClusterIndex{NodeName: "node2", InterfaceName: "ens1f0"}, Iface: exports.Iface{IfPci: exports.PCIAddress{Device: "0000:01:00"}, IfPTPCaps: exports.PTPCaps{PhcIndex: 0}}},
+	}}
+
+	if !solver.HasGNSSDeviceWrapper(config, 0) {
+		t.Fatal("expected GNSS device on sibling interface to satisfy selected interface")
+	}
+	if solver.HasGNSSDeviceWrapper(config, 2) {
+		t.Fatal("GNSS device from another node must not satisfy selected interface")
 	}
 }
 
