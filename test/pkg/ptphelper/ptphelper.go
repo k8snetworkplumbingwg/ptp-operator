@@ -757,7 +757,7 @@ func WaitForPtpDaemonToBeReady(podList []*v1core.Pod) int {
 			}
 		}
 		return nil
-	}, 2*time.Minute, 2*time.Second).Should(Not(HaveOccurred()))
+	}, 5*time.Minute, 2*time.Second).Should(Not(HaveOccurred())) // CEP :9043 then ReadyServer :8081 after replace
 
 	return 0
 }
@@ -1567,18 +1567,22 @@ func IsV1Api(version string) bool {
 }
 
 func CheckReadiness(pod *corev1.Pod) (err error) {
-	stdout, stderr, err := pods.ExecCommand(
+	// ReadyServer is served by the linuxptp-daemon process on 0.0.0.0:8081.
+	// Always exec into that container (Containers[0] is cloud-event-proxy when
+	// events are enabled) and prefer IPv4 — the daemon does not bind ::1.
+	stdout, _, err := pods.ExecCommand(
 		client.Client,
 		false,
 		pod,
-		pod.Spec.Containers[0].Name,
-		[]string{"curl", "-v", "localhost:8081/ready"},
+		pkg.PtpContainerName,
+		[]string{"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", "http://127.0.0.1:8081/ready"},
 	)
 	if err != nil {
-		return fmt.Errorf("error getting readiness, err: %v", err)
+		return fmt.Errorf("error getting readiness on %s/%s: %v", pod.Namespace, pod.Name, err)
 	}
-	if !strings.Contains(stdout.String()+stderr.String(), "HTTP/1.1 200 OK") {
-		return fmt.Errorf("pod not ready with, err: %s", stdout.String()+stderr.String())
+	code := strings.TrimSpace(stdout.String())
+	if code != "200" {
+		return fmt.Errorf("pod %s not ready: /ready returned HTTP %s", pod.Name, code)
 	}
 
 	return nil

@@ -1729,24 +1729,22 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					ptptesthelper.VerifyClockClassViaPMC(fullConfig, "/var/run/ptp4l.0.config", int(fbprotocol.ClockClass6))
 
 					By("Killing cloud-event-proxy process in sidecar container")
-					killCloudEventProxy(fullConfig.DiscoveredClockUnderTestPod)
-
+					cepPod := refreshDaemonPod(fullConfig.DiscoveredClockUnderTestPod)
+					killCloudEventProxy(cepPod)
 					By("Waiting for cloud-event-proxy to be ready")
-					Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
+					Expect(event.WaitForCloudEventProxyReady(cepPod)).To(BeNil(),
 						"cloud-event-proxy did not become ready after restart")
+					fullConfig.DiscoveredClockUnderTestPod = refreshDaemonPod(cepPod)
 					waitForWPCGMReady(fullConfig)
 
 					// Config refresh from BeforeEach can finish applying after the first
 					// CEP restart. That bounce clears the IPC cache and can leave Event
 					// API CurrentState stuck on a transient class (255) while metrics
 					// already show the recovered class. Wait for metrics, then force a
-					// second CEP snapshot so CurrentState matches the daemon cache.
+					// CEP snapshot and re-check Event API, bouncing again if needed.
 					By(fmt.Sprintf("Waiting for clockClass %s via metrics after CEP restart", expectedClockClassStr))
 					checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
-					By("Re-syncing cloud-event-proxy IPC snapshot after recovered clock class")
-					killCloudEventProxy(fullConfig.DiscoveredClockUnderTestPod)
-					Expect(event.WaitForCloudEventProxyReady(fullConfig.DiscoveredClockUnderTestPod)).To(BeNil(),
-						"cloud-event-proxy did not become ready after IPC re-sync restart")
+					resyncCEPClockClass(fullConfig, int(expectedClockClass), expectedClockClassStr)
 					crashDone = true
 				})
 
@@ -5411,6 +5409,84 @@ func killCloudEventProxy(pod *v1core.Pod) {
 		pkg.EventProxyContainerName,
 		[]string{"sh", "-c", killCmd},
 	)
+}
+
+// refreshDaemonPod returns a live GET of the daemon pod. CEP kill/wait must
+// use a fresh object so RestartCount baselines are not stale across bounces.
+func refreshDaemonPod(pod *v1core.Pod) *v1core.Pod {
+	fresh, err := client.Client.CoreV1().Pods(pod.Namespace).Get(
+		context.Background(), pod.Name, metav1.GetOptions{})
+	Expect(err).NotTo(HaveOccurred(), "refreshing daemon pod %s/%s", pod.Namespace, pod.Name)
+	return fresh
+}
+
+// resyncCEPClockClass bounces cloud-event-proxy after metrics show the expected
+// class, then confirms Event API CurrentState. Retries the bounce if CurrentState
+// stays on a transient class (commonly 255) after a single snapshot.
+func resyncCEPClockClass(fullConfig testconfig.TestConfig, expectedClass int, expectedClassStr string) {
+	const maxBounces = 3
+	for attempt := 1; attempt <= maxBounces; attempt++ {
+		By(fmt.Sprintf("Re-syncing cloud-event-proxy IPC snapshot after recovered clock class (attempt %d/%d)",
+			attempt, maxBounces))
+		cepPod := refreshDaemonPod(fullConfig.DiscoveredClockUnderTestPod)
+		killCloudEventProxy(cepPod)
+		Expect(event.WaitForCloudEventProxyReady(cepPod)).To(BeNil(),
+			"cloud-event-proxy did not become ready after IPC re-sync restart (attempt %d)", attempt)
+		fullConfig.DiscoveredClockUnderTestPod = refreshDaemonPod(cepPod)
+
+		By(fmt.Sprintf("Waiting for clockClass %s via metrics after CEP re-sync", expectedClassStr))
+		checkClockClassState(fullConfig, expectedClassStr, pkg.TimeoutIn5Minutes)
+
+		matched := false
+		deadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(deadline) {
+			if clockClassCurrentStateMatches(expectedClass) {
+				matched = true
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if matched {
+			fmt.Fprintf(GinkgoWriter, "ClockClass %d verified via Event API after CEP re-sync attempt %d\n",
+				expectedClass, attempt)
+			return
+		}
+		fmt.Fprintf(GinkgoWriter, "ClockClass Event API still not %d after CEP re-sync attempt %d\n",
+			expectedClass, attempt)
+	}
+	Fail(fmt.Sprintf("Timed out waiting for clockClass %d via Event API after %d CEP re-sync attempts",
+		expectedClass, maxBounces))
+}
+
+// clockClassCurrentStateMatches performs one PushInitialEvent drain cycle and
+// reports whether any clock-class value matches. Used by resyncCEPClockClass
+// without failing the suite on a single miss.
+func clockClassCurrentStateMatches(expectedClockClass int) bool {
+	const incomingEventsBuffer = 100
+	const pushTimeout = 15 * time.Second
+	ccTopic := string(ptpEvent.PtpClockClassChange)
+	want := float64(expectedClockClass)
+
+	ccCh, cID := event.PubSub.Subscribe(ccTopic, incomingEventsBuffer)
+	defer event.PubSub.Unsubscribe(ccTopic, cID)
+	_ = event.PushInitialEvent(ccTopic, pushTimeout)
+	for {
+		select {
+		case ev := <-ccCh:
+			res, ok := processEvent(ptpEvent.PtpClockClassChange, ev)
+			if !ok {
+				continue
+			}
+			for _, val := range res.Values {
+				if eventValueMatchesFloat(val, want) {
+					return true
+				}
+			}
+			fmt.Fprintf(GinkgoWriter, "ClockClass CurrentState did not match %d: %v\n", expectedClockClass, res.Values)
+		default:
+			return false
+		}
+	}
 }
 
 // waitForWPCGMReady blocks until the WPC T-GM advertises clock class 6 and

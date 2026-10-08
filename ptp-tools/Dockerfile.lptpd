@@ -30,8 +30,10 @@ RUN make clean && make -j 16
 FROM quay.io/centos/centos:stream9
 ARG LINUXPTP_RPM=""
 
+# curl is required: the daemon container entrypoint waits on
+# localhost:9043/.../health before starting /usr/local/bin/ptp (ReadyServer :8081).
 RUN yum -y update && yum --setopt=skip_missing_names_on_install=False -y install \
-    linuxptp ethtool hwdata synce4l procps-ng chrony \
+    curl-minimal linuxptp ethtool hwdata synce4l procps-ng chrony \
     gpsd-minimal gpsd-minimal-clients && yum clean all
 
 COPY ptp-tools/extra/ /tmp/extra/
