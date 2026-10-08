@@ -884,6 +884,33 @@ spec:
                   - ptpProfile
                   type: object
                 type: array
+              sources:
+                description: Sources contains results of the source initialization
+                items:
+                  description: SourceStatus represents the initialization results
+                    of a given behavior source
+                  properties:
+                    gnss:
+                      description: Gnss is the result of GNSS source initialization
+                      properties:
+                        matchResult:
+                          description: MatchResult is an optional message from the
+                            GNSS device match logic
+                          type: string
+                        ttyDevice:
+                          description: TTYDevice is the name of the detected TTY device
+                            for this GNSS source
+                          type: string
+                      required:
+                      - ttyDevice
+                      type: object
+                    name:
+                      description: Name is the name of the source
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
             type: object
         type: object
     served: true

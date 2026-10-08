@@ -862,6 +862,9 @@ type HardwareConfigStatus struct {
 	// MatchedNodes contains the list of nodes that have been matched to this hardware config
 	// based on PTP profile recommendations
 	MatchedNodes []MatchedNode `json:"matchedNodes,omitempty" yaml:"matchedNodes,omitempty"`
+
+	// Sources contains results of the source initialization
+	Sources []SourceStatus `json:"sources,omitempty" yaml:"sources,omitempty"`
 }
 
 // MatchedNode represents a node that has been matched to this hardware config
@@ -871,6 +874,24 @@ type MatchedNode struct {
 
 	// PtpProfile is the PTP profile that was recommended for this node
 	PtpProfile string `json:"ptpProfile" yaml:"ptpProfile"`
+}
+
+// SourceStatus represents the initialization results of a given behavior source
+type SourceStatus struct {
+	// Name is the name of the source
+	Name string `json:"name" yaml:"name"`
+
+	// Gnss is the result of GNSS source initialization
+	Gnss *GNSSStatus `json:"gnss,omitempty" yaml:"gnss,omitempty"`
+}
+
+// GNSSStatus represents the initialzation status of a GNSS source
+type GNSSStatus struct {
+	// TTYDevice is the name of the detected TTY device for this GNSS source
+	TTYDevice string `json:"ttyDevice" yaml:"ttyDevice"`
+
+	// MatchResult is an optional message from the GNSS device match logic
+	MatchResult string `json:"matchResult,omitempty" yaml:"matchResult:omitempty"`
 }
 
 //+kubebuilder:object:root=true
