@@ -13,8 +13,10 @@ import (
 	"github.com/redhat-cne/l2discovery-lib/exports"
 	corev1 "k8s.io/api/core/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 )
 
@@ -31,6 +33,37 @@ func (m *mockL2Info) SetL2Client(kubernetes.Interface, *rest.Config)    {}
 
 func (m *mockL2Info) GetL2DiscoveryConfig(_, _, _ bool, _ string) (l2lib.L2Info, error) {
 	return m, nil
+}
+
+func TestClockNodeInfo(t *testing.T) {
+	config := func(name, node string) *ptpDiscoveryRes {
+		return (*ptpDiscoveryRes)(&ptpv1.PtpConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: ptpv1.PtpConfigSpec{Recommend: []ptpv1.PtpRecommend{{
+				Match: []ptpv1.MatchRule{{NodeName: &node}},
+			}}},
+		})
+	}
+	pod := func(name, node string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: pkg.PtpLinuxDaemonNamespace, Labels: map[string]string{"app": "linuxptp-daemon"}},
+			Spec:       corev1.PodSpec{NodeName: node},
+		}
+	}
+
+	originalClient := testclient.Client.Interface
+	t.Cleanup(func() { testclient.Client.Interface = originalClient })
+	testclient.Client.Interface = k8sfake.NewSimpleClientset(pod("ptp-node-a", "node-a"), pod("ptp-node-b", "node-b"))
+	info, err := (TestConfig{
+		DiscoveredGrandMasterPtpConfig:    config("grandmaster", "node-a"),
+		DiscoveredClockUnderTestPtpConfig: config("clock-under-test", "node-b"),
+	}).ClockNodeInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info["Grandmaster Clock"] != "node-a" || info["Clock Under Test"] != "node-b" {
+		t.Fatalf("unexpected clock node info: %v", info)
+	}
 }
 
 func makePtpIf(node, iface string) *exports.PtpIf {

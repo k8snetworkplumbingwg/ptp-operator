@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -252,16 +253,16 @@ func WriteStep(step string) {
 	}
 }
 
-// WriteNodeUnderTest writes a file indicating which node is under test
-func WriteNodeUnderTest(nodeName, mode string, info map[string]string) (err error) {
+// WriteNodeInfo writes the node under test and the node running each clock.
+func WriteNodeInfo(nodeName, mode string, clocks map[string]string) (err error) {
 	if collector == nil {
 		return fmt.Errorf("log collector not initialized")
 	}
 
-	filePath := filepath.Join(collector.logDir, "NODE_UNDER_TEST.txt")
+	filePath := filepath.Join(collector.logDir, "NODE_INFO.txt")
 	file, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to create NODE_UNDER_TEST.txt: %w", err)
+		return fmt.Errorf("failed to create NODE_INFO.txt: %w", err)
 	}
 	defer func() {
 		if closeErr := file.Close(); err == nil {
@@ -273,13 +274,13 @@ func WriteNodeUnderTest(nodeName, mode string, info map[string]string) (err erro
 		_, err := fmt.Fprintf(file, format, args...)
 		return err
 	}
-	if err = write("Node Under Test\n"); err != nil {
+	if err = write("Node Information\n"); err != nil {
 		return err
 	}
 	if err = write("================\n\n"); err != nil {
 		return err
 	}
-	if err = write("Node Name: %s\n", nodeName); err != nil {
+	if err = write("Node Under Test: %s\n", nodeName); err != nil {
 		return err
 	}
 	if err = write("Test Mode: %s\n", mode); err != nil {
@@ -289,17 +290,19 @@ func WriteNodeUnderTest(nodeName, mode string, info map[string]string) (err erro
 		return err
 	}
 
-	if len(info) > 0 {
-		if err = write("Additional Information:\n"); err != nil {
+	if err = write("Clocks:\n"); err != nil {
+		return err
+	}
+	clockNames := make([]string, 0, len(clocks))
+	for clock := range clocks {
+		clockNames = append(clockNames, clock)
+	}
+	sort.Strings(clockNames)
+	for _, clock := range clockNames {
+		if err = write("  %s: %s\n", clock, clocks[clock]); err != nil {
 			return err
 		}
-		for key, value := range info {
-			if err = write("  %s: %s\n", key, value); err != nil {
-				return err
-			}
-		}
 	}
-
 	return nil
 }
 
