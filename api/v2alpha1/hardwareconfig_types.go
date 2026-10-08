@@ -185,8 +185,8 @@ type GNSSInit struct {
 }
 
 // GNSSMatcher defines a mechanism to match GNSS devices.
-// Exactly one of TTYDevice, SerialDevice, EthernetInterface, or USBDevice must be provided.
-// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice) ? 1 : 0) + (has(self.ethernetInterface) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, serialDevice, ethernetInterface, or usbDevice must be provided."
+// Exactly one of TTYDevice, SerialDevice, EthernetInterface, EthernetDevice, or USBDevice must be provided.
+// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice) ? 1 : 0) + (has(self.ethernetInterface) ? 1 : 0) + (has(self.ethernetDevice) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided."
 type GNSSMatcher struct {
 	// TTYDevice defines the GNSS device by its /dev/xxxx character device path
 	TTYDevice string `json:"ttyDevice,omitempty" yaml:"ttyDevice,omitempty"`
@@ -194,8 +194,14 @@ type GNSSMatcher struct {
 	// SerialDevice defines a platform serial device by stable hardware identity.
 	SerialDevice *SerialDevice `json:"serialDevice,omitempty" yaml:"serialDevice,omitempty"`
 
-	// EthernetInterface defines the GNSS device as the one attached to the physical ethernet device name listed
+	// EthernetInterface defines the GNSS device as the one attached to the
+	// physical Ethernet interface with this name.
+	// Deprecated: Use EthernetDevice instead, which supports matching by name or stable hardware identity.
 	EthernetInterface string `json:"ethernetInterface,omitempty" yaml:"ethernetInterface,omitempty"`
+
+	// EthernetDevice defines the Ethernet device to which the GNSS device is
+	// attached. All specified Ethernet device selectors must match.
+	EthernetDevice *EthernetDevice `json:"ethernetDevice,omitempty" yaml:"ethernetDevice,omitempty"`
 
 	// USBDevice defines the GNSS device by its USB vendor and product IDs.
 	USBDevice *USBDevice `json:"usbDevice,omitempty" yaml:"usbDevice,omitempty"`
@@ -223,16 +229,53 @@ type ACPIDevice struct {
 	UID string `json:"uid,omitempty" yaml:"uid,omitempty"`
 }
 
+// EthernetDevice identifies an Ethernet device. Name is any Linux network
+// interface name (for example, eno8703, enp2s0, or ens2f0); PCIAddress is the PCI
+// address (for example, "0000:86:00.0"); PermanentMACAddress is the permanent
+// hardware MAC address; Slot is the firmware-reported PCI slot number; and VendorID
+// and DeviceID are the PCI vendor and device/product IDs. At least one field must
+// be specified. When multiple fields are supplied, they are combined as AND
+// criteria.
+// +kubebuilder:validation:XValidation:rule="has(self.name) || has(self.pciAddress) || has(self.permanentMACAddress) || has(self.slot) || has(self.vendorID) || has(self.deviceID)", message="At least one Ethernet device selection criterion must be provided."
+type EthernetDevice struct {
+	// Name is any Linux Ethernet interface name, such as eno8703, enp2s0, or ens2f0.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+
+	// PCIAddress is the PCI bus address of the Ethernet device, such as "0000:86:00.0".
+	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`
+	PCIAddress string `json:"pciAddress,omitempty" yaml:"pciAddress,omitempty"`
+
+	// PermanentMACAddress is the Ethernet device's permanent hardware MAC address,
+	// such as "00:11:22:aa:bb:cc".
+	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$`
+	PermanentMACAddress string `json:"permanentMACAddress,omitempty" yaml:"permanentMACAddress,omitempty"`
+
+	// Slot is the firmware-reported PCI slot number used by systemd for slot-based
+	// interface names, such as "2" in "ens2f0". It is not the PCI bus number.
+	// Multiple PCI functions in one slot may share this slot number.
+	// +kubebuilder:validation:Pattern=`^[0-9]+$`
+	Slot string `json:"slot,omitempty" yaml:"slot,omitempty"`
+
+	// VendorID is the four-digit hexadecimal PCI vendor ID, such as "8086" for Intel.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
+	VendorID string `json:"vendorID,omitempty" yaml:"vendorID,omitempty"`
+
+	// DeviceID is the four-digit hexadecimal PCI device (product) ID, such as "159B" for Intel E810.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
+	DeviceID string `json:"deviceID,omitempty" yaml:"deviceID,omitempty"`
+}
+
 // USBDevice identifies a USB device by its vendor and product IDs, with an
 // optional topology path to distinguish identical devices. IDs are hexadecimal
 // strings as reported by sysfs, for example vendor "1546" and product "01a9"
 // for the u-blox GNSS receiver used on Dell GNR-D systems.
 type USBDevice struct {
-	// Vendor is the four-digit hexadecimal USB vendor ID.
+	// Vendor is the four-digit hexadecimal USB vendor ID, such as "1546".
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
 	Vendor string `json:"vendor" yaml:"vendor"`
 
-	// Product is the four-digit hexadecimal USB product ID.
+	// Product is the four-digit hexadecimal USB product ID, such as "01a9".
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
 	Product string `json:"product" yaml:"product"`
 
