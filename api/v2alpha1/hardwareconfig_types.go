@@ -184,15 +184,38 @@ type GNSSInit struct {
 	ExtraCommands []UBLXCommand `json:"extraCommands,omitempty" yaml:"extraCommands,omitempty"`
 }
 
-// GNSSMatcher defines a mechanism to match GNSS devices
-// Either the TTYDevice or EthernetInterface must be provided.
-// +kubebuilder:validation:XValidation:rule="has(self.ttyDevice) != has(self.ethernetInterface)", message="Exactly one of ttyDevice or ethernetInterface must be provided."
+// GNSSMatcher defines a mechanism to match GNSS devices.
+// Exactly one of TTYDevice, EthernetInterface, or USBDevice must be provided.
+// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.ethernetInterface) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, ethernetInterface, or usbDevice must be provided."
 type GNSSMatcher struct {
 	// TTYDevice defines the GNSS device by its /dev/xxxx character device path
 	TTYDevice string `json:"ttyDevice,omitempty" yaml:"ttyDevice,omitempty"`
 
 	// EthernetInterface defines the GNSS device as the one attached to the physical ethernet device name listed
 	EthernetInterface string `json:"ethernetInterface,omitempty" yaml:"ethernetInterface,omitempty"`
+
+	// USBDevice defines the GNSS device by its USB vendor and product IDs.
+	USBDevice *USBDevice `json:"usbDevice,omitempty" yaml:"usbDevice,omitempty"`
+}
+
+// USBDevice identifies a USB device by its vendor and product IDs, with an
+// optional topology path to distinguish identical devices. IDs are hexadecimal
+// strings as reported by sysfs, for example vendor "1546" and product "01a9"
+// for the u-blox GNSS receiver used on Dell GNR-D systems.
+type USBDevice struct {
+	// Vendor is the four-digit hexadecimal USB vendor ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
+	Vendor string `json:"vendor" yaml:"vendor"`
+
+	// Product is the four-digit hexadecimal USB product ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{4}$`
+	Product string `json:"product" yaml:"product"`
+
+	// Path is the Linux USB topology path (bus-port chain), such as "2-1.4".
+	// It identifies the physical connection path, not a device serial number,
+	// and can change if the device is moved to another port or topology changes.
+	// +kubebuilder:validation:Pattern=`^[0-9]+-[0-9]+(\.[0-9]+)*$`
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
 // GNSSSurveyParameters outline the GPS SURVEYIN operation
