@@ -148,6 +148,35 @@ type TestConfig struct {
 	FoundSolutions               map[string]bool
 	PtpEventsIsConsumerReady     bool
 }
+
+// ClockNodeInfo returns the discovered PTP configs and the nodes running them.
+func (obj TestConfig) ClockNodeInfo() (map[string]string, error) {
+	clocks := []struct {
+		role   string
+		config *ptpDiscoveryRes
+	}{
+		{"Grandmaster Clock", obj.DiscoveredGrandMasterPtpConfig},
+		{"Clock Under Test", obj.DiscoveredClockUnderTestPtpConfig},
+		{"Secondary Clock Under Test", obj.DiscoveredClockUnderTestSecondaryPtpConfig},
+		{"Slave Clock 1", obj.DiscoveredSlave1PtpConfig},
+		{"Slave Clock 2", obj.DiscoveredSlave2PtpConfig},
+	}
+
+	info := make(map[string]string)
+	for _, clock := range clocks {
+		if clock.config == nil {
+			continue
+		}
+		config := (*ptpv1.PtpConfig)(clock.config)
+		pod, err := ptphelper.GetPTPPodWithPTPConfig(config)
+		if err != nil {
+			return info, fmt.Errorf("failed to find node for clock %s: %w", config.Name, err)
+		}
+		info[clock.role] = pod.Spec.NodeName
+	}
+	return info, nil
+}
+
 type solverData struct {
 	// Mapping between clock role and port depending on the algo
 	testClockRolesAlgoMapping map[string]*[]int
