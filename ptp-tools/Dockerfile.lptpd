@@ -3,14 +3,14 @@ WORKDIR /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
 ENV GOMAXPROCS=16
 
 # CI daemon patches (skip when already present on linuxptp-daemon main).
-COPY ptp-tools/patches/nmea-status-bool-metric.patch /tmp/nmea-status-bool-metric.patch
+# nmea-status-bool-metric landed upstream (convertToFloat + NMEALocked); do not
+# re-apply — surrounding clockmgr context drifted so reverse-check also fails.
 COPY ptp-tools/patches/gm-gnss-sim-leading-iface.patch /tmp/gm-gnss-sim-leading-iface.patch
 COPY ptp-tools/patches/ipc-no-drop-clock-class.patch /tmp/ipc-no-drop-clock-class.patch
 COPY ptp-tools/patches/ptp4l-signed-path-delay.patch /tmp/ptp4l-signed-path-delay.patch
 RUN git clone -b main https://github.com/k8snetworkplumbingwg/linuxptp-daemon.git /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon \
     && cd /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon \
     && for patch in \
-         /tmp/nmea-status-bool-metric.patch \
          /tmp/gm-gnss-sim-leading-iface.patch \
          /tmp/ipc-no-drop-clock-class.patch \
          /tmp/ptp4l-signed-path-delay.patch; do \
