@@ -186,7 +186,7 @@ type GNSSInit struct {
 
 // GNSSMatcher defines a mechanism to match GNSS devices.
 // Exactly one of TTYDevice, SerialDevice, EthernetInterface, EthernetDevice, or USBDevice must be provided.
-// +kubebuilder:validation:XValidation:rule="(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice) ? 1 : 0) + (has(self.ethernetInterface) ? 1 : 0) + (has(self.ethernetDevice) ? 1 : 0) + (has(self.usbDevice) ? 1 : 0) == 1", message="Exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided."
+// +kubebuilder:validation:XValidation:rule="has(self.ttyDevice) ? !(has(self.serialDevice) || has(self.ethernetInterface) || has(self.ethernetDevice) || has(self.usbDevice)) : has(self.serialDevice) ? !(has(self.ethernetInterface) || has(self.ethernetDevice) || has(self.usbDevice)) : has(self.ethernetInterface) ? !(has(self.ethernetDevice) || has(self.usbDevice)) : has(self.ethernetDevice) != has(self.usbDevice)", message="Exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided."
 type GNSSMatcher struct {
 	// TTYDevice defines the GNSS device by its /dev/xxxx character device path
 	TTYDevice string `json:"ttyDevice,omitempty" yaml:"ttyDevice,omitempty"`

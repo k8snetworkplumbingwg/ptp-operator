@@ -480,11 +480,13 @@ spec:
                                       - message: Exactly one of ttyDevice, serialDevice,
                                           ethernetInterface, ethernetDevice, or usbDevice
                                           must be provided.
-                                        rule: '(has(self.ttyDevice) ? 1 : 0) + (has(self.serialDevice)
-                                          ? 1 : 0) + (has(self.ethernetInterface)
-                                          ? 1 : 0) + (has(self.ethernetDevice) ? 1
-                                          : 0) + (has(self.usbDevice) ? 1 : 0) ==
-                                          1'
+                                        rule: 'has(self.ttyDevice) ? !(has(self.serialDevice)
+                                          || has(self.ethernetInterface) || has(self.ethernetDevice)
+                                          || has(self.usbDevice)) : has(self.serialDevice)
+                                          ? !(has(self.ethernetInterface) || has(self.ethernetDevice)
+                                          || has(self.usbDevice)) : has(self.ethernetInterface)
+                                          ? !(has(self.ethernetDevice) || has(self.usbDevice))
+                                          : has(self.ethernetDevice) != has(self.usbDevice)'
                                   required:
                                   - init
                                   type: object
