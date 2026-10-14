@@ -316,6 +316,27 @@ jobs:
           ./run-on-vm.sh --dkms --deploy "${VM_IP}" --mode "${{ matrix.mode }}" "${VM_IP}"
           DEPLOY
 
+      - name: "Collect Kubernetes debug info"
+        if: always()
+        run: |
+          sudo bash -l <<'DEBUGINFO'
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          mkdir -p /tmp/artifacts/k8s-debug
+          kubectl get pods -n openshift-ptp -o wide \
+            > /tmp/artifacts/k8s-debug/pods.txt 2>&1 || true
+          kubectl get events -n openshift-ptp \
+            --sort-by=.metadata.creationTimestamp \
+            > /tmp/artifacts/k8s-debug/events.txt 2>&1 || true
+          kubectl describe pods -n openshift-ptp -l app=linuxptp-daemon \
+            > /tmp/artifacts/k8s-debug/linuxptp-daemon-describe.txt 2>&1 || true
+          for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
+              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            kubectl logs -n openshift-ptp "$pod" -c cloud-event-proxy --previous \
+              > "/tmp/artifacts/k8s-debug/${pod}-cep-previous.txt" 2>&1 || true
+          done
+          DEBUGINFO
+
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v7
