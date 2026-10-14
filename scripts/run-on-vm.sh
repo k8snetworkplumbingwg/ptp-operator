@@ -357,7 +357,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
     step "Retagging images for local registry"
     # Derive the tag list from ptp-tools/Makefile VALUES so it stays in sync
-    # with what the build/save phase produced (e.g. cepv2).
+    # with what the build/save phase produced
     read_ptp_tool_images
     TAGS=("${_ptp_tool_images[@]}")
     for t in "${TAGS[@]}"; do

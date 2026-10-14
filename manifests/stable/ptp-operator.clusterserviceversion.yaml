@@ -359,7 +359,6 @@ spec:
                   value: quay.io/openshift/origin-kube-rbac-proxy:5.0
                 - name: SIDECAR_EVENT_IMAGE
                   value: quay.io/openshift/origin-cloud-event-proxy:5.0
-                - name: EVENT_PROXY_IMAGE
                 - name: LINUXPTP_VERBOSITY
                   value: "10"
                 - name: OPERATOR_NAMESPACE
