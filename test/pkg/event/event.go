@@ -383,64 +383,76 @@ func WaitForConsumerReady(nodeNameFull string) error {
 //   - Process restart (OCP hostPID): systemd/CRI-O restarts the process
 //     inside the same container, RestartCount may not change.
 //
-// The pod argument should reflect the pre-kill state for baseline comparison.
+// The pod argument MUST be a pre-kill snapshot (fresh GET immediately before
+// killCloudEventProxy). Reusing a Pod from an earlier bounce makes
+// RestartCount look already advanced and returns while CurrentState is still
+// stale (e.g. clock class 255). Callers should refresh the pod before each kill.
 func WaitForCloudEventProxyReady(pod *corev1.Pod) error {
 	refreshPod := func() (*corev1.Pod, error) {
 		return client.Client.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 	}
 
-	initialRestarts := int32(-1)
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Name == pkg.EventProxyContainerName {
-			initialRestarts = cs.RestartCount
-			break
+	proxyRestartCount := func(p *corev1.Pod) (int32, bool) {
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.Name == pkg.EventProxyContainerName {
+				return cs.RestartCount, true
+			}
 		}
+		return 0, false
 	}
-	if initialRestarts == -1 {
+
+	healthOK := func(p *corev1.Pod) bool {
+		buf, _, execErr := pods.ExecCommand(client.Client, true, p, pkg.EventProxyContainerName,
+			[]string{"curl", "-s", "--max-time", "5", ApiBaseV2 + "/health"})
+		return execErr == nil && strings.Contains(buf.String(), "OK")
+	}
+
+	initialRestarts, found := proxyRestartCount(pod)
+	if !found {
 		return fmt.Errorf("cloud-event-proxy container not found in pod %s/%s status", pod.Namespace, pod.Name)
 	}
 
-	// Brief pause to let the kill take effect before polling.
-	time.Sleep(3 * time.Second)
-
-	// Check if the container restarted (RestartCount increased).
-	restarted := false
-	if current, err := refreshPod(); err == nil {
-		for _, cs := range current.Status.ContainerStatuses {
-			if cs.Name == pkg.EventProxyContainerName && cs.RestartCount > initialRestarts {
-				logrus.Infof("cloud-event-proxy container restarted (restarts: %d -> %d)",
-					initialRestarts, cs.RestartCount)
-				restarted = true
-				break
-			}
+	// Wait for the kill to disrupt the proxy before accepting health — otherwise
+	// a still-healthy pre-kill instance (or a previous bounce) succeeds early.
+	disrupted := false
+	disruptDeadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(disruptDeadline) {
+		current, err := refreshPod()
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
 		}
+		if count, ok := proxyRestartCount(current); ok && count > initialRestarts {
+			logrus.Infof("cloud-event-proxy container restarted (restarts: %d -> %d)",
+				initialRestarts, count)
+			disrupted = true
+			break
+		}
+		if !healthOK(current) {
+			logrus.Info("cloud-event-proxy health down after kill — process-level restart")
+			disrupted = true
+			break
+		}
+		time.Sleep(time.Second)
 	}
-	if !restarted {
-		logrus.Info("container RestartCount unchanged — process-level restart (hostPID)")
+	if !disrupted {
+		logrus.Warn("cloud-event-proxy did not observe restart/health flap; continuing to wait for health")
 	}
 
-	// Wait for health endpoint regardless of restart model.
-	healthOK := false
-	deadline := time.Now().Add(5 * time.Minute)
-	for time.Now().Before(deadline) {
+	readyDeadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(readyDeadline) {
 		current, err := refreshPod()
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		buf, _, execErr := pods.ExecCommand(client.Client, true, current, pkg.EventProxyContainerName,
-			[]string{"curl", "-s", "--max-time", "5", ApiBaseV2 + "/health"})
-		if execErr == nil && strings.Contains(buf.String(), "OK") {
+		if healthOK(current) {
 			logrus.Info("cloud-event-proxy health endpoint is ready")
-			healthOK = true
-			break
+			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if !healthOK {
-		return fmt.Errorf("cloud-event-proxy health endpoint did not recover within 5 minutes")
-	}
-	return nil
+	return fmt.Errorf("cloud-event-proxy health endpoint did not recover within 5 minutes")
 }
 
 const roleName = "use-privileged"
@@ -884,8 +896,7 @@ func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType str
 	}
 	values := exports.StoredEventValues{}
 	for _, v := range d.Values {
-		key := compositeEventKey(v.Resource, string(v.DataType))
-		values[key] = v.Value
+		values[compositeEventKey(v.Resource, string(v.DataType))] = v.Value
 	}
 	aType = e.Context.GetType()
 	return exports.StoredEvent{exports.EventTimeStamp: e.Context.GetTime(), exports.EventType: aType, exports.EventSource: e.Context.GetSource(), exports.EventValues: values}, aType, nil

@@ -11,6 +11,7 @@ CONTAINER1=$6
 CONTAINER2=$7
 PCI1=$8
 PCI2=$9
+WPC=${10:-0}
 
 NSIM_DEV_1_SYS=/sys/bus/pci/devices/$PCI1
 NSIM_DEV_2_SYS=/sys/bus/pci/devices/$PCI2
@@ -94,8 +95,8 @@ set -x
 
 cleanup_ns
 
-echo "$NSIM_DEV_1_ID $PCI1 $CLK1" >$NSIM_DEV_SYS_NEW
-echo "$NSIM_DEV_2_ID $PCI2 $CLK2" >$NSIM_DEV_SYS_NEW
+echo "$NSIM_DEV_1_ID $PCI1 $CLK1 1 1 $WPC" >$NSIM_DEV_SYS_NEW
+echo "$NSIM_DEV_2_ID $PCI2 $CLK2 1 1 0" >$NSIM_DEV_SYS_NEW
 udevadm settle
 setup_ns
 

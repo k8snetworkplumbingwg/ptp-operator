@@ -1,0 +1,42 @@
+diff --git a/pkg/ipc/cache.go b/pkg/ipc/cache.go
+index bb2ffa48..6e89f944 100644
+--- a/pkg/ipc/cache.go
++++ b/pkg/ipc/cache.go
+@@ -40,23 +40,30 @@ func (c *Cache) Send(msg Message) bool {
+ 	}
+ 
+ 	c.mu.Lock()
+-	defer c.mu.Unlock()
+-
+ 	key := cacheKey{msgType: msg.Type, profile: msg.Profile, iface: msg.IFace}
+ 	if prev, ok := c.store[key]; ok && prev.ValuesEqual(msg) {
++		c.mu.Unlock()
+ 		return false
+ 	}
+ 	c.store[key] = msg
+ 	glog.V(14).Infof("Sending IPC message type=%s iface=%s value %v", msg.Type, msg.IFace, msg.Values)
++	// Unlock before a possible blocking send to avoid deadlocking with Snapshot.
++	critical := msg.Type == TypeCacheClear || msg.Type == TypeClockClass
++	c.mu.Unlock()
+ 
+-	// In case of a full buffer, drop the message. The state will be recorded within the cache, but not sent
+-	// This should only realistically happen if cloud-event-proxy goes down for some reason. In that case, when it comes
+-	// back up it will request a snapshot, and will receive the missed event.
++	// Prefer non-blocking send. Critical control-plane messages (cache_clear,
++	// clock_class) must not be silently dropped — after a CEP restart or profile
++	// apply, a lost clock_class leaves Event API CurrentState stuck (e.g. 255)
++	// while metrics already show the recovered class.
+ 	select {
+ 	case c.outCh <- msg:
+ 	default:
+-		glog.V(14).Info("channel full, dropping message")
+-		// drop message
++		if critical {
++			glog.Warningf("IPC channel full, blocking send for type=%s", msg.Type)
++			c.outCh <- msg
++		} else {
++			glog.Warningf("IPC channel full, dropping message type=%s", msg.Type)
++		}
+ 	}
+ 	return true
+ }

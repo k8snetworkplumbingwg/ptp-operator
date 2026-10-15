@@ -115,3 +115,7 @@ config/manager/env.yaml.bak
 
 # Rendered manifests from `make install/uninstall/deploy/undeploy FREE_RUN=1`
 _free-run/
+# Artifacts that should not be committed
+scripts/ca.crt
+scripts/*.tar.gz
+.cursor/

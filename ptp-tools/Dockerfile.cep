@@ -12,11 +12,14 @@ RUN git clone -b main https://github.com/redhat-cne/cloud-event-proxy.git /go/sr
 RUN hack/build-go.sh
 
 FROM quay.io/centos/centos:stream9
-COPY --from=builder /go/src/github.com/redhat-cne/cloud-event-proxy/build/cloud-event-proxy /
+# CEPv2 sidecar (bindata/linuxptp/ptp-daemon.yaml) execs /usr/local/bin/cloud-event-proxy.
+# Keep a root symlink so the v1 ENTRYPOINT path still works if CEPv2 is disabled.
+COPY --from=builder /go/src/github.com/redhat-cne/cloud-event-proxy/build/cloud-event-proxy /usr/local/bin/cloud-event-proxy
+RUN ln -s /usr/local/bin/cloud-event-proxy /cloud-event-proxy
 COPY --from=builder /go/src/github.com/redhat-cne/cloud-event-proxy/plugins/*.so /plugins/
 LABEL io.k8s.display-name="Cloud Event Proxy" \
       io.k8s.description="This is a component of OpenShift Container Platform and provides a side car to handle cloud events." \
       io.openshift.tags="openshift" \
       maintainer="PTP Team <ptp-dev@redhat.com>"
 
-ENTRYPOINT ["./cloud-event-proxy"]
+ENTRYPOINT ["/usr/local/bin/cloud-event-proxy"]

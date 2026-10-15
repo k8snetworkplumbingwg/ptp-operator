@@ -1,0 +1,56 @@
+diff --git a/pkg/clock/gm.go b/pkg/clock/gm.go
+index 1201ee25..e06b23e3 100644
+--- a/pkg/clock/gm.go
++++ b/pkg/clock/gm.go
+@@ -183,6 +183,23 @@ func (c *GM) getLeadingInterface() string {
+ 			}
+ 		}
+ 	}
++	// Fallback when ublox GNSS monitoring is unavailable (e.g. gnss-sim):
++	// DPLL marks the leading source via SignalSource, and ts2phc carries the GM iface.
++	for _, d := range c.data {
++		if d.ProcessName != event.DPLL {
++			continue
++		}
++		for _, dd := range d.Details {
++			if dd != nil && dd.SignalSource != "" && dd.IFace != "" {
++				return dd.IFace
++			}
++		}
++	}
++	for _, d := range c.data {
++		if d.ProcessName == event.TS2PHCProcessName && len(d.Details) > 0 && d.Details[0] != nil && d.Details[0].IFace != "" {
++			return d.Details[0].IFace
++		}
++	}
+ 	return event.LEADING_INTERFACE_UNKNOWN
+ }
+ 
+@@ -377,6 +394,7 @@ func (c *GM) updateState() SyncState {
+ 	c.syncState.LeadingIFace = leadingInterface
+ 
+ 	var outOfSpec, frequencyTraceable bool
++	hasGNSSData := false
+ 	if c.data != nil {
+ 		for _, d := range c.data {
+ 			switch d.ProcessName {
+@@ -391,6 +409,7 @@ func (c *GM) updateState() SyncState {
+ 				}
+ 			case event.GNSS:
+ 				gnssState = d.State
++				hasGNSSData = true
+ 			case event.TS2PHCProcessName:
+ 				ts2phcState = d.State
+ 				if parser.NoSourceTSCount == 2 {
+@@ -398,6 +417,11 @@ func (c *GM) updateState() SyncState {
+ 				}
+ 			}
+ 		}
++		// gnss-sim / NMEA path: ublox monitoring never publishes GNSS process
++		// data, but ts2phc LOCKED with NMEA still means the GM has a GNSS fix.
++		if !hasGNSSData && ts2phcState == event.PTP_LOCKED {
++			gnssState = event.PTP_LOCKED
++		}
+ 	} else {
+ 		c.syncState.State = event.PTP_FREERUN
+ 		c.syncState.ClockClass = protocol.ClockClassFreerun
