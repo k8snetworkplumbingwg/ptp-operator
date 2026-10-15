@@ -156,6 +156,35 @@ type TestConfig struct {
 	FoundSolutions               map[string]bool
 	PtpEventsIsConsumerReady     bool
 }
+
+// ClockNodeInfo returns the discovered PTP configs and the nodes running them.
+func (obj TestConfig) ClockNodeInfo() (map[string]string, error) {
+	clocks := []struct {
+		role   string
+		config *ptpDiscoveryRes
+	}{
+		{"Grandmaster Clock", obj.DiscoveredGrandMasterPtpConfig},
+		{"Clock Under Test", obj.DiscoveredClockUnderTestPtpConfig},
+		{"Secondary Clock Under Test", obj.DiscoveredClockUnderTestSecondaryPtpConfig},
+		{"Slave Clock 1", obj.DiscoveredSlave1PtpConfig},
+		{"Slave Clock 2", obj.DiscoveredSlave2PtpConfig},
+	}
+
+	info := make(map[string]string)
+	for _, clock := range clocks {
+		if clock.config == nil {
+			continue
+		}
+		config := (*ptpv1.PtpConfig)(clock.config)
+		pod, err := ptphelper.GetPTPPodWithPTPConfig(config)
+		if err != nil {
+			return info, fmt.Errorf("failed to find node for clock %s: %w", config.Name, err)
+		}
+		info[clock.role] = pod.Spec.NodeName
+	}
+	return info, nil
+}
+
 type solverData struct {
 	// Mapping between clock role and port depending on the algo
 	testClockRolesAlgoMapping map[string]*[]int
@@ -747,7 +776,8 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 1, 3, solver.Negative}}, // step5: BC2 same NIC; != BC1 NIC
 	}
 	data.problems[AlgoTelcoGMString] = &[][][]int{
-		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: first iface is WPC
+		{{int(solver.StepIsWPCNic), 1, 0}, // step1: first iface is WPC with connected GNSS
+			{int(solver.StepHasGNSSDevice), 1, 0}},
 		{{int(solver.StepIsWPCNic), 1, 1}, // step2: second iface is WPC
 			{int(solver.StepSameNic), 2, 0, 1}}, //        and on the same NIC
 	}
@@ -2007,11 +2037,14 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 
 		gmIf0 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm0]]
 
-		// Check the Iface has a WPC NIC associated to it
+		// Check the Iface has a WPC NIC associated to it (hardware or gnss-sim)
 		IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf0.NodeName)
 		if len(IfList) < 2 {
 			logrus.Error("WPC NIC with at least 2 interfaces not found on the cluster")
 			return fmt.Errorf("WPC NIC requires at least 2 interfaces on node %s, found %d (%v)", gmIf0.NodeName, len(IfList), IfList)
+		}
+		if deviceID == "" {
+			return fmt.Errorf("no connected GNSS device found for T-GM interface %s on node %s", gmIf0.IfName, gmIf0.NodeName)
 		}
 		err := CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf0.NodeName, IfList, deviceID, pkg.PtpClockUnderTestNodeLabel)
 		if err != nil {

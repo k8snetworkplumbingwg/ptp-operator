@@ -1916,6 +1916,11 @@ func ApplyIntegratedGnssSimWPCPCIOverlay() {
 		}
 		p.IfPci.Subsystem = wpcSubsystem + " (gnss-sim CI)"
 		p.IfPTPCaps.HasPtpPins = true
+		// Populate GnssDevice so StepHasGNSSDevice matches in Kind/netdevsim
+		// where L2 discovery has no physical GNSS serial port.
+		if p.IfPTPCaps.GnssDevice == "" {
+			p.IfPTPCaps.GnssDevice = envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
+		}
 	}
 	for _, p := range l2lib.GlobalL2DiscoveryConfig.PtpIfList {
 		patch(p)
