@@ -1,6 +1,10 @@
 # CI for ptp-operator with netdevsim DKMS modules.
 # Builds DKMS modules from netdevsim-dkms, then runs ptp-operator e2e
 # tests using the checked-out ptp-operator source.
+#
+# Ubuntu 26.04 / ethtool 6.19 is supported by create-vrt-clocks.sh and the
+# apt helpers, but GHA stays on 24.04 until netdevsim-dkms kernel 7.0 shims
+# are on main (DKMS_BRANCH).
 
 name: netdevsim CI
 
@@ -26,6 +30,7 @@ jobs:
   # ------------------------------------------------------------------
   dkms-test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Runner info
         run: |
@@ -33,18 +38,24 @@ jobs:
           echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
           echo "Kernel: $(uname -r)"
 
+      - uses: actions/checkout@v5
+
       - name: Clone netdevsim-dkms
         run: git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
 
       - name: Install DKMS dependencies
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y dkms gcc make ethtool linuxptp \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r) || {
-            echo "::error::Could not install kernel headers/modules for $(uname -r)"
-            exit 1
-          }
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" update
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install \
+            dkms gcc make ethtool linuxptp \
+            linux-headers-$(uname -r)
+
+      - name: Install extra kernel modules
+        timeout-minutes: 12
+        run: |
+          # gnss.ko is in extra-modules on Azure kernels; netdevsim needs it.
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-install-extra-modules.sh"
 
       - name: Install DKMS source tree
         run: |
@@ -75,11 +86,19 @@ jobs:
         id: load
         run: |
           set -e
-          sudo modprobe gnss           && echo "gnss loaded"           || echo "gnss skipped"
-          sudo modprobe nsim_ptp       && echo "nsim_ptp loaded"
-          sudo modprobe nsim_ptp_mock  && echo "nsim_ptp_mock loaded"
-          sudo modprobe nsim_dpll      && echo "nsim_dpll loaded"
-          sudo modprobe netdevsim pci_bus_nr=0x1f && echo "netdevsim loaded"
+          sudo modprobe gnss && echo "gnss loaded" || echo "gnss skipped"
+          sudo modprobe nsim_ptp
+          echo "nsim_ptp loaded"
+          sudo modprobe nsim_ptp_mock
+          echo "nsim_ptp_mock loaded"
+          sudo modprobe nsim_dpll
+          echo "nsim_dpll loaded"
+          if ! sudo modprobe netdevsim pci_bus_nr=0x1f; then
+            echo "::error::netdevsim failed to load (needs gnss from linux-modules-extra)"
+            sudo dmesg | tail -n 40 || true
+            exit 1
+          fi
+          echo "netdevsim loaded"
           lsmod | grep -E 'nsim_ptp|nsim_dpll|netdevsim|gnss' || true
           sudo chmod 666 /dev/nsim_ptp* 2>/dev/null || true
           echo "load_ok=true" >> "$GITHUB_OUTPUT"
@@ -118,7 +137,20 @@ jobs:
           DOMAIN="${FAKE_ROOT:+$(echo "$FAKE_ROOT" | cut -d: -f1)}"
           : "${DOMAIN:=0000}"
           IFACE=$(ls /sys/bus/pci/devices/${DOMAIN}:${BUS}:02.0/net/ 2>/dev/null | head -1)
-          [ -n "$IFACE" ] && ethtool -T "$IFACE" || echo "WARN: No interface found"
+          if [ -z "$IFACE" ]; then
+            echo "WARN: No interface found"
+            exit 0
+          fi
+          ethtool -T "$IFACE"
+          PHC=$(ethtool -T "$IFACE" | awk '
+            /PTP Hardware Clock:/ { print $4; exit }
+            /Hardware timestamp provider index:/ { print $5; exit }
+          ')
+          if [ -z "$PHC" ] || [ "$PHC" = "none" ]; then
+            echo "::error::ethtool -T $IFACE did not report a PHC index"
+            exit 1
+          fi
+          echo "OK: PHC index $PHC"
 
       - name: Cleanup
         if: always()
@@ -153,6 +185,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install podman 5.x
+        timeout-minutes: 10
         run: |
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
@@ -160,8 +193,8 @@ jobs:
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
             https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
             | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" update
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install podman
           podman --version
           # The kubic repo may not carry a crun newer than the distro's
           # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
@@ -220,24 +253,31 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install podman 5.x
+        timeout-minutes: 10
         run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
+          . /etc/os-release
+          # 26.04 has podman 5.x in the distro; kubic is 22.04/24.04 only.
+          if [[ "${VERSION_ID}" == "26.04" ]]; then
+            sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" update
+            sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install podman
+          else
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_${VERSION_ID}/Release.key" \
+              | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+              https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_${VERSION_ID}/ /" \
+              | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
+            sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" update
+            sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install podman
+            # The kubic repo may not carry a crun newer than the distro's
+            # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
+            CRUN_VER=1.19.1
+            sudo curl -fsSL -o /usr/bin/crun \
+              "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
+            sudo chmod +x /usr/bin/crun
+            crun --version | head -1
+          fi
           podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
           # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
           sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
@@ -251,10 +291,16 @@ jobs:
           oc version --client
 
       - name: Install DKMS dependencies
+        timeout-minutes: 12
         run: |
-          sudo apt-get install -y dkms gcc make ethtool linuxptp \
-            linux-headers-$(uname -r) \
-            linux-modules-extra-$(uname -r)
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-apt.sh" install \
+            dkms gcc make ethtool linuxptp \
+            linux-headers-$(uname -r)
+
+      - name: Install extra kernel modules
+        timeout-minutes: 12
+        run: |
+          sudo bash "$GITHUB_WORKSPACE/scripts/ci-install-extra-modules.sh"
 
       - name: Clone and install DKMS modules
         run: |
@@ -299,7 +345,10 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/ptp-images.tar /tmp/ptp-images-load
           rm -rf /tmp/go-build* /var/cache/apt /root/.cache
+          sync
+          echo 3 > /proc/sys/vm/drop_caches || true
           df -h
+          free -h
           CLEANUP
 
       - name: "Run scenario: ${{ matrix.mode }}"
