@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"regexp"
@@ -44,6 +45,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
 	exports "github.com/redhat-cne/ptp-listener-exports"
 	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
+	"github.com/redhat-cne/sdk-go/pkg/pubsub"
 	k8sv1 "k8s.io/api/core/v1"
 )
 
@@ -1598,6 +1600,164 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Verifying a PTP event is delivered to the consumer (subscribe + read)")
 				Expect(event.PushInitialEvent(string(ptpEvent.SyncStateChange), 2*time.Minute)).
 					To(Succeed(), "did not receive a SyncStateChange event via the subscribed consumer")
+			})
+
+			// reaching ten failed deliveries must remove the subscription
+			// and leave the node's subscription ConfigMap present and empty.
+			It("Should clean up subscriptions after at least ten consecutive failed event deliveries", func() {
+				if fullConfig.PtpModeDiscovered != testconfig.OrdinaryClock {
+					Skip("Subscription cleanup test currently supports OC topology only")
+				}
+				if ptphelper.PtpEventEnabled() != 2 {
+					Skip("Subscription cleanup test requires Event API v2")
+				}
+				// TODO: remove skip after implementing configmap for event subscription.
+				// temporary skip in netdevsim CI
+				if os.Getenv("ENABLE_CEPV2") == "true" {
+					Skip("TODO: remove skip after implementing configmap for event subscription")
+				}
+				config := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+				Expect(config).NotTo(BeNil())
+				interfaces := ptpv1.GetInterfaces(*config, ptpv1.Slave)
+				Expect(interfaces).To(HaveLen(1), "OC must have exactly one follower interface")
+				iface := interfaces[0]
+				skippedInterfaces, isSet := os.LookupEnv("SKIP_INTERFACES")
+				if !isSet {
+					Skip("Mandatory to provide skipped interface to avoid making a node disconnected from the cluster")
+				}
+				for _, excluded := range strings.Split(skippedInterfaces, ",") {
+					if iface == strings.TrimSpace(excluded) {
+						Skip("OC follower interface " + iface + " is excluded by SKIP_INTERFACES")
+					}
+				}
+				ctx := context.Background()
+				publisherPod := fullConfig.DiscoveredClockUnderTestPod
+				Expect(publisherPod).NotTo(BeNil())
+				nodeName := publisherPod.Spec.NodeName
+				Expect(nodeName).NotTo(BeEmpty())
+				api := event.NewPublisherAPI(publisherPod)
+				DeferCleanup(func() {
+					defer func() { Expect(event.DeleteConsumerNamespace()).To(Succeed()) }()
+					Expect(event.ResetSubscriptions(context.Background(), api, nodeName)).To(Succeed())
+				})
+
+				By("Starting with an empty subscription store and deploying the consumer")
+				Expect(event.ResetSubscriptions(context.Background(), api, nodeName)).To(Succeed())
+				Expect(event.CreateConsumerApp(nodeName)).To(Succeed())
+				Expect(event.WaitForConsumerReady(nodeName)).To(Succeed())
+				var subscriptions []pubsub.PubSub
+				var subscription pubsub.PubSub
+				Eventually(func() (bool, error) {
+					var err error
+					subscriptions, err = api.Subscriptions(ctx)
+					for _, candidate := range subscriptions {
+						if strings.HasSuffix(candidate.Resource, string(ptpEvent.PtpLockState)) {
+							subscription = candidate
+							return true, nil
+						}
+					}
+					return false, err
+				}, 2*time.Minute, time.Second).Should(BeTrue(), "consumer must subscribe to PTP lock state")
+
+				By("Keeping one PTP lock-state subscription to isolate the failure count")
+				for _, candidate := range subscriptions {
+					if candidate.ID != subscription.ID {
+						Expect(api.Delete(ctx, "subscriptions/"+candidate.ID)).To(Succeed())
+					}
+				}
+				Eventually(func() ([]pubsub.PubSub, error) { return api.Subscriptions(ctx) }, 30*time.Second, time.Second).Should(HaveLen(1))
+				logrus.Infof("Cleanup fixture: node=%s config=%s interface=%s subscription=%s resource=%s", nodeName, config.Name, iface, subscription.ID, subscription.Resource)
+				Eventually(func() (map[string]string, error) {
+					return event.SubscriptionConfigMapData(ctx, nodeName)
+				}, 2*time.Minute, time.Second).Should(HaveLen(1), "the node ConfigMap must persist the consumer")
+
+				// Refresh the shared engine if a preceding case removed its pod.
+				engineCurrent := false
+				if portEngine.ClockPod != nil && portEngine.ClockPod.Spec.NodeName == nodeName &&
+					len(portEngine.Ports) == 1 && portEngine.Ports[0] == iface {
+					pod, err := client.Client.CoreV1().Pods(portEngine.ClockPod.Namespace).Get(ctx, portEngine.ClockPod.Name, metav1.GetOptions{})
+					engineCurrent = err == nil && pod.UID == portEngine.ClockPod.UID && pod.DeletionTimestamp == nil
+				}
+				if !engineCurrent {
+					portEngine.Initialize(publisherPod, interfaces)
+				}
+				restore := func() {
+					portEngine.TurnOnAndWaitSlave(iface, nodeName)
+					Eventually(func() error {
+						offset, err := metrics.GetPtpOffeset(iface, &nodeName)
+						if err != nil {
+							return err
+						}
+						if offset < metrics.MinOffsetNs || offset >= metrics.MaxOffsetNs {
+							return fmt.Errorf("offset %d out of bounds [%d, %d)", offset, metrics.MinOffsetNs, metrics.MaxOffsetNs)
+						}
+						return nil
+					}, 2*time.Minute, time.Second).Should(Succeed(), "follower offset must recover")
+				}
+				// Recovery must also work after the subscription resource is deleted.
+				DeferCleanup(restore)
+				waitForLocked := func() {
+					Eventually(func() (string, error) {
+						return api.PTPLockState(ctx, subscription.Resource, iface)
+					}, 2*time.Minute, time.Second).Should(Equal(string(ptpEvent.LOCKED)))
+				}
+
+				By("Verifying PTP notification delivery during an interface down/up warmup")
+				waitForLocked()
+				portEngine.TurnOffAndWaitFaulty(iface, nodeName)
+				Eventually(func() (string, error) {
+					return api.PTPLockState(ctx, subscription.Resource, iface)
+				}, 2*time.Minute, time.Second).Should(Or(Equal(string(ptpEvent.HOLDOVER)), Equal(string(ptpEvent.FREERUN))))
+				notificationsBefore, err := event.ConsumerPTPStateCount(ctx, subscription.Resource, iface, string(ptpEvent.LOCKED))
+				Expect(err).NotTo(HaveOccurred())
+				restore()
+				waitForLocked()
+				Eventually(func() (int, error) {
+					return event.ConsumerPTPStateCount(ctx, subscription.Resource, iface, string(ptpEvent.LOCKED))
+				}, 30*time.Second, time.Second).Should(BeNumerically(">", notificationsBefore), "live consumer must receive the PTP recovery notification")
+				logrus.Info("Cleanup fixture: live consumer received PTP LOCKED after interface recovery")
+
+				By("Removing the consumer and toggling the interface until at least ten deliveries fail")
+				failureLogs, err := event.NewFailureLogs(ctx, publisherPod, subscription)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(event.StopConsumer(ctx)).To(Succeed())
+				// Port helpers have their own timeouts; check this budget between transitions.
+				generationCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+				defer cancel()
+				failures := 0
+				down := true
+				Eventually(func() (int, error) {
+					if down {
+						portEngine.TurnOffAndWaitFaulty(iface, nodeName)
+					} else {
+						restore()
+					}
+					down = !down
+					count, err := failureLogs.Count(generationCtx)
+					if err != nil {
+						return 0, err
+					}
+					if count != failures {
+						logrus.Infof("Cleanup fixture: completed failed deliveries=%d", count)
+					}
+					failures = count
+					return count, nil
+				}).WithContext(generationCtx).WithTimeout(10*time.Minute).WithPolling(time.Second).
+					Should(BeNumerically(">=", 10), "interface toggling must reach at least ten completed failures")
+				logrus.Infof("Cleanup fixture: reached failure threshold with %d completed failed deliveries", failures)
+
+				By("Verifying automatic subscription deletion and an empty node ConfigMap")
+				Eventually(func() (int, error) {
+					status, _, err := api.Request(ctx, http.MethodGet, "subscriptions/"+subscription.ID)
+					return status, err
+				}, 2*time.Minute, time.Second).Should(Equal(http.StatusNotFound))
+				logrus.Infof("Cleanup fixture: subscription HTTP 404 after %d completed failed deliveries", failures)
+				configMapCtx, cancelConfigMap := context.WithTimeout(ctx, 10*time.Second)
+				defer cancelConfigMap()
+				Eventually(func() (map[string]string, error) {
+					return event.SubscriptionConfigMapData(configMapCtx, nodeName)
+				}).WithContext(configMapCtx).WithTimeout(10*time.Second).WithPolling(time.Second).
+					Should(BeEmpty(), "the node ConfigMap must remain present and empty after cleanup")
 			})
 
 			// The event pipeline also exports Prometheus metrics.
