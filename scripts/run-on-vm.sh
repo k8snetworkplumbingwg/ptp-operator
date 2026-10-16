@@ -314,10 +314,8 @@ fi
 # ── Images + deploy (default) ───────────────────────────────────────
 if [[ "$RUN_PHASE" == "all" ]]; then
 
-    step "Deleting existing kind cluster and containers"
+    step "Deleting existing kind cluster"
     run_quiet_with_log_dump_on_failure "kind-delete-cluster" kind delete cluster --name kind-netdevsim || true
-
-    run_quiet_with_log_dump_on_failure "podman-rm-switch1" podman rm -f switch1 || true
 
     export IMG_PREFIX="$VM_IP/test"
 
@@ -394,9 +392,8 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
         export IMG_PREFIX="${IMG_PREFIX:-$VM_IP/test}"
     fi
 
-    step "Deleting kind cluster and containers"
+    step "Deleting existing kind cluster"
     run_quiet_with_log_dump_on_failure "kind-delete-cluster" kind delete cluster --name kind-netdevsim || true
-    run_quiet_with_log_dump_on_failure "podman-rm-switch1" podman rm -f switch1 || true
 
     step "Starting kind cluster"
     run_step_rows_begin "Building kind cluster..."
