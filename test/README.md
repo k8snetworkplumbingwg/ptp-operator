@@ -9,7 +9,7 @@ Install Ginkgo v2 CLI following the [Migration Guide](https://onsi.github.io/gin
 To run the conformance tests, first set the following environment variables:
 - **PTP_LOG_LEVEL**: sets the log level (defaults to info), valid values are:  trace, debug, info, warn, error, fatal, panic
 - **KUBECONFIG**: this is the path to the openshift kubeconfig
-- **PTP_TEST_MODE**: this is the desired mode to run the tests. Choose between: Discovery, OC and BC. See below for an explanation for each mode.
+- **PTP_TEST_MODE**: this is the desired mode to run the tests. Choose between: Discovery, OC, DualFollower, BC, DualNICBC, DualNICBCHA, TGM, and TBC. See below for an explanation for each mode.
 - **DISCOVERY_MODE**: This is a legacy option and is equivalent to setting "Discovery" option in the PTP_TEST_MODE environment variable
 - **ENABLE_TEST_CASE**: This is an option to run the long running tests separated by comma. For example, to run reboot test, `ENABLE_TEST_CASE=reboot` shall be used.
 - **SKIP_INTERFACES**: passes a list of interfaces to be skipped in the form "eno1,ens2f1" `SKIP_INTERFACES="eno1,ens2f1"`. These interfaces are excluded from L2 discovery and any solver solutions containing them are also discarded.
@@ -310,9 +310,13 @@ The OC configurations includes a grandmaster providing a clock signal to a slave
 
 ![multi_oc](doc/multi_oc.svg)
 
+In the simulated CI cluster (direct server-to-server connections), the OC scenario resolves for example as:
+
+![scenario-oc](doc/scenario-oc.svg)
+
 #### Dual Follower
 The Dual Follower configuration includes a grand master providing a clock signal to 2 port belonging to the same NIC. One port is in LISTENING state while the other is in SLAVE state. If the SLAVE port looses the grandmaster signal, the LISTENING port transitions to SLAVE.
-When running the test in a cluster with a least 2 nodes and one lan connecting a port to 2 remote ports on the same NIC, the following local GM configuration could be resolved for testing:
+The grand master needs 2 ports, each directly connected to one of the follower ports. When running the test in a cluster with at least 2 nodes, one acting as a 2-port grand master (both ports on the same NIC) and one with a dual port NIC acting as the follower, the following local GM configuration could be resolved for testing:
 
 ![dual-follower-local-gm](doc/dual-follower-local-gm.svg)
 
@@ -320,30 +324,46 @@ If there is a NIC with 2 port available and receiving ptp frames the following e
 
 ![dual-follower-ext-gm](doc/dual-follower-ext-gm.svg)
 
+In the simulated CI cluster, the dual follower scenario resolves for example as:
+
+![scenario-dualfollower](doc/scenario-dualfollower.svg)
+
 #### BC
 Several boundary clock scenarios are possible, dependent on minimum hardware configuration.
-In the optimal scenario, the openshift cluster needs to be at least connected to 2 separate LANs. These LANs are realized with the help of VLANs or other technologies. The following configuration is tested if 2 LANs are detected in the cluster. Note that the cluster needs to have at least one NIC which ports are connected on the 2 separate LANs, as shown below:
+In the optimal scenario, the openshift cluster needs to be at least connected to 2 separate LANs. Each LAN can be a direct point-to-point connection or realized with the help of VLANs or other technologies. The following configuration is tested if 2 LANs are detected in the cluster. Note that the cluster needs to have at least one NIC which ports are connected on the 2 separate LANs, as shown below:
 
 ![multi_bc_with_slave](doc/multi_bc_with_slave.svg)
 
-If only one LAN is available, the following configuration is tested. In this case, the synchronization of the slave ordinary clocks cannot be tested
+If not enough resources are available for downstream slaves, the following configuration is tested. In this case, the synchronization of the slave ordinary clocks cannot be tested. The grandmaster must be on the BC slave port's LAN so that PTP sync works over a direct connection (or a plain, non-BC switch):
 
 ![multi_bc](doc/multi_bc.svg)
+
+In the simulated CI cluster, the BC scenario resolves for example as (GM: worker2, BC: worker, downstream slave: worker3):
+
+![scenario-bc](doc/scenario-bc.svg)
 
 #### DualNICBC
 
 Several dual NIC boundary clock scenarios are possible, dependent on minimum hardware configuration.
-In the optimal scenario, the openshift cluster needs to be at least connected to 3 separate LANs. These LANs are realized with the help of VLANs or other technologies. The following configuration is tested if 3 LANs are detected in the cluster.
+In the optimal scenario, the openshift cluster needs to be at least connected to 3 separate LANs (each a direct point-to-point connection, or realized with VLANs or other technologies), and the grandmaster needs 2 ports on the same NIC — each directly connected to one of the BC slave ports. The following configuration is tested if 3 LANs are detected in the cluster.
 
 ![multi_dnbc_with_slaves](doc/multi_dnbc_with_slaves.svg)
 
-If only one LAN is available, the following configuration is tested. In this case, the synchronization of the slave ordinary clocks cannot be tested
+If not enough resources are available for downstream slaves, the following configuration is tested. In this case, the synchronization of the slave ordinary clocks cannot be tested. The grandmaster still needs 2 ports, each directly connected to one BC slave port:
 
 ![multi_dnbc](doc/multi_dnbc.svg)
+
+In the simulated CI cluster, the DualNICBC scenario resolves for example as (2-port GM: worker2, BCs: worker, downstream slaves: worker3):
+
+![scenario-dualnicbc](doc/scenario-dualnicbc.svg)
 
 #### DualNICBC HA
 
 This mode allows same scenarios as DualNIC BC and will run all of its test cases, but it will create three PtpConfig resources: two for the BCs, with ptp4l config only, and [a third one with just phc2sys config](../README.md#ptpconfig-to-enable-high-availability-for-phc2sys-by-adding-profiles-of-ptp4l-enabled-configs-under-haprofiles) using the ptp4l profiles as HA profiles. Thus, if the primary slave interface/link for the primary BC fails, phc2sys will switch to the secondary BC slave interface as time source for the system clock. In this case, apart from syncing the system clock, the secondary BC's PHC will also sync the primary BC's PHC while its slave interface is down.
+
+In the simulated CI cluster, the DualNICBCHA scenario uses the same port placement as DualNICBC (links L1–L4) plus the phc2sys HA profile:
+
+![scenario-dualnicbcha](doc/scenario-dualnicbcha.svg)
 
 ##### Both BCs are syncing their PHCs, but primary BC is selected to sync the system clock
 
@@ -352,6 +372,36 @@ This mode allows same scenarios as DualNIC BC and will run all of its test cases
 ##### Primary BC is down: system clock and both PHCs are synced by the slave interface of the secondary BC.
 
 ![dualnicbc-ha-primary-bc-selected](doc/dualnic-bc-ha-secondary-bc-selected.svg)
+
+#### TGM (Telecom Grandmaster / T-GM)
+
+The TGM configuration exercises a Westport Channel (E810-XXVDA4T) telecom grandmaster: GNSS feeds `ts2phc`, which disciplines the NIC PHC; two ports on the same WPC NIC act as PTP masters (`PTP_TEST_MODE=TGM`, PtpConfig `test-wpc-grandmaster`). The L2 solver requires a WPC NIC with a connected GNSS device (`StepIsWPCNic` + `HasGNSSDevice`) and a second port on that same NIC:
+
+![multi_tgm](doc/multi_tgm.svg)
+
+**Not supported in the netdevsim / Kind simulator.** There is no WPC NIC or GNSS in the CI cluster, so auto-config will not resolve TGM there. Illustrative role placement (same diagram language as the CI scenarios):
+
+![scenario-tgm](doc/scenario-tgm.svg)
+
+On the ptpcimno lab (verified via NodePtpDevice + `/dev/gnss0`), WPC+GNSS is present on **cnfdf31 NIC4 ens4\*** (GNSS on `ens4f0`) and **cnfdf32 NIC6 ens7\*** (GNSS on `ens7f0`). **cnfdf30 has only E810-XXVDA4 (no WPC/GNSS).** TGM fits the existing L1–L6 direct cabling (no inter-node link required for the CUT); see `ptpcimno-topology-direct.drawio` page **TGM**.
+
+#### TBC (Telecom Boundary Clock / T-BC)
+
+The TBC configuration exercises a Westport Channel telecom boundary clock: one receiver and two transmitters on the same WPC NIC, with either a local GM on the receiver’s LAN (`PTP_TEST_MODE=TBC`) or an external GM (`EXTERNAL_GM=true`, solver `TBCExtGM`). Auto-config creates PtpConfig `test-wpc-tbc` (profiles `tbc-tr` / `tbc-tt` plus `ts2phc` and E810 interconnections) and, for the local-GM path, `test-grandmaster` on a different node. Downstream-slave solver variants (`TBCWithSlaves*`) exist but are not selected by the current deploy path.
+
+Local GM constraints (algo `TBC`):
+
+![multi_tbc](doc/multi_tbc.svg)
+
+External GM constraints (algo `TBCExtGM`, `EXTERNAL_GM=true`):
+
+![multi_tbc_extgm](doc/multi_tbc_extgm.svg)
+
+**Not supported in the netdevsim / Kind simulator.** WPC (and GNSS for local GM) requirements are not met in CI. Illustrative role placement:
+
+![scenario-tbc](doc/scenario-tbc.svg)
+
+On ptpcimno, local-GM TBC needs the 3-port WPC on **cnfdf31 NIC4** as CUT and the WPC+GNSS on **cnfdf32 NIC6** as local GM. **L1–L6 do not connect those two WPC NICs** (L3/L4 touch WPC ports but peer non-WPC NICs), so TBC is **not** satisfied by the same direct connections alone — add **L7 `cnfdf31.ens4f1 ↔ cnfdf32.ens7f2`** (spare WPC ports). See `ptpcimno-topology-direct.drawio` page **TBC**.
 
 #### External Grandmaster support
 
@@ -365,6 +415,8 @@ It is also possible to use an existing Grandmaster to synchronize clock to. This
 | OC      | true       | OC + discovered External GM |
 | BC      | true       | BC + discovered External GM |
 | Dual NIC BC      | true       |  Dual NIC BC + discovered External GM |
+| TBC      | false/not set       | T-BC + self configured local GM |
+| TBC      | true       | T-BC + discovered External GM |
 | Discovery     | true/false       | Discovered Clock + discovered External GM |
 
 ##### External GM and OC
@@ -479,7 +531,24 @@ The representation in the code of the visual representation of the algorithm rep
 	BCAlgo := [][][]int{
 		{{int(StepNil), 0, 0}},            //step nil
 		{{int(StepSameNic), 2, 0, 1}},     //step0 checks that p0 and p1 are in the same NIC
-		{{int(StepSameIsland2), 2, 1, 2}}, //step1 checks that p1 and p2 are in the same island
+		{{int(StepSameLan2), 2, 0, 2}},    //step1 checks that p0 (BC slave port) and p2 (grandmaster) are in the same LAN
+	}
+```
+
+TGM and TBC follow the same pattern (see `multi_tgm.svg`, `multi_tbc.svg`, `multi_tbc_extgm.svg`):
+
+```
+	TGMAlgo := [][][]int{
+		{{int(StepIsWPCNic), 1, 0}, {int(StepHasGNSSDevice), 1, 0}}, // p0: WPC + GNSS
+		{{int(StepIsWPCNic), 1, 1}, {int(StepSameNic), 2, 0, 1}},    // p1: WPC sibling of p0
+	}
+
+	TBCAlgo := [][][]int{
+		{{int(StepIsWPCNic), 1, 0}},                              // p0: T-BC receiver on WPC
+		{{int(StepSameNic), 2, 0, 1}},                             // p1: transmitter 1 same NIC
+		{{int(StepSameNic), 2, 0, 2}},                             // p2: transmitter 2 same NIC
+		{{int(StepSameLan2), 2, 0, 3}, {int(StepSameNode), 2, 0, 3, Negative}}, // p3: local GM, same LAN, different node
+		{{int(StepIsWPCNic), 1, 3}, {int(StepHasGNSSDevice), 1, 3}}, // p3: WPC + GNSS
 	}
 ```
 
@@ -522,35 +591,30 @@ Future work for netdevsim:
 We created a VM with the modifications specified above and optimized to run in AWS.
 
 ## Integrating netdevsim into a simulated network
-![switch](doc/ptp-ci-aws-switch.svg)
-Netdevsim defines interface pairs connected by a virtual link
-openvswitch used to simulate a real switch
-- ptp4l is configured as a boundary clock
-- ptp packets are dropped by the switch
-ptp4l boundary clock used to bridge ptp information:
-- note: in this implementation ptp packets cannot be switched since they do not have timestamps (ptp packets should not be switched anyways). Timestamps are passed directly from the local port’s phc to the remote port.
+Netdevsim defines interface pairs connected by a virtual link. The servers (kind worker containers) are connected **directly** to each other, without any switch in between: each netdevsim link is a point-to-point connection carrying the PTP frames between exactly 2 ports. Every clock pair that needs to communicate (GM to slave, BC master port to downstream slave, ...) must therefore share a direct link, and a grand master feeding 2 remote ports (dual follower clock, dual NIC BC) needs 2 ports.
+
+The CI topology created by `configServers.sh` is shown below (nodes, NICs with their PHC clock, and the 6 direct links; the L1–L6 roles match the scenario illustrations):
+
+![ptp-ci-direct](doc/ptp-ci-direct.svg)
 
 ## Using a Kind cluster and netdevsim to created ptp-operator configurations
-The overall configuration for of the ptp CI test cluster is below:
-![overview](doc/ptp-ci-aws.svg)
-The following diagram shows an example of configuration that can be created in the simulated environment. The switch connections are not shown in this diagram:
-![example](doc/ptp-ci-aws-dnbc-example.svg)
+The overall configuration for of the ptp CI test cluster is described above: a kind cluster with 3 workers ("servers") whose netdevsim ports are directly connected. The L2 discovery and graph solver resolve the OC, BC, DualNICBC, DualNICBCHA and DualFollower scenarios from this cabling — the scenario sections above show, for each mode, where the clocks and clock ports land (scenario-*.svg). TGM and TBC also have solver definitions and illustrative diagrams (`scenario-tgm.svg`, `scenario-tbc.svg`), but they require Westport Channel hardware and GNSS and **cannot be deployed in the netdevsim simulator** yet; see the TGM/TBC sections above and the lab pages in `ptpcimno-topology-direct.drawio`. The multi-page draw.io source for the README diagrams is [doc/ptp-test-diagrams.drawio](doc/ptp-test-diagrams.drawio) (one page per SVG; export a page to SVG with the same name under `doc/`).
 
 ## Scripts documentation
 - `configpair.sh`: creates a 2 netdevsim interfaces and connected via a virtual link
 ```
-  ./configpair.sh < port1 netdevsim ID (unique)> <port 2 netdevsim ID (unique)> <name of the interface on both side of the link (ptp1)>
+  ./configpair.sh < port1 netdevsim ID (unique)> <port 2 netdevsim ID (unique)> <name of the interface on side 1 (ptp1)> <name of the interface on side 2 (ptp1)>
 # <port1 ptp clock ID A (/dev/ptpA)> < port2 ptp clock ID B (/dev/ptpB)> <port1 container name > <port2 container name> <port1 pci ID> <port2 pci ID>
 ```
+- `configServers.sh`: creates the netdevsim NICs and direct server-to-server links of the CI topology
 - `deploy-prometheus.sh`: Deploys prometheus
 - `kind-config.yaml`: reference kind cluster configuration
-- `reset-devices.sh`: loads netdevsim and openvswitch kernel drivers
+- `reset-devices.sh`: loads the netdevsim kernel driver
 - `run-on-vm.sh`: top level script called by the github action to run CI tests.  Can also be used on local VM with netdevsim to run tests locally.
 - `run-tests.sh`: Configurable PTP conformance test runner. Supports serial, parallel, or both execution kinds, selectable test modes, and optional linuxptp-daemon image for pmc pod tests.
 ```
 ./run-tests.sh --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>]
 ```
-- `configSwitch2.sh`: configures virtual Ethernet switch (openvswitch) container
 - `create-vrt-clocks.sh`: per-node stand-in mock PHCs for virtual CLOCK_REALTIME (DKMS CI)
 - `ptp-vrt/`: phc2sys LD_PRELOAD shim + wrapper (baked into linuxptp-daemon image)
 - `fix-certs.sh`: Fix certificates for the linuxptp-daemon in Kind
@@ -562,7 +626,6 @@ The following diagram shows an example of configuration that can be created in t
 ```
 - `create-local-registry.sh`: creare local docker registry
 - `k8s-start.sh`: starts the kind cluster
-- `ptpswitchconfig.cfg`: ptp4l configuration for the Openvswitch switch1
 
 ## ptp-tools
 The ptp-tools list a set set a make targets to build all images required to run the ptp-operator

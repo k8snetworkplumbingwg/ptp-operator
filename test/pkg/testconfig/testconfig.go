@@ -692,18 +692,25 @@ func initAndSolveProblems() {
 		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2
 	}
 
+	// Dual follower with local GM: the grandmaster needs 2 ports, each directly
+	// connected to one of the follower ports (p0/p2 on the same NIC, p1/p3 on the
+	// same node and NIC).
 	data.problems[AlgoDualFollowerString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
-		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2
-		{{int(solver.StepSameLan2), 2, 1, 2}, // step3
-			{int(solver.StepSameNic), 2, 0, 2}}, // step3
+		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2: GM port 1 on follower port 1's LAN
+		{{int(solver.StepSameNic), 2, 0, 2}},  // step3: follower port 2 on same NIC as follower port 1
+		{{int(solver.StepSameLan2), 2, 2, 3}, // step4: GM port 2 on follower port 2's LAN
+			{int(solver.StepSameNode), 2, 1, 3}, // step4: GM port 2 on same node as GM port 1
+			{int(solver.StepSameNic), 2, 1, 3}}, // step4: GM port 2 on same NIC as GM port 1
 
 	}
 
+	// BC without slaves: GM must be on the BC slave port's LAN so that PTP sync
+	// works over a direct connection or a plain (non-BC) switch
 	data.problems[AlgoBCString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
 		{{int(solver.StepSameNic), 2, 0, 1}},  // step2
-		{{int(solver.StepSameLan2), 2, 1, 2}}, // step3
+		{{int(solver.StepSameLan2), 2, 0, 2}}, // step3
 
 	}
 	data.problems[AlgoBCWithSlavesString] = &[][][]int{
@@ -714,14 +721,19 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 0, 3, solver.Negative},
 			{int(solver.StepSameLan2), 2, 0, 3, solver.Negative}}, // step4 - downstream slaves and grandmaster must be on different nics
 	}
+	// Dual NIC BC without slaves: the grandmaster needs 2 ports (one per BC slave
+	// port), each directly connected to one of the BC slave ports
 	data.problems[AlgoDualNicBCString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
-		{{int(solver.StepSameNic), 2, 0, 1}},  // step2
-		{{int(solver.StepSameLan2), 2, 1, 2}}, // step3
-		{{int(solver.StepSameNode), 2, 1, 3}, // step4
-			{int(solver.StepSameLan2), 2, 2, 3}}, // step4
-		{{int(solver.StepSameNic), 2, 3, 4},
-			{int(solver.StepSameNic), 2, 1, 3, solver.Negative}}, // step5
+		{{int(solver.StepSameNic), 2, 0, 1}},  // step2: BC1 ports on the same NIC
+		{{int(solver.StepSameLan2), 2, 0, 2}}, // step3: GM port 1 on BC1 slave port's LAN
+		{{int(solver.StepSameNode), 2, 2, 3}, // step4: GM port 2 on same node as GM port 1
+			{int(solver.StepSameNic), 2, 2, 3}}, // step4: and on the same NIC
+		{{int(solver.StepSameNode), 2, 0, 4}, // step5: BC2 slave port on the BC node
+			{int(solver.StepSameLan2), 2, 3, 4},                  // step5: on GM port 2's LAN
+			{int(solver.StepSameNic), 2, 0, 4, solver.Negative}}, // step5: and on a different NIC than the BC1 slave port
+		{{int(solver.StepSameNic), 2, 4, 5}, // step6: BC2 ports on the same NIC
+			{int(solver.StepSameNic), 2, 1, 5, solver.Negative}}, // step6: BC1 and BC2 master ports on different NICs
 	}
 	data.problems[AlgoTelcoGMString] = &[][][]int{
 		{{int(solver.StepIsWPCNic), 1, 0}, // step1: first iface is WPC with connected GNSS
@@ -775,21 +787,25 @@ func initAndSolveProblems() {
 		{{int(solver.StepSameNic), 2, 1, 3}},         // step8: transmitter 2 on same NIC as receiver
 	}
 
+	// Dual NIC BC with slaves: the grandmaster needs 2 ports (one per BC slave
+	// port), each directly connected to one of the BC slave ports
 	data.problems[AlgoDualNicBCWithSlavesString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
-		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2
-		{{int(solver.StepSameNic), 2, 1, 2}},  // step3
-		{{int(solver.StepSameLan2), 2, 2, 3}}, // step4
-		{{int(solver.StepSameNode), 2, 2, 4}, // step5
-			{int(solver.StepSameLan2), 2, 3, 4}}, // step5
-		{{int(solver.StepSameNic), 2, 4, 5}}, // step6
-		{{int(solver.StepSameLan2), 2, 5, 6}, // step7
-			{int(solver.StepSameNic), 2, 0, 3, solver.Negative}, // downstream slaves and grandmaster must be on different nics
-			{int(solver.StepSameNic), 2, 6, 3, solver.Negative}, // downstream slaves and grandmaster must be on different nics
-			{int(solver.StepSameNic), 2, 2, 4, solver.Negative}, // dual nic BC uses 2 different NICs
-			{int(solver.StepSameLan2), 2, 4, 6, solver.Negative},
-			{int(solver.StepSameLan2), 2, 0, 6, solver.Negative}, // Downstream slaves use different lans to not share same clock
-			{int(solver.StepSameNic), 2, 0, 6, solver.Negative}}, // OC slave ports must be on different nics
+		{{int(solver.StepSameLan2), 2, 0, 1}}, // step2: slave 1 on BC1 master port's LAN
+		{{int(solver.StepSameNic), 2, 1, 2}},  // step3: BC1 ports on the same NIC
+		{{int(solver.StepSameLan2), 2, 2, 3}}, // step4: GM port 1 on BC1 slave port's LAN
+		{{int(solver.StepSameNode), 2, 3, 4}, // step5: GM port 2 on same node as GM port 1
+			{int(solver.StepSameNic), 2, 3, 4}}, // step5: and on the same NIC
+		{{int(solver.StepSameNode), 2, 2, 5}, // step6: BC2 slave port on the BC node
+			{int(solver.StepSameLan2), 2, 4, 5},                  // step6: on GM port 2's LAN
+			{int(solver.StepSameNic), 2, 2, 5, solver.Negative}}, // step6: dual nic BC uses 2 different NICs
+		{{int(solver.StepSameNic), 2, 5, 6}}, // step7: BC2 ports on the same NIC
+		{{int(solver.StepSameLan2), 2, 6, 7}, // step8: slave 2 on BC2 master port's LAN
+			{int(solver.StepSameNic), 2, 0, 3, solver.Negative},   // downstream slaves and grandmaster must be on different nics
+			{int(solver.StepSameNic), 2, 7, 3, solver.Negative},   // downstream slaves and grandmaster must be on different nics
+			{int(solver.StepSameNic), 2, 0, 7, solver.Negative},   // OC slave ports must be on different nics
+			{int(solver.StepSameLan2), 2, 5, 7, solver.Negative},  // downstream slaves use different lans to not share same clock
+			{int(solver.StepSameLan2), 2, 0, 7, solver.Negative}}, // downstream slaves use different lans to not share same clock
 
 	}
 	data.problems[AlgoOCExtGMString] = &[][][]int{
@@ -847,6 +863,7 @@ func initAndSolveProblems() {
 	(*data.testClockRolesAlgoMapping[AlgoDualFollowerString])[Slave1] = 0
 	(*data.testClockRolesAlgoMapping[AlgoDualFollowerString])[Grandmaster] = 1
 	(*data.testClockRolesAlgoMapping[AlgoDualFollowerString])[Slave2] = 2
+	(*data.testClockRolesAlgoMapping[AlgoDualFollowerString])[GrandmasterSibling] = 3
 
 	// BC
 
@@ -865,8 +882,9 @@ func initAndSolveProblems() {
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[BC1Slave] = 0
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[BC1Master] = 1
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[Grandmaster] = 2
-	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[BC2Master] = 3
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[GrandmasterSibling] = 3
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[BC2Slave] = 4
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCString])[BC2Master] = 5
 
 	// Dual NIC BC with slaves
 
@@ -874,9 +892,10 @@ func initAndSolveProblems() {
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC1Master] = 1
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC1Slave] = 2
 	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[Grandmaster] = 3
-	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC2Slave] = 4
-	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC2Master] = 5
-	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[Slave2] = 6
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[GrandmasterSibling] = 4
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC2Slave] = 5
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[BC2Master] = 6
+	(*data.testClockRolesAlgoMapping[AlgoDualNicBCWithSlavesString])[Slave2] = 7
 
 	// GM
 	(*data.testClockRolesAlgoMapping[AlgoTelcoGMString])[Grandmaster] = 0
@@ -974,7 +993,11 @@ func GetFullDiscoveredConfig(namespace string, forceUpdate bool) TestConfig {
 	return GlobalConfig
 }
 
-func CreatePtpConfigGrandMaster(nodeName, ifName string) error {
+// CreatePtpConfigGrandMaster creates the grandmaster PtpConfig. A single-port
+// grandmaster passes one interface name; a dual-port grandmaster (e.g. feeding
+// a dual follower clock or the two slave ports of a dual NIC BC) passes two
+// interface names, which must belong to the same NIC (single PHC).
+func CreatePtpConfigGrandMaster(nodeName string, ifNames ...string) error {
 	ptpSchedulingPolicy := SCHED_OTHER
 	configureFifo, err := strconv.ParseBool(os.Getenv("CONFIGURE_FIFO"))
 	if err == nil && configureFifo {
@@ -988,11 +1011,20 @@ func CreatePtpConfigGrandMaster(nodeName, ifName string) error {
 
 	// Grandmaster - add interface section with auth settings
 	gmConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\npriority1 0\npriority2 0\nclockClass 6"
-	gmConfig = AddAuthSettings(AddInterface(gmConfig, ifName, 1))
+	for _, ifName := range ifNames {
+		gmConfig = AddAuthSettings(AddInterface(gmConfig, ifName, 1))
+	}
 	ptp4lsysOpts := ptp4lEthernet
 	phc2sysOpts := phc2sysGM
+
+	// With a single interface the profile interface is set explicitly; with
+	// multiple interfaces the ports are defined by the ptp4lConf sections only.
+	var ifNamePtr *string
+	if len(ifNames) == 1 {
+		ifNamePtr = &ifNames[0]
+	}
 	return createConfig(pkg.PtpGrandMasterPolicyName,
-		&ifName,
+		ifNamePtr,
 		&ptp4lsysOpts,
 		gmConfig,
 		&phc2sysOpts,
@@ -1433,7 +1465,7 @@ func PtpConfigOC(isExtGM bool) error {
 	return nil
 }
 func PtpConfigDualFollower(isExtGM bool) error {
-	var grandmaster, slave1, slave2 int
+	var grandmaster, grandmasterSibling, slave1, slave2 int
 
 	BestSolution := ""
 
@@ -1456,14 +1488,17 @@ func PtpConfigDualFollower(isExtGM bool) error {
 	case AlgoDualFollowerString:
 		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+		grandmasterSibling = (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 		slave1 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
 		slave2 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave2]
 		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		gmSiblingIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmasterSibling]]
 		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
 		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave2]]
 
+		// The grandmaster needs 2 ports to feed both follower ports directly
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
-			gmIf.IfName)
+			gmIf.IfName, gmSiblingIf.IfName)
 		if err != nil {
 			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
 		}
@@ -1703,7 +1738,7 @@ func DeletePtpConfigWithUnderscoreProfileNames() error {
 }
 
 func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
-	var grandmaster, bc1Master, bc1Slave, slave1, bc2Master, bc2Slave, slave2 int
+	var grandmaster, grandmasterSibling, bc1Master, bc1Slave, slave1, bc2Master, bc2Slave, slave2 int
 
 	BestSolution := ""
 	if isExtGM {
@@ -1733,6 +1768,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 	case AlgoDualNicBCWithSlavesString:
 		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave, Slave1)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+		grandmasterSibling = (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 		slave1 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
@@ -1741,6 +1777,7 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 		slave2 = (*data.testClockRolesAlgoMapping[BestSolution])[Slave2]
 
 		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		gmSiblingIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmasterSibling]]
 		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
 		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
 		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave1]]
@@ -1748,8 +1785,9 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Slave]]
 		slave2If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][slave2]]
 
+		// The grandmaster needs 2 ports to feed both BC slave ports directly
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
-			gmIf.IfName)
+			gmIf.IfName, gmSiblingIf.IfName)
 		if err != nil {
 			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
 		}
@@ -1780,19 +1818,22 @@ func PtpConfigDualNicBC(isExtGM bool, phc2SysHaEnabled bool) error {
 	case AlgoDualNicBCString:
 		solutionIdx := preferDiffNodeSolution(BestSolution, Grandmaster, BC1Slave)
 		grandmaster = (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+		grandmasterSibling = (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 		bc1Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
 		bc1Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
 		bc2Master = (*data.testClockRolesAlgoMapping[BestSolution])[BC2Master]
 		bc2Slave = (*data.testClockRolesAlgoMapping[BestSolution])[BC2Slave]
 
 		gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmaster]]
+		gmSiblingIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][grandmasterSibling]]
 		bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Master]]
 		bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc1Slave]]
 		bc2MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Master]]
 		bc2SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[solutionIdx][bc2Slave]]
 
+		// The grandmaster needs 2 ports to feed both BC slave ports directly
 		err := CreatePtpConfigGrandMaster(gmIf.NodeName,
-			gmIf.IfName)
+			gmIf.IfName, gmSiblingIf.IfName)
 		if err != nil {
 			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
 		}
