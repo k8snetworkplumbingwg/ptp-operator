@@ -223,7 +223,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						USBDevice: &USBDevice{Vendor: "1546", Product: "01a9"},
 					},
@@ -238,7 +238,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						USBDevice: &USBDevice{Vendor: "1546", Product: "01a9", Path: "2-1.4"},
 					},
@@ -253,7 +253,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						SerialDevice: &SerialDevice{
 							ACPI: &ACPIDevice{HID: "INTC10EE", UID: "00"},
@@ -270,7 +270,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetInterface: "eno1",
 					},
@@ -285,7 +285,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetDevice: &EthernetDevice{PCIAddress: "0000:86:00.0"},
 					},
@@ -300,7 +300,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetDevice: &EthernetDevice{VendorID: "8086", DeviceID: "159B"},
 					},
@@ -315,7 +315,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetDevice: &EthernetDevice{PermanentMACAddress: "00:11:22:aa:bb:cc"},
 					},
@@ -330,7 +330,7 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetDevice: &EthernetDevice{Slot: "2"},
 					},
@@ -345,13 +345,79 @@ func TestSourceTypeValidation(t *testing.T) {
 				SourceType: SourceTypeGNSS,
 				BoardLabel: "GNSS",
 				GNSSConfig: &GNSSConfig{
-					Init: GNSSInit{},
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
 					Match: &GNSSMatcher{
 						EthernetDevice: &EthernetDevice{Name: "ens2f0"},
 					},
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "valid gnss without match (autodetect)",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "gnss with both ttyDevice and ethernetInterface",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init:  GNSSInit{Constellations: []ConstellationID{"GPS"}},
+					Match: &GNSSMatcher{TTYDevice: "/dev/gnss0", EthernetInterface: "eth0"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided",
+		},
+		{
+			name: "gnss with empty match",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init:  GNSSInit{Constellations: []ConstellationID{"GPS"}},
+					Match: &GNSSMatcher{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided",
+		},
+		{
+			name: "gnss with empty constellations",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{Constellations: []ConstellationID{}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one constellation must be specified",
+		},
+		{
+			name: "gnss with invalid constellation",
+			source: &SourceConfig{
+				Subsystem:  "subsystem",
+				SourceType: SourceTypeGNSS,
+				BoardLabel: "GNSS",
+				GNSSConfig: &GNSSConfig{
+					Init: GNSSInit{Constellations: []ConstellationID{"GPS", "InvalidConstellation"}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid constellation",
 		},
 		{
 			name: "valid dpllPhaseLocked source",
@@ -382,6 +448,61 @@ func TestSourceTypeValidation(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestGNSSConfigValidateDefaultsOmittedConstellations(t *testing.T) {
+	var config GNSSConfig
+	assert.NoError(t, yaml.Unmarshal([]byte("init: {}"), &config))
+	assert.NoError(t, config.Validate())
+	assert.Equal(t, []ConstellationID{ConstellationGPS}, config.Init.Constellations)
+
+	var explicitlyEmpty GNSSConfig
+	assert.NoError(t, yaml.Unmarshal([]byte("init:\n  constellations: []"), &explicitlyEmpty))
+	assert.NotNil(t, explicitlyEmpty.Init.Constellations)
+	assert.ErrorContains(t, explicitlyEmpty.Validate(), "at least one constellation must be specified")
+}
+
+func TestGNSSMatcherValidateRejectsIncompleteNestedSelectors(t *testing.T) {
+	tests := []struct {
+		name    string
+		matcher *GNSSMatcher
+		errMsg  string
+	}{
+		{
+			name:    "empty serial device",
+			matcher: &GNSSMatcher{SerialDevice: &SerialDevice{}},
+			errMsg:  "serialDevice must specify an ACPI hardware ID",
+		},
+		{
+			name: "serial device without ACPI hardware ID",
+			matcher: &GNSSMatcher{SerialDevice: &SerialDevice{
+				ACPI: &ACPIDevice{},
+			}},
+			errMsg: "serialDevice must specify an ACPI hardware ID",
+		},
+		{
+			name:    "empty ethernet device",
+			matcher: &GNSSMatcher{EthernetDevice: &EthernetDevice{}},
+			errMsg:  "ethernetDevice must specify at least one selection criterion",
+		},
+		{
+			name:    "USB device without vendor ID",
+			matcher: &GNSSMatcher{USBDevice: &USBDevice{Product: "01a9"}},
+			errMsg:  "usbDevice must specify both vendor and product IDs",
+		},
+		{
+			name:    "USB device without product ID",
+			matcher: &GNSSMatcher{USBDevice: &USBDevice{Vendor: "1546"}},
+			errMsg:  "usbDevice must specify both vendor and product IDs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.matcher.Validate()
+			assert.ErrorContains(t, err, tt.errMsg)
 		})
 	}
 }
