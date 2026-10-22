@@ -324,6 +324,8 @@ The names of these ptp4l configurations will be used and listed under the ptpSet
 
 ## Test Coverage
 
+The serial conformance suite includes a T-BC netdevsim test that disables the receiver PHC's external timestamp (PPS) events and verifies that the T-BC reaches FREERUN, then restores events and verifies re-lock. It skips when the configured receiver interface is not backed by netdevsim.
+
 Run `make coverage-gate` to compare test coverage of your branch against the upstream main branch. The script auto-detects the upstream remote and its tracking branch. Integration tests and the standalone CRD validation tool are excluded from this unit-coverage comparison.
 
 ```sh

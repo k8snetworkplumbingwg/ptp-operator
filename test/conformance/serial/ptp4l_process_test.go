@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func TestFirstTS2PhcInterfaceSkipsNonInterfaceSections(t *testing.T) {
+	config := `[nmea]
+ts2phc.master 1
+[global]
+use_syslog 0
+[ens1f0]
+ts2phc.extts_polarity rising
+`
+	if iface := firstTS2PhcInterface(config); iface != "ens1f0" {
+		t.Fatalf("firstTS2PhcInterface() = %q, want %q", iface, "ens1f0")
+	}
+}
+
 func TestPtp4lPIDsFromPS(t *testing.T) {
 	const configFile = "/var/run/ptp4l.0.config"
 	psOutput := `
