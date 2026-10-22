@@ -3793,8 +3793,98 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(actual).To(Equal(expectedTransitions),
 				"Clock class transitions did not match expected order (raw: %v)", clockClassTransitions)
 		})
+
+		It("T-BC goes FREERUN when its PHC PPS input is lost and re-locks when restored", func() {
+			if fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
+				Skip("test valid only for T-BC test config")
+			}
+
+			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+			var ts2phcConf string
+			for _, profile := range ptpConfig.Spec.Profile {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr") && profile.Ts2PhcConf != nil {
+					ts2phcConf = *profile.Ts2PhcConf
+					break
+				}
+			}
+			iface := firstTS2PhcInterface(ts2phcConf)
+			if iface == "" {
+				Skip("T-BC receiver profile has no ts2phc PHC interface")
+			}
+			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			trCfgName, err := ptphelper.GetConfigForProfile(ptpConfig.Name, "tbc-tr", nil, &nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			trConfigName := strings.TrimPrefix(trCfgName, "/var/run/")
+
+			By("Confirming the T-BC is initially locked")
+			waitForTBCClockClass(fullConfig, trConfigName, "6")
+
+			By("Disconnecting external timestamp events from the netdevsim PHC")
+			if err := setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, false); err != nil {
+				if strings.Contains(err.Error(), "not netdevsim") {
+					Skip(fmt.Sprintf("interface %s is not backed by netdevsim: %v", iface, err))
+				}
+				Expect(err).NotTo(HaveOccurred(), "could not disconnect netdevsim PHC PPS input")
+			}
+			DeferCleanup(func() {
+				if err := setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, true); err != nil {
+					Fail(fmt.Sprintf("failed to restore netdevsim PHC PPS input for %s: %v", iface, err))
+				}
+			})
+
+			By("Waiting for ts2phc PPS monitoring to drive the T-BC to FREERUN")
+			waitForTBCClockClass(fullConfig, trConfigName, "248")
+
+			By("Restoring external timestamp events on the netdevsim PHC")
+			Expect(setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, true)).To(Succeed())
+
+			By("Waiting for the T-BC to re-lock after PPS is restored")
+			waitForTBCClockClass(fullConfig, trConfigName, "6")
+		})
 	})
 })
+
+func firstTS2PhcInterface(config string) string {
+	sectionRe := regexp.MustCompile(`(?m)^\s*\[([^\]]+)\]\s*$`)
+	for _, match := range sectionRe.FindAllStringSubmatch(config, -1) {
+		iface := strings.TrimSpace(match[1])
+		if iface != "" && !strings.EqualFold(iface, "global") {
+			return iface
+		}
+	}
+	return ""
+}
+
+// setNetdevsimPHCPPS toggles the external timestamp stream consumed by ts2phc.
+// The mock PHC exposes this via the PTP sysfs extts_enable attribute. Run the
+// operation in the host mount namespace because that is where the netdevsim
+// device is registered.
+func setNetdevsimPHCPPS(pod *v1core.Pod, iface string, enable bool) error {
+	action := "0"
+	if enable {
+		action = "1"
+	}
+	const command = `set -eu
+iface="$1"
+action="$2"
+driver=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver")")
+[ "$driver" = netdevsim ] || { echo "interface $iface is bound to $driver, not netdevsim" >&2; exit 2; }
+for ptp in /sys/class/net/"$iface"/device/ptp/ptp*; do
+  [ -e "$ptp" ] || continue
+  attr="$(readlink -f "$ptp")/extts_enable"
+  [ -e "$attr" ] || { echo "missing $attr" >&2; exit 1; }
+  printf '0 %s\n' "$action" > "$attr"
+  exit 0
+done
+echo "no PHC found for interface $iface" >&2
+exit 1`
+	_, stderr, err := pods.ExecCommand(client.Client, true, pod, pkg.PtpContainerName,
+		[]string{"chroot", "/host", "sh", "-c", command, "sh", iface, action})
+	if err != nil {
+		return fmt.Errorf("failed to set PHC external timestamp enable=%t: %w (%s)", enable, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
 
 func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkProcessStatus(fullConfig, "1")
@@ -4445,6 +4535,26 @@ func killTs2phcInBackground(stopChan chan struct{}, fullConfig testconfig.TestCo
 			time.Sleep(2 * time.Millisecond) // Keep hammering every 2 ms
 		}
 	}
+}
+
+func waitForTBCClockClass(fullConfig testconfig.TestConfig, configName, expectedClass string) {
+	Eventually(func() bool {
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
+			pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return false
+		}
+		for _, line := range strings.Split(buf.String(), "\n") {
+			matches := clockClassRe.FindStringSubmatch(line)
+			if matches != nil && matches[2] == "ptp4l" && matches[3] == expectedClass &&
+				strings.Contains(line, `config="`+configName+`"`) {
+				return true
+			}
+		}
+		return false
+	}, pkg.TimeoutIn3Minutes, pkg.TimeoutInterval2Seconds).Should(BeTrue(),
+		fmt.Sprintf("T-BC receiver config %s should report clock class %s", configName, expectedClass))
 }
 
 func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
