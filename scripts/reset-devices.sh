@@ -15,4 +15,3 @@ else
     modprobe -r netdevsim
     modprobe netdevsim pci_bus_nr=0x1f
 fi
-modprobe openvswitch
