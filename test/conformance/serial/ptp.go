@@ -4466,21 +4466,6 @@ func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkPTPNMEAStatus(fullConfig, "1")
 }
 
-// checkStabilityOfSimGMUsingMetrics checks simulated T-GM stability
-// using only the processes and metrics available in the simulated environment.
-func checkStabilityOfSimGMUsingMetrics(fullConfig testconfig.TestConfig) {
-	checkClockClassState(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)), pkg.TimeoutIn5Minutes)
-	checkClockState(fullConfig, "1")
-	checkPTPNMEAStatus(fullConfig, "1")
-	if fullConfig.DiscoveredClockUnderTestPod != nil {
-		nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
-		Eventually(func() error {
-			return metrics.CheckClockRealTimeState(metrics.MetricClockStateLocked, &nodeName)
-		}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(),
-			"simulated T-GM CLOCK_REALTIME (phc2sys -r) must reach LOCKED")
-	}
-}
-
 func verifyEventsV1(expectedState string) {
 	//TODO
 	switch expectedState {
