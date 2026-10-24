@@ -169,6 +169,34 @@ func GetPodLogsRegexSince(namespace string, podName string, containerName, regex
 
 	r := regexp.MustCompile(regex)
 
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Pass 1: read all existing log content since `since` without following.
+	// A followed stream stops at the first chunk that contains a match, which
+	// can miss later lines that were already written (for example the second
+	// interface selection of a failover). Drain the snapshot first so every
+	// existing match is returned.
+	noFollowOpts := corev1.PodLogOptions{
+		Container: containerName,
+		Follow:    false,
+		SinceTime: &metav1.Time{Time: since},
+	}
+	snapStream, err := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &noFollowOpts).Stream(ctx)
+	if err != nil {
+		logrus.Warnf("failed to open log stream for initial snapshot for %s/%s container=%s: %s", namespace, podName, containerName, err)
+	} else {
+		logContent, readErr := io.ReadAll(snapStream)
+		snapStream.Close()
+		if readErr == nil && len(logContent) > 0 {
+			matches = r.FindAllStringSubmatch(string(logContent), -1)
+			if len(matches) > 0 {
+				return matches, nil
+			}
+		}
+	}
+
+	// Pass 2: no match in existing logs — follow the stream for new content.
 	podLogOptions := corev1.PodLogOptions{
 		Container: containerName,
 		Follow:    true,
@@ -176,9 +204,6 @@ func GetPodLogsRegexSince(namespace string, podName string, containerName, regex
 	}
 
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {
