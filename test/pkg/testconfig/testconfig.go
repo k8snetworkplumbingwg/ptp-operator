@@ -1134,14 +1134,37 @@ func CreatePtpConfigGrandMaster(nodeName string, ifNames ...string) error {
 }
 
 // gnssSerialPort returns the full serial port path for ts2phc.nmea_serialport.
-// If deviceID is already an absolute path (e.g. /var/run/ttyGNSS_TS2PHC set
-// by the simulation environment) it is used as-is; otherwise /dev/ is prepended
-// for real hardware device names (e.g. gnss0, ttyGNSS_TS2PHC).
+// If deviceID is already an absolute path (e.g. /var/run/ptp/ttyGNSS_TS2PHC
+// set by the simulation environment) it is used as-is; otherwise /dev/ is
+// prepended for real hardware device names (e.g. gnss0).
 func gnssSerialPort(deviceID string) string {
 	if strings.HasPrefix(deviceID, "/") {
 		return deviceID
 	}
 	return "/dev/" + deviceID
+}
+
+// wpcInterfacesForSolverGM resolves the WPC NIC interface list and GNSS device
+// for a solver-selected GM port. Anchors on the solver iface (same as
+// PtpConfigTelcoGM) so map iteration in GetListOfWPCEnabledInterfaces cannot
+// pick a different WPC NIC on a multi-WPC node.
+func wpcInterfacesForSolverGM(nodeName, anchorIface string) ([]string, string, error) {
+	ifList, _, deviceID, err := ptphelper.InterfacesByPHCAndPins(GlobalConfig.L2Config, nodeName, anchorIface)
+	if err == nil && deviceID != "" && len(ifList) >= 2 {
+		if ptphelper.IsGnssSimConfigured() {
+			ptphelper.MarkGnssSimNmeaActive()
+		}
+		return ifList, deviceID, nil
+	}
+	simIfList, simDeviceID := ptphelper.GetListOfWPCEnabledInterfaces(nodeName)
+	if simDeviceID == "" || len(simIfList) < 2 {
+		if err != nil {
+			return nil, "", err
+		}
+		return nil, "", fmt.Errorf("WPC NIC requires at least 2 interfaces on node %s (anchor %s), found %d (%v)",
+			nodeName, anchorIface, len(simIfList), simIfList)
+	}
+	return simIfList, simDeviceID, nil
 }
 
 // stripPhc2sysRealtimeOpts removes -r flags so phc2sys does not drive CLOCK_REALTIME.
@@ -2232,12 +2255,12 @@ func PtpConfigTGMOC() error {
 	gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
 	slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
 
-	IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf.NodeName)
-	if len(IfList) < 2 {
-		return fmt.Errorf("WPC NIC requires at least 2 interfaces on node %s for TGMOC, found %d (%v)", gmIf.NodeName, len(IfList), IfList)
+	IfList, deviceID, err := wpcInterfacesForSolverGM(gmIf.NodeName, gmIf.IfName)
+	if err != nil {
+		return err
 	}
 
-	err := CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
+	err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
 	if err != nil {
 		logrus.Errorf("Error creating WPC Grandmaster ptpconfig: %s", err)
 		return err
@@ -2270,12 +2293,12 @@ func PtpConfigTGMBC() error {
 	grandmaster := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 	gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
 
-	IfList, deviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf.NodeName)
-	if len(IfList) < 2 {
-		return fmt.Errorf("WPC NIC requires at least 2 interfaces on node %s for TGMBC, found %d (%v)", gmIf.NodeName, len(IfList), IfList)
+	IfList, deviceID, err := wpcInterfacesForSolverGM(gmIf.NodeName, gmIf.IfName)
+	if err != nil {
+		return err
 	}
 
-	err := CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
+	err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
 	if err != nil {
 		logrus.Errorf("Error creating WPC Grandmaster ptpconfig: %s", err)
 		return err

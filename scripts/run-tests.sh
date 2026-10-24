@@ -285,7 +285,8 @@ export_gnss_sim_env() {
   if [ -n "$GNSS_KERNEL_DEV" ]; then
     export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
   else
-    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
+    # Must match gnss-sim --pty-links and the daemon's /var/run/ptp mount.
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ptp/ttyGNSS_TS2PHC}"
   fi
   export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
   export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"

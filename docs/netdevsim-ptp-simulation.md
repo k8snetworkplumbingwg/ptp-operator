@@ -434,22 +434,26 @@ kernel module loading and gnss-sim startup.
 ```mermaid
 flowchart TD
     start["configGNSS.sh"]
-    start --> kill["kill previous gnss-sim"]
-    kill --> build["go build gnss-sim<br/>from ptp-tools/gnss-sim/"]
-    build --> detect{"/dev/gnss* exists?"}
+    start --> require["require GNSS_SIM_IMAGE"]
+    require --> cleanup["delete prior gnss-sim Deployment/pod"]
+    cleanup --> apply["kubectl apply gnss-sim-deployment.yaml<br/>hostNetwork + /dev + /sys + /var/run/ptp"]
+    apply --> ready["wait Deployment available"]
+    ready --> detect{"pod: /dev/gnss* exists?"}
 
-    detect -->|yes| hybrid["Hybrid mode:<br/>--gnss-dev /dev/gnss0<br/>--pty-links /var/run/ptp/ttyGNSS_GNSS0"]
-    detect -->|no| pty_only["PTY-only mode:<br/>--pty-links /var/run/ptp/ttyGNSS_TS2PHC,/var/run/ptp/ttyGNSS_GNSS0"]
+    detect -->|yes| hybrid["Hybrid mode in pod:<br/>--gnss-dev /dev/gnss0"]
+    detect -->|no| pty_only["PTY-only mode in pod:<br/>--pty-links /var/run/ptp/ttyGNSS_*"]
 
-    hybrid --> health["wait for /health endpoint"]
+    hybrid --> health["curl nodeIP:API_PORT/health"]
     pty_only --> health
-    health --> verify["verify NMEA output"]
 ```
 
-gnss-sim is built directly from source (`go build`) and runs natively on
-the host. This avoids devpts namespace isolation issues where PTY pairs
-created inside a container are invisible to Kind worker nodes that share
-the host devpts.
+`scripts/configGNSS.sh` requires `GNSS_SIM_IMAGE` and applies
+`scripts/gnss-sim-deployment.yaml` as a Kubernetes Deployment in
+`openshift-ptp` (hostNetwork, privileged, host `/dev`, `/sys`, and
+`/var/run/ptp` mounts). The container auto-selects kernel GNSS or the
+PTY fallback; PTYs are created inside the pod on the hostPath
+`/var/run/ptp` so linuxptp-daemon pods that mount the same path can
+read them.
 
 ---
 

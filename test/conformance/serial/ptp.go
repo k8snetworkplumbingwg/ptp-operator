@@ -1024,9 +1024,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 						if fullConfig.PtpModeDiscovered == testconfig.TelcoGrandMasterClock {
 							Skip("WPC GM (T-GM) mode is not supported for this test")
 						}
-						if fullConfig.PtpModeDiscovered == testconfig.TelcoGMBC {
-							Skip("TGMBC shares the GM node with the BC; a higher-priority config overrides both profiles")
-						}
+						// TGMBC keeps GM and BC on different nodes (solver StepSameNode
+						// negative). The temp profile targets the BC (CUT) node only, so
+						// it does not override the GM — run the TelcoGMBC branch below.
 						switch fullConfig.PtpModeDiscovered {
 						case testconfig.Discovery, testconfig.None:
 							Skip("Skipping because Discovery or None is not supported yet for this test")

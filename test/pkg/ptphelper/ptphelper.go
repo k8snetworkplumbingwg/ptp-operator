@@ -1247,7 +1247,7 @@ func GetListOfWPCEnabledInterfaces(nodeName string) ([]string, string) {
 		}
 	}
 
-	dev := envOrDefault("GNSS_SIM_NMEA_DEVICE", "ttyGNSS_TS2PHC")
+	dev := envOrDefault("GNSS_SIM_NMEA_DEVICE", "/var/run/ptp/ttyGNSS_TS2PHC")
 	l2WPC := getWPCIfacesFromL2ForNode(nodeName)
 	for _, iFace := range l2WPC {
 		if strings.HasSuffix(iFace, "0") {
