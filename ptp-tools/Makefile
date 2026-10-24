@@ -31,7 +31,7 @@ else
 CACHE_FLAG ?= --no-cache
 endif
 
-VALUES = lptpd cep ptpop krp prometheus ptpmg debug
+VALUES = lptpd cep ptpop krp prometheus ptpmg debug gnss-sim
 
 .PHONY: print-values
 print-values:

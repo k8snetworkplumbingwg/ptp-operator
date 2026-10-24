@@ -20,7 +20,18 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Dependencies
-        run: go mod tidy && go mod download
+        run: |
+          # proxy.golang.org occasionally returns INTERNAL_ERROR mid-download;
+          # retry tidy+download a few times before failing the job.
+          for attempt in 1 2 3 4 5; do
+            if go mod tidy && go mod download; then
+              exit 0
+            fi
+            echo "go mod attempt ${attempt} failed; retrying in $((attempt * 5))s..."
+            sleep $((attempt * 5))
+          done
+          echo "go mod tidy/download failed after retries"
+          exit 1
 
       - name: Run vet
         run: make vet

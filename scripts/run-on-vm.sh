@@ -5,7 +5,7 @@ export DKMS_MODE="${DKMS_MODE:-false}"
 # Stream child command output live (default: quiet, dump log only on failure).
 # Override with --verbose or RUN_ON_VM_VERBOSE=true|1|yes.
 RUN_ON_VM_VERBOSE="${RUN_ON_VM_VERBOSE:-false}"
-TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
+TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm,tgmoc,tgmbc"
 RUN_PHASE="all"
 REGISTRY_IP=""
 TARBALL=""
@@ -150,7 +150,7 @@ run_step_rows_begin() {
   # Skip in CI: /dev/tty may exist but cannot be opened (bash still errors on failed exec).
   if [[ -z "${CI:-}${GITHUB_ACTIONS:-}${GITLAB_CI:-}${BUILD_ID:-}" ]]; then
     set +e
-    exec 9>/dev/tty 2>/dev/null
+    { exec 9>/dev/tty; } 2>/dev/null
     local _tty_rc=$?
     set -e
     if ((_tty_rc == 0)); then
@@ -216,6 +216,20 @@ run_ptp_tools_parallel_make_step_rows() {
   local -a images=("$@")
   local n=${#images[@]}
 
+  # Cap concurrent podman builds in CI. Parallel builds through the remote
+  # API race on overlay storage ("layer not known" during COPY). Unlimited
+  # locally unless PTP_BUILD_PARALLEL is set.
+  local max_parallel="${PTP_BUILD_PARALLEL:-}"
+  if [[ -z "${max_parallel}" && -n "${GITHUB_ACTIONS:-}" ]]; then
+    max_parallel=2
+  fi
+  if [[ -z "${max_parallel}" || "${max_parallel}" -lt 1 ]]; then
+    max_parallel="${n}"
+  fi
+  if ((max_parallel > n)); then
+    max_parallel="${n}"
+  fi
+
   local -a rows=()
   local _img
   for _img in "${images[@]}"; do
@@ -224,20 +238,31 @@ run_ptp_tools_parallel_make_step_rows() {
   run_step_rows_begin "${rows[@]}"
 
   local fifo="${PTP_RUN_DIR}/ptp-${fifo_tag}-done-$$.fifo"
-  rm -f "${fifo}"
+  local slots="${PTP_RUN_DIR}/ptp-${fifo_tag}-slots-$$.fifo"
+  rm -f "${fifo}" "${slots}"
   mkfifo "${fifo}"
+  mkfifo "${slots}"
   exec 8<> "${fifo}"
+  exec 9<> "${slots}"
+
+  local _s
+  for ((_s = 0; _s < max_parallel; _s++)); do
+    echo >&9
+  done
 
   local -a pids=()
   local _i
   for _i in "${!images[@]}"; do
     (
       _img="${images[$_i]}"
+      # Acquire a concurrency slot, then release it when the build finishes.
+      read -r <&9 || true
       if run_quiet_with_log_dump_on_failure "${make_prefix}-${_img}" make -s "${make_prefix}-${_img}"; then
         echo "${_img}" >&8
       else
         echo "FAIL:${_img}" >&8
       fi
+      echo >&9
     ) &
     pids+=($!)
   done
@@ -267,7 +292,8 @@ run_ptp_tools_parallel_make_step_rows() {
       wait "${_pid}" 2>/dev/null || true
     done
     exec 8>&-
-    rm -f "${fifo}"
+    exec 9>&-
+    rm -f "${fifo}" "${slots}"
     run_step_rows_end
     exit 1
   fi
@@ -277,7 +303,8 @@ run_ptp_tools_parallel_make_step_rows() {
     wait "${_pid}"
   done
   exec 8>&-
-  rm -f "${fifo}"
+  exec 9>&-
+  rm -f "${fifo}" "${slots}"
   run_step_rows_end
 }
 
@@ -294,8 +321,10 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
+# Kill leftover gnss-sim from a previous run
+pkill -f gnss-sim || true
 
-# ── Images phase (--images) ──────────────────────────────────────────
+# ── Images phase (--images only: build + save tarballs) ─────────────
 if [[ "$RUN_PHASE" == "images" ]]; then
 
     export IMG_PREFIX="$VM_IP/test"
@@ -355,7 +384,7 @@ if [[ "$RUN_PHASE" == "load" ]]; then
 
     step "Retagging images for local registry"
     # Derive the tag list from ptp-tools/Makefile VALUES so it stays in sync
-    # with what the build/save phase produced
+    # with what the build/save phase produced.
     read_ptp_tool_images
     TAGS=("${_ptp_tool_images[@]}")
     for t in "${TAGS[@]}"; do
