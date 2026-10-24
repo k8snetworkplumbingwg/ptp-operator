@@ -213,7 +213,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower]
+        mode: [oc, bc, dualnicbc, dualnicbcha, dualfollower, tgm, tgmoc, tgmbc]
     steps:
       - name: "Runner info (${{ matrix.mode }})"
         run: |
