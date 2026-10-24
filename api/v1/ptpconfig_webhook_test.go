@@ -229,7 +229,6 @@ func TestPtpConfigValidator_PtpSettingsRejected(t *testing.T) {
 }
 
 func TestGetInterfaces(t *testing.T) {
-	iface := "eth0"
 	emptyConf := ""
 	bcConf := `[global]
 logging_level 6
@@ -270,19 +269,6 @@ masterOnly 1
 			},
 			mode: Slave,
 			want: nil,
-		},
-		{
-			name: "empty Ptp4lConf with Interface falls back for Slave",
-			cfg: PtpConfig{
-				Spec: PtpConfigSpec{
-					Profile: []PtpProfile{{
-						Ptp4lConf: &emptyConf,
-						Interface: &iface,
-					}},
-				},
-			},
-			mode: Slave,
-			want: []string{"eth0"},
 		},
 		{
 			name: "BC config returns slave interfaces",

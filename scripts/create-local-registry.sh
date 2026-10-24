@@ -19,20 +19,6 @@ else
     update-ca-trust
 fi
 
-# Docker Hub occasionally returns HTTP 500 on registry:2 pulls; retry a few times.
-REGISTRY_IMG="${REGISTRY_IMG:-docker.io/library/registry:2}"
-for attempt in 1 2 3 4 5; do
-  if podman pull "${REGISTRY_IMG}"; then
-    break
-  fi
-  echo "podman pull ${REGISTRY_IMG} attempt ${attempt} failed; retrying in $((attempt * 5))s..."
-  sleep $((attempt * 5))
-  if [[ "${attempt}" -eq 5 ]]; then
-    echo "ERROR: failed to pull ${REGISTRY_IMG} after retries" >&2
-    exit 1
-  fi
-done
-
 podman run -d \
   --restart=always \
   --name registry \
@@ -42,5 +28,5 @@ podman run -d \
   -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.crt \
   -e REGISTRY_HTTP_TLS_KEY=/certs/registry.key \
   -p 443:443 \
-  "${REGISTRY_IMG}"
+  registry:2
 

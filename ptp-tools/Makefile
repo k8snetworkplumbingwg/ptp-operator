@@ -81,18 +81,8 @@ podman-build-and-save-%:
 	$(MAKE) podman-save-$*
 
 ifdef GITHUB_ACTIONS
-# Parallel podman builds via the remote API can flake with "layer not known"
-# while committing COPY layers; retry a few times before failing CI.
 build-image:
-	@ok=0; \
-	for attempt in 1 2 3 4 5; do \
-		if podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..; then \
-			ok=1; break; \
-		fi; \
-		echo "podman build $(VAR) attempt $${attempt} failed; retrying in $$((attempt * 5))s..."; \
-		sleep $$((attempt * 5)); \
-	done; \
-	if [ "$${ok}" != 1 ]; then exit 1; fi
+	podman build $(CACHE_FLAG) --network host --platform $(PLATFORM) $(PODMAN_BUILD_ARGS) -t ${IMG_PREFIX}:$(VAR) -f Dockerfile.$(VAR) ..
 else
 build-image:
 	podman manifest create ${IMG_PREFIX}:$(VAR)
@@ -128,14 +118,6 @@ deploy-all:
 		mv -f ../config/manager/env.yaml.bak ../config/manager/env.yaml ; \
 		mv -f ../config/manager/kustomization.yaml.bak ../config/manager/kustomization.yaml
 	$(KUSTOMIZE) build ../config/custom | kubectl apply -f -
-	# Wait for the operator pod to be ready so the validating webhook can serve requests.
-	kubectl rollout status deployment/ptp-operator -n openshift-ptp --timeout=120s
-	@for i in $$(seq 1 30); do \
-		if kubectl apply --dry-run=server -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml 2>/dev/null; then \
-			break; \
-		fi; \
-		echo "Waiting for webhook to become ready... ($$i/30)"; \
-		sleep 4; \
-	done
+	# Operator creates default asynchronously; ensure it exists before patch.
 	kubectl apply -n openshift-ptp -f ../config/samples/ptp_v1_ptpoperatorconfig.yaml
 	kubectl patch ptpoperatorconfig default -nopenshift-ptp --type=merge --patch '{"spec": {"ptpEventConfig": {"enableEventPublisher": true, "transportHost": "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043", "storageType": "local-sc"}, "daemonNodeSelector": {"node-role.kubernetes.io/worker": ""}}}'

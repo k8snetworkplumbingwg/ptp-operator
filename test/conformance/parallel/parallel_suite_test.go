@@ -54,18 +54,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	testclient.Client = testclient.New("")
 	Expect(testclient.Client).NotTo(BeNil())
 
-	// Always create/discover/restart. Serial and parallel do not overlap: Ginkgo
-	// finishes serial AfterSuite before parallel starts, and Kind CI only runs
-	// serial. Skipping create to "reuse" serial configs leaves T-GM parallel
-	// without a GM when KEEP_PTPCONFIG is unset (serial already wiped them).
+	// discovers valid ptp configurations based on clock type
 	err = testconfig.CreatePtpConfigurationsWithRetry(3)
-	if err != nil {
-		if strings.Contains(err.Error(), "no solution found") ||
-			strings.Contains(err.Error(), "no T-BC solution found") {
-			Skip(fmt.Sprintf("Could not create a ptp config (insufficient topology), err=%s", err))
-		}
-		Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
-	}
+	Expect(err).To(BeNil(), "Could not create a ptp config")
 
 	By("Refreshing configuration", func() {
 		ptphelper.WaitForPtpDaemonToExist()
