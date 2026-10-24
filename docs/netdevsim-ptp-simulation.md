@@ -402,7 +402,7 @@ flowchart TB
 
     subgraph outputs [Output Backends]
         kernel_dev["/dev/gnss0<br/>--gnss-dev<br/>kernel GNSS char device"]
-        pty1["/dev/ttyGNSS_GNSS0<br/>--pty-links<br/>PTY pair (self-managed)"]
+        pty1["/var/run/ptp/ttyGNSS_GNSS0<br/>--pty-links<br/>PTY pair (self-managed)"]
         file["stdout or file<br/>--outputs<br/>plain file I/O"]
     end
 
@@ -418,7 +418,7 @@ to ensure the kernel's GGA parser sees each sentence at the start of a buffer.
 
 **PTY self-management (`pty.go`):** Creates PTY pairs directly using kernel
 ioctls (`TIOCGPTN`, `TIOCSPTLCK`) on `/dev/ptmx`, with symlinks like
-`/dev/ttyGNSS_GNSS0 -> /dev/pts/N`. Writes use `syscall.Write` with
+`/var/run/ptp/ttyGNSS_GNSS0 -> /dev/pts/N`. Writes use `syscall.Write` with
 `O_NONBLOCK` — `EAGAIN` and `EIO` are silently dropped so the simulator
 loop never stalls when no reader is attached.
 
