@@ -63,14 +63,18 @@ const (
 	TelcoGrandMasterClockString = "TGM"
 	// TelcoBoundaryClockString matches the T-BC clock mode in Environement
 	TelcoBoundaryClockString = "TBC"
-	ptp4lEthernet            = "-2 --summary_interval -4"
-	ptp4lEthernetSlave       = "-2 -s --summary_interval -4"
-	phc2sysGM                = "-a -r -r -n 24" // use phc2sys to sync phc to system clock
-	phc2sysSlave             = "-a -r -n 24 -m -N 8 -R 16"
-	phc2sysDualNicBCHA       = "-a -r -m -l 7 -n 24 "
-	SCHED_OTHER              = "SCHED_OTHER"
-	SCHED_FIFO               = "SCHED_FIFO"
-	L2_DISCOVERY_IMAGE       = "quay.io/redhat-cne/l2discovery:v17"
+	// TelcoGMOCString matches the T-GM + OC clock mode
+	TelcoGMOCString = "TGMOC"
+	// TelcoGMBCString matches the T-GM + BC clock mode
+	TelcoGMBCString    = "TGMBC"
+	ptp4lEthernet      = "-2 --summary_interval -4"
+	ptp4lEthernetSlave = "-2 -s --summary_interval -4"
+	phc2sysGM          = "-a -r -r -n 24" // use phc2sys to sync phc to system clock
+	phc2sysSlave       = "-a -r -n 24 -m -N 8 -R 16"
+	phc2sysDualNicBCHA = "-a -r -m -l 7 -n 24 "
+	SCHED_OTHER        = "SCHED_OTHER"
+	SCHED_FIFO         = "SCHED_FIFO"
+	L2_DISCOVERY_IMAGE = "quay.io/redhat-cne/l2discovery:v17"
 )
 
 // Mirrors graphsolver step constants.
@@ -130,6 +134,10 @@ const (
 	None
 	//Dual Follower mode
 	DualFollowerClock
+	// TelcoGMOC: T-GM as grandmaster with downstream OC
+	TelcoGMOC
+	// TelcoGMBC: T-GM as grandmaster with downstream BC (and optional downstream OC)
+	TelcoGMBC
 )
 
 type TestConfig struct {
@@ -196,6 +204,9 @@ var enabledProblems = []string{AlgoOCString,
 	AlgoTelcoBCWithSlavesString,
 	AlgoTelcoBCExtGMString,
 	AlgoTelcoBCWithSlavesExtGMString,
+	AlgoTGMOCString,
+	AlgoTGMBCString,
+	AlgoTGMBCWithSlavesString,
 	AlgoOCExtGMString,
 	AlgoBCExtGMString,
 	AlgoBCWithSlavesExtGMString,
@@ -242,6 +253,9 @@ const (
 	AlgoDualNicBCExtGMString           = "DualNicBCExtGM"
 	AlgoBCWithSlavesExtGMString        = "BCWithSlavesExtGM"
 	AlgoDualNicBCWithSlavesExtGMString = "DualNicBCWithSlavesExtGM"
+	AlgoTGMOCString                    = "TGMOC"
+	AlgoTGMBCString                    = "TGMBC"
+	AlgoTGMBCWithSlavesString          = "TGMBCWithSlaves"
 )
 
 type ptpDiscoveryRes ptpv1.PtpConfig
@@ -451,12 +465,28 @@ func (mode PTPMode) String() string {
 		return TelcoGrandMasterClockString
 	case TelcoBoundaryClock:
 		return TelcoBoundaryClockString
+	case TelcoGMOC:
+		return TelcoGMOCString
+	case TelcoGMBC:
+		return TelcoGMBCString
 	case Discovery:
 		return DiscoveryString
 	case None:
 		return NoneString
 	default:
 		return OrdinaryClockString
+	}
+}
+
+// isTelcoGMMode is true for tgm / tgmoc / tgmbc. The gnss-sim WPC L2 overlay
+// must run only in these modes; otherwise DualNICBC solves onto worker1 GNSS
+// NICs (ens1f*) and CLOCK_REALTIME never locks on the BC.
+func isTelcoGMMode(mode PTPMode) bool {
+	switch mode {
+	case TelcoGrandMasterClock, TelcoGMOC, TelcoGMBC:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -476,6 +506,10 @@ func StringToMode(aString string) PTPMode {
 		return TelcoGrandMasterClock
 	case strings.ToLower(TelcoBoundaryClockString):
 		return TelcoBoundaryClock
+	case strings.ToLower(TelcoGMOCString):
+		return TelcoGMOC
+	case strings.ToLower(TelcoGMBCString):
+		return TelcoGMBC
 	case strings.ToLower(DiscoveryString), strings.ToLower(legacyDiscoveryString):
 		return Discovery
 	case strings.ToLower(NoneString):
@@ -522,13 +556,13 @@ func GetDesiredConfig(forceUpdate bool) TestConfig {
 	}
 
 	switch mode {
-	case OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA, TelcoGrandMasterClock, DualFollowerClock, Discovery, TelcoBoundaryClock:
+	case OrdinaryClock, BoundaryClock, DualNICBoundaryClock, DualNICBoundaryClockHA, TelcoGrandMasterClock, TelcoGMOC, TelcoGMBC, DualFollowerClock, Discovery, TelcoBoundaryClock:
 		logrus.Infof("%s mode detected", mode)
 		GlobalConfig.PtpModeDesired = mode
 		GlobalConfig.Status = InitStatus
 		return GlobalConfig
 	case None:
-		logrus.Infof("No test mode specified using, %s mode. Specify the env variable PTP_TEST_MODE with one of %s, %s, %s, %s, %s, %s, %s, %s", OrdinaryClock, Discovery, OrdinaryClock, BoundaryClock, DualFollowerClockString, TelcoGrandMasterClock, DualNICBoundaryClockString, DualNICBoundaryClockHAString, TelcoBoundaryClockString)
+		logrus.Infof("No test mode specified using, %s mode. Specify the env variable PTP_TEST_MODE with one of %s, %s, %s, %s, %s, %s, %s, %s, %s, %s", OrdinaryClock, Discovery, OrdinaryClock, BoundaryClock, DualFollowerClockString, TelcoGrandMasterClock, TelcoGMOCString, TelcoGMBCString, DualNICBoundaryClockString, DualNICBoundaryClockHAString, TelcoBoundaryClockString)
 		GlobalConfig.PtpModeDesired = OrdinaryClock
 		GlobalConfig.Status = InitStatus
 		return GlobalConfig
@@ -570,6 +604,8 @@ func createPtpConfigurations(ctx context.Context) error {
 	}
 	// Initialize desired ptp config for all configs
 	GetDesiredConfig(true)
+	ptphelper.ResetGnssSimNmeaMode()
+
 	// in multi node configuration create ptp configs
 
 	// Initialize l2 library
@@ -593,6 +629,14 @@ func createPtpConfigurations(ctx context.Context) error {
 	logrus.Tracef("L2DiscoveryConfig: %s\n", config)
 	logrus.Tracef("L2 ifListFiltered=%+v, ifListUnfiltered=%+v", config.GetPtpIfList(), config.GetPtpIfListUnfiltered())
 	GlobalConfig.L2Config = config
+	// WPC overlay is T-GM-only so DualNICBC still solves on worker2 ens3f*
+	// instead of worker1 GNSS NICs (ens1f*) whenever gnss-sim env is set.
+	if isTelcoGMMode(GlobalConfig.PtpModeDesired) {
+		ptphelper.NormalizeL2IntegratedGnssNICsForTelcoGM()
+		if ptphelper.IsGnssSimConfigured() && !ptphelper.L2ConfigReportsIntelWPC(config) {
+			ptphelper.ApplyIntegratedGnssSimWPCPCIOverlay()
+		}
+	}
 
 	if GlobalConfig.PtpModeDesired != Discovery {
 		// initialize L2 config in solver
@@ -634,6 +678,10 @@ func createPtpConfigurations(ctx context.Context) error {
 			return PtpConfigTelcoGM(isExternalMaster)
 		case TelcoBoundaryClock:
 			return PtpConfigTelcoBC(isExternalMaster)
+		case TelcoGMOC:
+			return PtpConfigTGMOC()
+		case TelcoGMBC:
+			return PtpConfigTGMBC()
 		}
 	}
 	return nil
@@ -706,12 +754,12 @@ func initAndSolveProblems() {
 	}
 
 	// BC without slaves: GM must be on the BC slave port's LAN so that PTP sync
-	// works over a direct connection or a plain (non-BC) switch
+	// works over a direct connection (GM shares a LAN with the BC slave, not
+	// the master/downstream port).
 	data.problems[AlgoBCString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
-		{{int(solver.StepSameNic), 2, 0, 1}},  // step2
-		{{int(solver.StepSameLan2), 2, 0, 2}}, // step3
-
+		{{int(solver.StepSameNic), 2, 0, 1}},  // step2: slave+master same NIC
+		{{int(solver.StepSameLan2), 2, 0, 2}}, // step3: slave + GM same LAN
 	}
 	data.problems[AlgoBCWithSlavesString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
@@ -722,7 +770,7 @@ func initAndSolveProblems() {
 			{int(solver.StepSameLan2), 2, 0, 3, solver.Negative}}, // step4 - downstream slaves and grandmaster must be on different nics
 	}
 	// Dual NIC BC without slaves: the grandmaster needs 2 ports (one per BC slave
-	// port), each directly connected to one of the BC slave ports
+	// port), each directly connected to one of the BC slave ports.
 	data.problems[AlgoDualNicBCString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1
 		{{int(solver.StepSameNic), 2, 0, 1}},  // step2: BC1 ports on the same NIC
@@ -742,15 +790,17 @@ func initAndSolveProblems() {
 			{int(solver.StepSameNic), 2, 0, 1}}, //        and on the same NIC
 	}
 
-	// T-BC with local GM: WPC NIC required, receiver, two transmitters on same NIC, local GM
+	// T-BC with local GM: WPC NIC required for the T-BC (receiver + two transmitters
+	// on that NIC). The local GM is a software ptp4l GM (CreatePtpConfigGrandMaster),
+	// so it must share a LAN with the T-BC receiver and sit on a different node, but
+	// it must not be required to be a second WPC/GNSS NIC — one-WPC-NIC labs (telco5g
+	// GNSS) otherwise get "no T-BC solution found" and never create a PtpConfig.
 	data.problems[AlgoTelcoBCString] = &[][][]int{
 		{{int(solver.StepIsWPCNic), 1, 0}},   // step1: T-BC receiver must be on WPC NIC
 		{{int(solver.StepSameNic), 2, 0, 1}}, // step2: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 0, 2}}, // step3: transmitter 2 on same NIC as receiver
 		{{int(solver.StepSameLan2), 2, 0, 3}, // step4: local grandmaster on same LAN as receiver
-			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but NOT on the same node
-		{{int(solver.StepIsWPCNic), 1, 3}, // step5: local grandmaster is a WPC NIC with connected GNSS
-			{int(solver.StepHasGNSSDevice), 1, 3}},
+			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // but on a different node from T-BC (CUT)
 	}
 
 	// T-BC with external GM: WPC NIC required, PTP receiver, two transmitters on same NIC
@@ -763,6 +813,7 @@ func initAndSolveProblems() {
 	}
 
 	// T-BC with slaves and local GM: WPC NIC required, slave, receiver, two transmitters on same NIC, local GM
+	// CUT is the T-BC. Downstream OC may share the GM node.
 	data.problems[AlgoTelcoBCWithSlavesString] = &[][][]int{
 		{{int(solver.StepNil), 0, 0}},         // step1: slave interface (can be anything)
 		{{int(solver.StepSameLan2), 2, 0, 2}}, // step2: Slave on the same lan as transmitters
@@ -771,8 +822,7 @@ func initAndSolveProblems() {
 		{{int(solver.StepSameNic), 2, 1, 2}},  // step5: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 1, 3}},  // step6: transmitter 2 on same NIC as receiver
 		{{int(solver.StepSameLan2), 2, 1, 4}, // step7: local grandmaster on same LAN as receiver
-			{int(solver.StepSameNode), 2, 1, 4, solver.Negative}, // but NOT on the same node
-			{int(solver.StepHasGNSSDevice), 1, 4}},               // and has connected GNSS
+			{int(solver.StepSameNode), 2, 1, 4, solver.Negative}}, // but on a different node from T-BC (CUT)
 	}
 
 	// T-BC with slaves and external GM: WPC NIC required, slave, receiver, two transmitters on same NIC
@@ -785,6 +835,37 @@ func initAndSolveProblems() {
 		{stepClockClassLessThanInDomain(1, 135, 24)}, // step6: receiver sees GM with clock class < 135 on domain 24
 		{{int(solver.StepSameNic), 2, 1, 2}},         // step7: transmitter 1 on same NIC as receiver
 		{{int(solver.StepSameNic), 2, 1, 3}},         // step8: transmitter 2 on same NIC as receiver
+	}
+
+	// TGM + OC: WPC GM on slot 0, downstream OC slave on slot 1
+	// CUT is the OC; keep T-GM off that node so priority-override tests cannot wipe the GM.
+	data.problems[AlgoTGMOCString] = &[][][]int{
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: OC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but on a different node from OC (CUT)
+	}
+
+	// TGM + BC: WPC GM on slot 0, BC slave on slot 1, BC master on slot 2
+	// CUT is the BC; keep T-GM off that node so priority-override tests cannot wipe the GM.
+	data.problems[AlgoTGMBCString] = &[][][]int{
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: BC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but BC (CUT) on a different node
+		{{int(solver.StepSameNic), 2, 1, 2}}, // step3: BC slave + master on same NIC
+	}
+
+	// TGM + BC + downstream OC: WPC GM slot 0, BC slave slot 1, BC master slot 2, downstream OC slot 3.
+	// CUT is the BC. The downstream OC must not share the GM node: a GNSS PHC and an OC
+	// follower on the same node produce a garbage offset and never publish clock_state.
+	data.problems[AlgoTGMBCWithSlavesString] = &[][][]int{
+		{{int(solver.StepIsWPCNic), 1, 0}}, // step1: GM must be WPC
+		{{int(solver.StepSameLan2), 2, 0, 1}, // step2: BC slave on same LAN as GM
+			{int(solver.StepSameNode), 2, 0, 1, solver.Negative}}, // but BC (CUT) on a different node
+		{{int(solver.StepSameNic), 2, 1, 2}}, // step3: BC slave + master on same NIC
+		{{int(solver.StepSameLan2), 2, 2, 3}, // step4: downstream OC on BC master LAN
+			{int(solver.StepSameNic), 2, 0, 3, solver.Negative},   // GM and downstream OC on different NICs
+			{int(solver.StepSameLan2), 2, 0, 3, solver.Negative},  // GM and downstream OC on different LANs
+			{int(solver.StepSameNode), 2, 0, 3, solver.Negative}}, // and on a different node from the GNSS GM
 	}
 
 	// Dual NIC BC with slaves: the grandmaster needs 2 ports (one per BC slave
@@ -925,6 +1006,21 @@ func initAndSolveProblems() {
 	(*data.testClockRolesAlgoMapping[AlgoTelcoBCWithSlavesExtGMString])[BC1Master] = 2 // transmitter 1
 	(*data.testClockRolesAlgoMapping[AlgoTelcoBCWithSlavesExtGMString])[BC2Master] = 3 // transmitter 2
 
+	// TGM + OC
+	(*data.testClockRolesAlgoMapping[AlgoTGMOCString])[Grandmaster] = 0
+	(*data.testClockRolesAlgoMapping[AlgoTGMOCString])[Slave1] = 1
+
+	// TGM + BC
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCString])[Grandmaster] = 0
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCString])[BC1Slave] = 1
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCString])[BC1Master] = 2
+
+	// TGM + BC with downstream OC
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCWithSlavesString])[Grandmaster] = 0
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCWithSlavesString])[BC1Slave] = 1
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCWithSlavesString])[BC1Master] = 2
+	(*data.testClockRolesAlgoMapping[AlgoTGMBCWithSlavesString])[Slave1] = 3
+
 	// OC, External GM
 	(*data.testClockRolesAlgoMapping[AlgoOCExtGMString])[Slave1] = 0
 
@@ -984,8 +1080,10 @@ func GetFullDiscoveredConfig(namespace string, forceUpdate bool) TestConfig {
 	logrus.Infof("Getting ptp configuration for namespace:%s", namespace)
 	defer logrus.Infof("Current PTP test config=%s", &GlobalConfig)
 
-	if GlobalConfig.Status == DiscoveryFailureStatus ||
-		GlobalConfig.Status == DiscoverySuccessStatus && !forceUpdate {
+	// forceUpdate must rediscover even after a prior failure; otherwise a single
+	// discoveryFailure permanently poisons later BeforeEach refreshes.
+	if !forceUpdate &&
+		(GlobalConfig.Status == DiscoveryFailureStatus || GlobalConfig.Status == DiscoverySuccessStatus) {
 		return GlobalConfig
 	}
 
@@ -1035,22 +1133,66 @@ func CreatePtpConfigGrandMaster(nodeName string, ifNames ...string) error {
 	)
 }
 
-func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string) error {
+// gnssSerialPort returns the full serial port path for ts2phc.nmea_serialport.
+// If deviceID is already an absolute path (e.g. /var/run/ptp/ttyGNSS_TS2PHC
+// set by the simulation environment) it is used as-is; otherwise /dev/ is
+// prepended for real hardware device names (e.g. gnss0).
+func gnssSerialPort(deviceID string) string {
+	if strings.HasPrefix(deviceID, "/") {
+		return deviceID
+	}
+	return "/dev/" + deviceID
+}
+
+// wpcInterfacesForSolverGM resolves the WPC NIC interface list and GNSS device
+// for a solver-selected GM port. Anchors on the solver iface (same as
+// PtpConfigTelcoGM) so map iteration in GetListOfWPCEnabledInterfaces cannot
+// pick a different WPC NIC on a multi-WPC node.
+func wpcInterfacesForSolverGM(nodeName, anchorIface string) ([]string, string, error) {
+	ifList, _, deviceID, err := ptphelper.InterfacesByPHCAndPins(GlobalConfig.L2Config, nodeName, anchorIface)
+	if err == nil && deviceID != "" && len(ifList) >= 2 {
+		if ptphelper.IsGnssSimConfigured() {
+			ptphelper.MarkGnssSimNmeaActive()
+		}
+		return ifList, deviceID, nil
+	}
+	simIfList, simDeviceID := ptphelper.GetListOfWPCEnabledInterfaces(nodeName)
+	if simDeviceID == "" || len(simIfList) < 2 {
+		if err != nil {
+			return nil, "", err
+		}
+		return nil, "", fmt.Errorf("WPC NIC requires at least 2 interfaces on node %s (anchor %s), found %d (%v)",
+			nodeName, anchorIface, len(simIfList), simIfList)
+	}
+	return simIfList, simDeviceID, nil
+}
+
+// stripPhc2sysRealtimeOpts removes -r flags so phc2sys does not drive CLOCK_REALTIME.
+// Used only when DisableAllSlaveRTUpdate is set (non-VRT Kind). VRT CI keeps -r
+// so every profile — including simulated T-GM — disciplines CLOCK_REALTIME.
+func stripPhc2sysRealtimeOpts(opts string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(opts, "-r", "")), " ")
+}
+
+func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []string, deviceID string, label string) error {
+	if len(ifList) < 2 {
+		return fmt.Errorf("WPC GrandMaster requires at least 2 interfaces on the WPC NIC, found %d (%v) on node %s", len(ifList), ifList, nodeName)
+	}
 	ptpSchedulingPolicy := SCHED_OTHER
 	configureFifo, err := strconv.ParseBool(os.Getenv("CONFIGURE_FIFO"))
 	if err == nil && configureFifo {
 		ptpSchedulingPolicy = SCHED_FIFO
 	}
-	_, err = nodes.LabelNode(nodeName, pkg.PtpClockUnderTestNodeLabel, "")
+	_, err = nodes.LabelNode(nodeName, label, "")
 	if err != nil {
-		return fmt.Errorf("error setting WPC GM clock-under-test node role label: %w", err)
+		return fmt.Errorf("error setting WPC GM node role label %s: %w", label, err)
 	}
 	_, err = nodes.LabelNode(nodeName, pkg.PtpGrandmasterNodeLabel, "")
 	if err != nil {
 		return fmt.Errorf("error setting WPC GM grandmaster node role label: %w", err)
 	}
 
-	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  /dev/%s\n", deviceID)
+	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  %s\n", gnssSerialPort(deviceID))
 	ts2phcConfig = fmt.Sprintf("%s\n[%s]\nts2phc.extts_polarity rising\nts2phc.extts_correction 0\n", ts2phcConfig, ifList[0])
 	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\n"
 	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[0], 1))
@@ -1059,28 +1201,10 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 	ts2phcOpts := " "
 	ph2sysOpts := fmt.Sprintf("-r -u 0 -m -N 8 -R 16 -s %s -n 24", ifList[0])
 
-	// Get test configuration values for E810 plugin settings
-	testParameters, err := ptptestconfig.GetPtpTestConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get test config: %v", err)
-	}
-
-	// Get E810 plugin settings from environment variables (following existing pattern)
-	// MAX_OFFSET_IN_NS = LocalMaxHoldoverOffset, MIN_OFFSET_IN_NS = -LocalMaxHoldoverOffset
-	// HOLDOVER_TIMEOUT_S = LocalHoldoverTimeout (keep from YAML for now)
-	// MAX_IN_SPEC_OFFSET_NS = MaxInSpecOffset
-	localMaxHoldoverOffset := metrics.MaxOffsetNs
-	localHoldoverTimeout := testParameters.GlobalConfig.HoldOverTimeout // Keep this from YAML for now
-	maxInSpecOffset := metrics.MaxInSpecOffsetNs
-
 	var plugins map[string]*apiextensions.JSON
-	yamlData := fmt.Sprintf(`
+	yamlData := `
   e810:
     enableDefaultConfig: false
-    settings:
-      LocalMaxHoldoverOffSet: %d
-      LocalHoldoverTimeout: %d
-      MaxInSpecOffset: %d
     pins:
       "$iface_master":
          "U.FL2": "0 2"
@@ -1147,7 +1271,7 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
           - "-p"
           - "CFG-MSG,1,38,248"
         reportOutput: true
-`, localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset)
+`
 
 	// Unmarshal the YAML data into a generic map
 	var genericMap map[string]interface{}
@@ -1175,7 +1299,7 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 		ptp4lConfig,
 		ts2phcConfig,
 		&ph2sysOpts,
-		pkg.PtpClockUnderTestNodeLabel,
+		label,
 		ptr.To(int64(defaultPriority)),
 		ptpSchedulingPolicy,
 		ptr.To(int64(defaultSchedulingPriority)),
@@ -1320,6 +1444,13 @@ func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, p
 	}
 
 	bcConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "\nboundary_clock_jbod 1\ngmCapable 0"
+	// TGMBC cascading-holdover needs the BC to accept upstream announces when the
+	// GM clock class is above the default threshold of 7 ("Master clock quality
+	// received is greater than configured, ignoring master!"). DualNicBC/HA keep
+	// the default 7 so freerun-class GMs are not silently accepted.
+	if GlobalConfig.PtpModeDesired == TelcoGMBC {
+		bcConfig = strings.Replace(bcConfig, "clock_class_threshold 7", "clock_class_threshold 248", 1)
+	}
 	bcConfig = AddAuthSettings(AddInterface(bcConfig, ifSlaveName, 0))
 	bcConfig = AddAuthSettings(AddInterface(bcConfig, ifMasterName, 1))
 	ptp4lsysOpts := ptp4lEthernet
@@ -1363,6 +1494,15 @@ func CreatePtpConfigOC(profileName, nodeName, ifSlaveName string, phc2sys bool, 
 
 	// Slave OC - add interface section with auth settings
 	slaveConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig)
+	// TGMBC: BC may announce freerun class 248 while the WPC GM is still
+	// locking. The default threshold of 7 makes the downstream OC ignore the
+	// BC ("Master clock quality received is greater than configured"), then
+	// start delay measurement against a PHC that is still stepping — which
+	// poisons path delay and prevents openshift_ptp_clock_state from ever
+	// appearing (parser historically dropped negative path-delay lines).
+	if GlobalConfig.PtpModeDesired == TelcoGMBC {
+		slaveConfig = strings.Replace(slaveConfig, "clock_class_threshold 7", "clock_class_threshold 248", 1)
+	}
 	slaveConfig = AddAuthSettings(AddInterface(slaveConfig, ifSlaveName, 0))
 	return createConfig(profileName,
 		&ifSlaveName,
@@ -1663,11 +1803,16 @@ func createPtpConfigPhc2SysHA(policyName string, nodeName string, haProfiles []s
 	}
 
 	phc2sysOpts := phc2sysDualNicBCHA
+	testParameters, errTestParam := ptptestconfig.GetPtpTestConfig()
+	if errTestParam == nil && testParameters.GlobalConfig.DisableAllSlaveRTUpdate {
+		phc2sysOpts = stripPhc2sysRealtimeOpts(phc2sysOpts)
+	}
 	ptp4lOpts := "" // no ptp4l options
+	phc2sysOptsPtr := &phc2sysOpts
 
 	ptpProfile := ptpv1.PtpProfile{
 		Name:                  &policyName,
-		Phc2sysOpts:           &phc2sysOpts,
+		Phc2sysOpts:           phc2sysOptsPtr,
 		Ptp4lOpts:             &ptp4lOpts,
 		PtpSchedulingPolicy:   &ptpSchedulingPolicy,
 		PtpSchedulingPriority: ptr.To(int64(65)),
@@ -1957,16 +2102,29 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 		ifList := []string{gmIf0.IfName, gmIf1.IfName}
 
 		_, _, deviceID, err := ptphelper.InterfacesByPHCAndPins(GlobalConfig.L2Config, gmIf0.NodeName, gmIf0.IfName)
-		if err != nil {
-			return err
-		}
-		if deviceID == "" {
-			return fmt.Errorf("no connected GNSS device found for T-GM interface %s on node %s", gmIf0.IfName, gmIf0.NodeName)
+		if err != nil || deviceID == "" {
+			// Fall back for gnss-sim / when L2 pin+GNSS caps are not populated.
+			simIfList, simDeviceID := ptphelper.GetListOfWPCEnabledInterfaces(gmIf0.NodeName)
+			if simDeviceID == "" || len(simIfList) < 2 {
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("WPC NIC requires at least 2 interfaces with GNSS on node %s, found %d (%v)", gmIf0.NodeName, len(simIfList), simIfList)
+			}
+			ifList = simIfList
+			deviceID = simDeviceID
+		} else if ptphelper.IsGnssSimConfigured() {
+			// InterfacesByPHCAndPins found /dev/gnss* (netdevsim wpc=1) without
+			// going through GetListOfWPCEnabledInterfaces, so mark sim mode
+			// explicitly — otherwise hardware-only WPC specs run and Simulated
+			// T-GM specs are skipped.
+			ptphelper.MarkGnssSimNmeaActive()
 		}
 
-		err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf0.NodeName, ifList, deviceID)
+		err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf0.NodeName, ifList, deviceID, pkg.PtpClockUnderTestNodeLabel)
 		if err != nil {
 			logrus.Errorf("Error creating Grandmaster ptpconfig: %s", err)
+			return err
 		}
 	}
 	return nil
@@ -2081,6 +2239,95 @@ func PtpConfigTelcoBC(isExtGM bool) error {
 	return nil
 }
 
+// PtpConfigTGMOC configures a WPC T-GM as grandmaster with a downstream OC slave.
+func PtpConfigTGMOC() error {
+	BestSolution := ""
+	if len(*data.solutions[AlgoTGMOCString]) != 0 {
+		BestSolution = AlgoTGMOCString
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for TGMOC configuration")
+	}
+
+	grandmaster := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+	slave1 := (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
+
+	gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
+	slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
+
+	IfList, deviceID, err := wpcInterfacesForSolverGM(gmIf.NodeName, gmIf.IfName)
+	if err != nil {
+		return err
+	}
+
+	err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
+	if err != nil {
+		logrus.Errorf("Error creating WPC Grandmaster ptpconfig: %s", err)
+		return err
+	}
+
+	err = CreatePtpConfigOC(pkg.PtpSlave1PolicyName, slave1If.NodeName,
+		slave1If.IfName, true, pkg.PtpClockUnderTestNodeLabel)
+	if err != nil {
+		logrus.Errorf("Error creating Slave1 ptpconfig: %s", err)
+	}
+	return err
+}
+
+// PtpConfigTGMBC configures a WPC T-GM as grandmaster with a downstream BC,
+// and optionally a downstream OC behind the BC.
+func PtpConfigTGMBC() error {
+	BestSolution := ""
+	if len(*data.solutions[AlgoTGMBCString]) != 0 {
+		BestSolution = AlgoTGMBCString
+	}
+	if len(*data.solutions[AlgoTGMBCWithSlavesString]) != 0 {
+		BestSolution = AlgoTGMBCWithSlavesString
+	}
+	if BestSolution == "" {
+		return fmt.Errorf("no solution found for TGMBC configuration")
+	}
+
+	logrus.Infof("Configuring best solution= %s", BestSolution)
+
+	grandmaster := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
+	gmIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][grandmaster]]
+
+	IfList, deviceID, err := wpcInterfacesForSolverGM(gmIf.NodeName, gmIf.IfName)
+	if err != nil {
+		return err
+	}
+
+	err = CreatePtpConfigWPCGrandMaster(pkg.PtpWPCGrandMasterPolicyName, gmIf.NodeName, IfList, deviceID, pkg.PtpGrandmasterNodeLabel)
+	if err != nil {
+		logrus.Errorf("Error creating WPC Grandmaster ptpconfig: %s", err)
+		return err
+	}
+
+	bc1Slave := (*data.testClockRolesAlgoMapping[BestSolution])[BC1Slave]
+	bc1Master := (*data.testClockRolesAlgoMapping[BestSolution])[BC1Master]
+	bc1SlaveIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Slave]]
+	bc1MasterIf := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][bc1Master]]
+
+	err = CreatePtpConfigBC(pkg.PtpBcMaster1PolicyName, bc1MasterIf.NodeName,
+		bc1MasterIf.IfName, bc1SlaveIf.IfName, true)
+	if err != nil {
+		logrus.Errorf("Error creating BC ptpconfig: %s", err)
+		return err
+	}
+
+	if BestSolution == AlgoTGMBCWithSlavesString {
+		slave1 := (*data.testClockRolesAlgoMapping[BestSolution])[Slave1]
+		slave1If := GlobalConfig.L2Config.GetPtpIfList()[(*data.solutions[BestSolution])[FirstSolution][slave1]]
+		err = CreatePtpConfigOC(pkg.PtpSlave1PolicyName, slave1If.NodeName,
+			slave1If.IfName, false, pkg.PtpSlave1NodeLabel)
+		if err != nil {
+			logrus.Errorf("Error creating downstream Slave1 ptpconfig: %s", err)
+		}
+	}
+	return err
+}
+
 // helper function to add an interface to the ptp4l config
 func AddInterface(ptpConfig, iface string, masterOnly int) (updatedPtpConfig string) {
 	return fmt.Sprintf("%s\n[%s]\nmasterOnly %d", ptpConfig, iface, masterOnly)
@@ -2163,8 +2410,9 @@ func createConfigWithTs2PhcAndPlugins(profileName string, ifaceName, ptp4lOpts *
 	}
 	thresholds.MaxOffsetThreshold = int64(testParameters.GlobalConfig.MaxOffset)
 	thresholds.MinOffsetThreshold = int64(testParameters.GlobalConfig.MinOffset)
+	ptpSettings := map[string]string{"logReduce": "false"}
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
-		PtpClockThreshold: &thresholds, Ts2PhcOpts: ts2phcOpts, Plugins: plugins, PtpSettings: map[string]string{"logReduce": "false"}}
+		PtpClockThreshold: &thresholds, Ts2PhcOpts: ts2phcOpts, Plugins: plugins, PtpSettings: ptpSettings}
 	if ptp4lConfig != "" {
 		ptpProfile.Ptp4lConf = &ptp4lConfig
 	}
@@ -2194,8 +2442,8 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 	thresholds.HoldOverTimeout = int64(testParameters.GlobalConfig.HoldOverTimeout)
 
 	if testParameters.GlobalConfig.DisableAllSlaveRTUpdate && nodeLabel != pkg.PtpGrandmasterNodeLabel && phc2sysOpts != nil {
-		temp := "-v"
-		phc2sysOpts = &temp
+		noRT := stripPhc2sysRealtimeOpts(*phc2sysOpts)
+		phc2sysOpts = &noRT
 	}
 
 	ptpProfile := ptpv1.PtpProfile{Name: &profileName, Interface: ifaceName, Phc2sysOpts: phc2sysOpts, Ptp4lOpts: ptp4lOpts, PtpSchedulingPolicy: &ptpSchedulingPolicy, PtpSchedulingPriority: ptpSchedulingPriority,
@@ -2251,10 +2499,22 @@ func discoverPTPConfiguration(namespace string) {
 		}
 	}
 	discoverMode(ptpConfigClockUnderTest)
+
+	if GlobalConfig.PtpModeDesired == TelcoGMOC && GlobalConfig.PtpModeDiscovered == OrdinaryClock && GlobalConfig.DiscoveredGrandMasterPtpConfig != nil {
+		GlobalConfig.PtpModeDiscovered = TelcoGMOC
+		GlobalConfig.DiscoveredSlave1PtpConfig = GlobalConfig.DiscoveredClockUnderTestPtpConfig
+	}
+	if GlobalConfig.PtpModeDesired == TelcoGMBC && GlobalConfig.PtpModeDiscovered == BoundaryClock && GlobalConfig.DiscoveredGrandMasterPtpConfig != nil {
+		GlobalConfig.PtpModeDiscovered = TelcoGMBC
+	}
 }
 
 func resetConfig() {
 	GlobalConfig.Status = DiscoveryFailureStatus
+	// Clear discovered mode so a failed rediscovery cannot leave a stale
+	// PtpModeDiscovered (e.g. TGM) that lets later Its run and panic on nil pods
+	// after another suite wiped PtpConfigs mid-run.
+	GlobalConfig.PtpModeDiscovered = None
 	GlobalConfig.DiscoveredClockUnderTestPod = nil
 	GlobalConfig.DiscoveredClockUnderTestPtpConfig = nil
 	GlobalConfig.DiscoveredClockUnderTestSecondaryPtpConfig = nil
@@ -2344,8 +2604,9 @@ func discoverMode(ptpConfigClockUnderTest []*ptpv1.PtpConfig) {
 
 		//WPC GM state
 		if masterIfCount >= 2 && slaveIfCount == 0 && !strings.EqualFold(*ptpConfig.Spec.Profile[0].Ts2PhcConf, "") {
-
-			GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
+			if numBc == 0 {
+				GlobalConfig.DiscoveredClockUnderTestPtpConfig = (*ptpDiscoveryRes)(ptpConfig)
+			}
 			GlobalConfig.PtpModeDiscovered = TelcoGrandMasterClock
 			GlobalConfig.Status = DiscoverySuccessStatus
 			GlobalConfig.DiscoveredGrandMasterPtpConfig = (*ptpDiscoveryRes)(ptpConfig)

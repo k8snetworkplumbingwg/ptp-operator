@@ -8,7 +8,9 @@ set -euo pipefail
 # Usage: ./configpair.sh <port1 netdevsim ID (unique)> <port2 netdevsim ID (unique)> \
 #   <name of the interface on side 1 (ptp1)> <name of the interface on side 2 (ptp1)> \
 #   <port1 ptp clock ID A (/dev/ptpA)> <port2 ptp clock ID B (/dev/ptpB)> \
-#   <port1 container name> <port2 container name> <port1 pci ID> <port2 pci ID>
+#   <port1 container name> <port2 container name> <port1 pci ID> <port2 pci ID> \
+#   [wpc]
+#   wpc=1 enables DPLL + GNSS emulation on the port1 (side 1) NIC (WPC NIC).
 
 NSIM_DEV_1_ID=$1
 NSIM_DEV_2_ID=$2
@@ -20,6 +22,7 @@ CONTAINER1=$7
 CONTAINER2=$8
 PCI1=$9
 PCI2=${10}
+WPC=${11:-0}
 
 NSIM_DEV_1_SYS=/sys/bus/pci/devices/$PCI1
 NSIM_DEV_2_SYS=/sys/bus/pci/devices/$PCI2
@@ -102,8 +105,9 @@ set -x
 
 cleanup_ns
 
-echo "$NSIM_DEV_1_ID $PCI1 $CLK1" >$NSIM_DEV_SYS_NEW
-echo "$NSIM_DEV_2_ID $PCI2 $CLK2" >$NSIM_DEV_SYS_NEW
+# Format: id pci clk [ports queues wpc] — wpc=1 enables DPLL + GNSS on that device.
+echo "$NSIM_DEV_1_ID $PCI1 $CLK1 1 1 $WPC" >$NSIM_DEV_SYS_NEW
+echo "$NSIM_DEV_2_ID $PCI2 $CLK2 1 1 0" >$NSIM_DEV_SYS_NEW
 udevadm settle
 setup_ns
 

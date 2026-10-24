@@ -237,12 +237,86 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
+# gnss-sim (and GNSS_SIM_* env) is T-GM only. Exporting GNSS_SIM_IFACE* for
+# OC/BC/DualNIC* lets the WPC L2 overlay / solver pin DualNICBC onto worker1
+# GNSS NICs, and CLOCK_REALTIME never locks on the BC. Deploy the pod once
+# before the mode loop so we do not bounce it between suites.
+is_telco_gm_mode() {
+  case "${1,,}" in
+    tgm|tgmoc|tgmbc) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+modes_include_telco_gm() {
+  local mode
+  for mode in "${TEST_MODES[@]}"; do
+    if is_telco_gm_mode "${mode}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Deploy gnss-sim once for the Kind cluster (idempotent). Does not export
+# GNSS_SIM_IFACE* — those stay T-GM-mode-only via export_gnss_sim_env.
+deploy_gnss_sim() {
+  export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
+
+  # Derive GNSS_SIM_IMAGE from the linuxptp-daemon image if not already set,
+  # by replacing the tag. This handles direct invocation of run-tests.sh.
+  if [ -z "${GNSS_SIM_IMAGE:-}" ] && [ -n "${LINUXPTP_DAEMON_IMAGE:-}" ]; then
+    export GNSS_SIM_IMAGE="${LINUXPTP_DAEMON_IMAGE%:*}:gnss-sim"
+  fi
+
+  bash "${SCRIPT_DIR}/configGNSS.sh"
+}
+
+# Export GNSS_SIM_* for the test framework for a T-GM mode run. Assumes the
+# pod was already deployed by deploy_gnss_sim.
+export_gnss_sim_env() {
+  export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
+  export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
+
+  GNSS_KERNEL_DEV=""
+  for g in /dev/gnss*; do
+    [ -c "$g" ] && GNSS_KERNEL_DEV="$g" && break
+  done
+  if [ -n "$GNSS_KERNEL_DEV" ]; then
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
+  else
+    # Must match gnss-sim --pty-links and the daemon's /var/run/ptp mount.
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ptp/ttyGNSS_TS2PHC}"
+  fi
+  export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
+  export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
+}
+
+clear_gnss_sim_env() {
+  unset GNSS_SIM_API_HOST GNSS_SIM_NMEA_DEVICE GNSS_SIM_IFACE1 GNSS_SIM_IFACE2
+}
+
+if modes_include_telco_gm; then
+  echo "Deploying gnss-sim once before mode loop (T-GM modes present)"
+  deploy_gnss_sim
+else
+  echo "Skipping gnss-sim deploy (no tgm/tgmoc/tgmbc in --mode)"
+fi
+
+overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
+  if is_telco_gm_mode "${mode}"; then
+    echo "Exporting GNSS_SIM_* env for T-GM mode ${mode}"
+    export_gnss_sim_env
+  else
+    echo "Clearing GNSS_SIM_* env for mode ${mode} (T-GM only: tgm, tgmoc, tgmbc)"
+    clear_gnss_sim_env
+  fi
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "serial"
+    run_ginkgo_suite "${mode}" "serial" || overall_exit=1
   fi
   if [[ "${RUN_KIND}" == "parallel" || "${RUN_KIND}" == "both" ]]; then
-    run_ginkgo_suite "${mode}" "parallel"
+    run_ginkgo_suite "${mode}" "parallel" || overall_exit=1
   fi
 done
 
@@ -259,3 +333,5 @@ done
 # tests with auth will be enabled once the ci-github tests can last more than 1 hour
 # kubectl apply -f test-config/ptp-security.yaml
 # PTP_AUTH_ENABLED=true PTP_TEST_MODE=oc ginkgo --skip=".*The interfaces supporting ptp can be discovered correctly.*" --skip="Negative - run pmc in a new unprivileged pod on the slave node.*" -v --keep-going --output-dir=$JUNIT_OUTPUT_DIR --junit-report=$JUNIT_OUTPUT_FILE -v "$SUITE"/serial
+
+exit ${overall_exit}

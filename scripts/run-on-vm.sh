@@ -5,7 +5,7 @@ export DKMS_MODE="${DKMS_MODE:-false}"
 # Stream child command output live (default: quiet, dump log only on failure).
 # Override with --verbose or RUN_ON_VM_VERBOSE=true|1|yes.
 RUN_ON_VM_VERBOSE="${RUN_ON_VM_VERBOSE:-false}"
-TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower"
+TEST_MODES="oc,bc,dualnicbc,dualnicbcha,dualfollower,tgm,tgmoc,tgmbc"
 RUN_PHASE="all"
 REGISTRY_IP=""
 TARBALL=""
@@ -294,6 +294,8 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
+# Kill leftover gnss-sim from a previous run
+pkill -f gnss-sim || true
 
 # ── Images phase (--images) ──────────────────────────────────────────
 if [[ "$RUN_PHASE" == "images" ]]; then
