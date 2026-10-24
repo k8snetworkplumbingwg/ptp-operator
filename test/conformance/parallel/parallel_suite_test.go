@@ -54,32 +54,23 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	testclient.Client = testclient.New("")
 	Expect(testclient.Client).NotTo(BeNil())
 
-	// Prefer reusing configs already installed by the serial suite for this mode.
-	// CreatePtpConfigurations always clean.All() first; when parallel overlaps
-	// serial on the same cluster that wipe deletes PtpConfigs mid-serial and
-	// cascades into nil-pod panics (seen on tgm-serial vs tgm-parallel).
-	desired := testconfig.GetDesiredConfig(false)
-	existing := testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-	reusedSerialConfigs := existing.Status == testconfig.DiscoverySuccessStatus &&
-		existing.PtpModeDiscovered == desired.PtpModeDesired &&
-		existing.DiscoveredClockUnderTestPod != nil
-	if reusedSerialConfigs {
-		logrus.Infof("Reusing existing PTP configs for mode %s (skipping clean/create)", desired.PtpModeDesired)
-		fullConfig = existing
-	} else {
-		err = testconfig.CreatePtpConfigurationsWithRetry(3)
-		if err != nil {
-			if strings.Contains(err.Error(), "no solution found") ||
-				strings.Contains(err.Error(), "no T-BC solution found") {
-				Skip(fmt.Sprintf("Could not create a ptp config (insufficient topology), err=%s", err))
-			}
-			Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
+	// Always create/discover/restart. Serial and parallel do not overlap: Ginkgo
+	// finishes serial AfterSuite before parallel starts, and Kind CI only runs
+	// serial. Skipping create to "reuse" serial configs leaves T-GM parallel
+	// without a GM when KEEP_PTPCONFIG is unset (serial already wiped them).
+	err = testconfig.CreatePtpConfigurationsWithRetry(3)
+	if err != nil {
+		if strings.Contains(err.Error(), "no solution found") ||
+			strings.Contains(err.Error(), "no T-BC solution found") {
+			Skip(fmt.Sprintf("Could not create a ptp config (insufficient topology), err=%s", err))
 		}
-		By("Refreshing configuration", func() {
-			ptphelper.WaitForPtpDaemonToExist()
-			fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-		})
+		Fail(fmt.Sprintf("Could not create a ptp config, err=%s", err))
 	}
+
+	By("Refreshing configuration", func() {
+		ptphelper.WaitForPtpDaemonToExist()
+		fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+	})
 	Expect(fullConfig.Status).To(Equal(testconfig.DiscoverySuccessStatus), "parallel suite requires successful PTP discovery")
 	Expect(fullConfig.DiscoveredClockUnderTestPod).NotTo(BeNil(),
 		"clock-under-test pod missing; label node with "+pkg.PtpClockUnderTestNodeLabel)
@@ -96,11 +87,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		logrus.Warnf("Failed to write node information file: %v", err)
 	}
 
-	// Avoid RestartPTPDaemon when reusing serial configs: a daemon bounce mid-serial
-	// races the same way as clean.All. Only restart after we created configs.
-	if !reusedSerialConfigs {
-		ptphelper.RestartPTPDaemon()
-	}
+	ptphelper.RestartPTPDaemon()
 
 	isConsumerReady := true
 	apiVersion := event.GetDefaultApiVersion()

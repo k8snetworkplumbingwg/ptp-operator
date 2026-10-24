@@ -237,9 +237,10 @@ run_ginkgo_suite() {
   return "${ginkgo_rc}"
 }
 
-# gnss-sim (and GNSS_SIM_* env) is T-GM only. Starting it for OC/BC/DualNIC*
-# exports GNSS_SIM_IFACE1=ens1f0 so the WPC L2 overlay / solver can pin DualNICBC
-# onto worker1 GNSS NICs, and CLOCK_REALTIME never locks on the BC.
+# gnss-sim (and GNSS_SIM_* env) is T-GM only. Exporting GNSS_SIM_IFACE* for
+# OC/BC/DualNIC* lets the WPC L2 overlay / solver pin DualNICBC onto worker1
+# GNSS NICs, and CLOCK_REALTIME never locks on the BC. Deploy the pod once
+# before the mode loop so we do not bounce it between suites.
 is_telco_gm_mode() {
   case "${1,,}" in
     tgm|tgmoc|tgmbc) return 0 ;;
@@ -247,8 +248,19 @@ is_telco_gm_mode() {
   esac
 }
 
-# Deploy gnss-sim for the current T-GM mode. Idempotent.
-init_gnss_sim_env() {
+modes_include_telco_gm() {
+  local mode
+  for mode in "${TEST_MODES[@]}"; do
+    if is_telco_gm_mode "${mode}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Deploy gnss-sim once for the Kind cluster (idempotent). Does not export
+# GNSS_SIM_IFACE* — those stay T-GM-mode-only via export_gnss_sim_env.
+deploy_gnss_sim() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
   # Derive GNSS_SIM_IMAGE from the linuxptp-daemon image if not already set,
@@ -257,11 +269,13 @@ init_gnss_sim_env() {
     export GNSS_SIM_IMAGE="${LINUXPTP_DAEMON_IMAGE%:*}:gnss-sim"
   fi
 
-  # Deploy gnss-sim pod (idempotent — recreates if already running).
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   bash "${SCRIPT_DIR}/configGNSS.sh"
+}
 
-  # Read the gnss-sim pod's node IP for test framework API access
+# Export GNSS_SIM_* for the test framework for a T-GM mode run. Assumes the
+# pod was already deployed by deploy_gnss_sim.
+export_gnss_sim_env() {
+  export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
   export GNSS_SIM_API_HOST="$(cat /tmp/gnss-sim-api-host 2>/dev/null || echo localhost)"
 
   GNSS_KERNEL_DEV=""
@@ -281,13 +295,20 @@ clear_gnss_sim_env() {
   unset GNSS_SIM_API_HOST GNSS_SIM_NMEA_DEVICE GNSS_SIM_IFACE1 GNSS_SIM_IFACE2
 }
 
+if modes_include_telco_gm; then
+  echo "Deploying gnss-sim once before mode loop (T-GM modes present)"
+  deploy_gnss_sim
+else
+  echo "Skipping gnss-sim deploy (no tgm/tgmoc/tgmbc in --mode)"
+fi
+
 overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
   if is_telco_gm_mode "${mode}"; then
-    echo "Deploying gnss-sim for T-GM mode ${mode}"
-    init_gnss_sim_env
+    echo "Exporting GNSS_SIM_* env for T-GM mode ${mode}"
+    export_gnss_sim_env
   else
-    echo "Skipping gnss-sim deploy for mode ${mode} (T-GM only: tgm, tgmoc, tgmbc)"
+    echo "Clearing GNSS_SIM_* env for mode ${mode} (T-GM only: tgm, tgmoc, tgmbc)"
     clear_gnss_sim_env
   fi
   if [[ "${RUN_KIND}" == "serial" || "${RUN_KIND}" == "both" ]]; then
