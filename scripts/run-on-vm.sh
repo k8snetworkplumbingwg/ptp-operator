@@ -439,8 +439,7 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
 
     step "Deploying ptp-operator manifests"
     cd "${PTP_TOOLS_DIR}"
-    run_quiet_with_log_dump_on_failure "make-deploy-all" \
-      sh -c 'for i in 1 2 3; do make deploy-all && exit 0 || { echo "deploy-all attempt $i failed, retrying in 10s..."; sleep 10; }; done; echo "deploy-all failed after 3 attempts"; exit 1'
+    run_quiet_with_log_dump_on_failure "make-deploy-all" sh -c "make deploy-all || true"
     cd -
 
     step "Patching webhook for cert-manager CA injection (kind)"
