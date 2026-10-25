@@ -13,6 +13,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type observedProcessStateCondition struct {
+	process.OnProcessState
+	observed chan event.PTPState
+}
+
+func (c observedProcessStateCondition) MetByCurrentState(p process.Process, sourceUp process.SourceStateQuery, stats process.EventStats) bool {
+	state := stats.States[c.ConfigName][event.EventSource(c.Source)]
+	select {
+	case c.observed <- state:
+	default:
+	}
+	return c.OnProcessState.MetByCurrentState(p, sourceUp, stats)
+}
+
+func waitForObservedState(t *testing.T, states <-chan event.PTPState, expected event.PTPState) {
+	t.Helper()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case state := <-states:
+			if state == expected {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for evaluated state %s", expected)
+		}
+	}
+}
+
 func TestStatsUpdatesWaitForClockConsumer(t *testing.T) {
 	ct := NewCondiitonsTester(t, event.OC, ptp4lConfig)
 	ct.cm.ConfigureOSClockFilter(clock.OSClockFilterConfig{InSyncThreshold: 50, OutOfSyncThreshold: 100, Samples: 1})
@@ -26,8 +56,6 @@ func TestStatsUpdatesWaitForClockConsumer(t *testing.T) {
 	ct.SendOffset(event.PHC2SYS, ptp4lConfig, event.PTP_LOCKED, 10)
 	require.Eventually(t, func() bool { return len(ct.pm.eventsOut) == 1 }, time.Second, time.Millisecond,
 		"raw data must go through the clock-manager channel")
-	stats := ct.cm.GetStats([]process.StatsRequest{{ClockID: ptp4lConfig, Source: event.PHC2SYS}})
-	assert.Empty(t, stats.States[ptp4lConfig])
 	assert.Zero(t, waiter.Starts(), "forwarding a sample is not the same as evaluating it")
 
 	ct.StartCM()
@@ -53,23 +81,28 @@ func TestStatsUpdatesReconcileAlreadyReadyClock(t *testing.T) {
 func TestStatsUpdatesDoNotLatchDegradedReadiness(t *testing.T) {
 	ct := NewCondiitonsTester(t, event.OC, ptp4lConfig)
 	ct.cm.ConfigureOSClockFilter(clock.OSClockFilterConfig{InSyncThreshold: 50, OutOfSyncThreshold: 100, Samples: 1})
+	observedStates := make(chan event.PTPState, 10)
 	waiter := ct.AddProcess(&stubProcess{
 		name: "mixed-waiter", state: process.Created,
 		conds: map[process.Action]process.Condition{
 			process.ActionStart: &process.All{Conditions: []process.Condition{
-				process.OnProcessState{ConfigName: ptp4lConfig, Source: string(event.PHC2SYS), State: event.PTP_LOCKED},
+				observedProcessStateCondition{
+					OnProcessState: process.OnProcessState{ConfigName: ptp4lConfig, Source: string(event.PHC2SYS), State: event.PTP_LOCKED},
+					observed:       observedStates,
+				},
 				process.OnPluginEvent{EventName: "ready"},
 			}},
 		},
 	})
 	ct.Start()
 	ct.SendOffset(event.PHC2SYS, ptp4lConfig, event.PTP_LOCKED, 10)
+	waitForObservedState(t, observedStates, event.PTP_LOCKED)
 	ct.SendOffset(event.PHC2SYS, ptp4lConfig, event.PTP_FREERUN, 200)
-	requests := []process.StatsRequest{{ClockID: ptp4lConfig, Source: event.PHC2SYS}}
-	require.Eventually(t, func() bool { return ct.cm.GetStats(requests).States[ptp4lConfig][event.PHC2SYS] == event.PTP_FREERUN }, time.Second, time.Millisecond)
+	waitForObservedState(t, observedStates, event.PTP_FREERUN)
 	ct.SendPluginEvent("plugin", "ready")
 	assert.Zero(t, waiter.Starts(), "a previously ready clock cannot satisfy the conjunction after degradation")
 	ct.SendOffset(event.PHC2SYS, ptp4lConfig, event.PTP_LOCKED, 10)
+	waitForObservedState(t, observedStates, event.PTP_LOCKED)
 	require.Eventually(t, func() bool { return waiter.Starts() == 1 }, time.Second, time.Millisecond)
 }
 

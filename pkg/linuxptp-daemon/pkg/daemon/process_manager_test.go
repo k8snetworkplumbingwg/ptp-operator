@@ -1124,7 +1124,7 @@ func TestTBC_Ts2phcWithPhc2sysUnlocksThroughProcessManager(t *testing.T) {
 				{ClockID: ptp4lConfig, Source: event.PTP4l},
 				{ClockID: ptp4lConfig, Source: event.PHC2SYS},
 			}, requests)
-			stats := ct.cm.GetStats(requests)
+			stats := ct.pm.latestStats
 			assert.Equal(t, event.PTP_LOCKED, stats.States[ptp4lConfig][event.PHC2SYS])
 			assert.Nil(t, stats.Windows[ptp4lConfig][event.PHC2SYS])
 		})

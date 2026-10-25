@@ -111,6 +111,21 @@ const (
 	PTP_NOTSET PTPState = "-2"
 )
 
+// WorstOfState returns the more degraded of two PTP states using the O-RAN
+// priority FREERUN > HOLDOVER > LOCKED. A NOTSET input propagates as NOTSET.
+func WorstOfState(a, b PTPState) PTPState {
+	if a == PTP_NOTSET || b == PTP_NOTSET {
+		return PTP_NOTSET
+	}
+	if a == PTP_FREERUN || b == PTP_FREERUN {
+		return PTP_FREERUN
+	}
+	if a == PTP_HOLDOVER || b == PTP_HOLDOVER {
+		return PTP_HOLDOVER
+	}
+	return PTP_LOCKED
+}
+
 // Clock state metric values for openshift_ptp_clock_state gauge.
 const (
 	ClockStateFreerun  float64 = 0
