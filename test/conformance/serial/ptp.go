@@ -603,7 +603,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForLockStateViaEvent(evCtx.subs, ptpEvent.LOCKED, pkg.TimeoutIn5Minutes)
+				waitForLockStateViaEvent(evCtx.subs, fullConfig.DiscoveredFollowerInterfaces[0], ptpEvent.LOCKED, pkg.TimeoutIn5Minutes)
 			})
 
 			It("Slave can sync to master", func() {
@@ -1039,7 +1039,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					if !evCtx.available {
 						Skip("PTP events not available")
 					}
-					waitForLockStateViaEvent(evCtx.subs, ptpEvent.LOCKED, pkg.TimeoutIn5Minutes)
+					waitForLockStateViaEvent(evCtx.subs, fullConfig.DiscoveredFollowerInterfaces[0], ptpEvent.LOCKED, pkg.TimeoutIn5Minutes)
 				})
 
 				It("Can provide a profile with higher priority", func() {
@@ -1335,7 +1335,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, locked, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic1.SlaveIf, locked, eventTimeout)
 			})
 			It("Step 1: initial state reports clockClass 6 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, false)
@@ -1352,7 +1352,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, freerun, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic1.SlaveIf, freerun, eventTimeout)
 			})
 			It("Step 2: freerun state reports clockClass 248 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun, false)
@@ -1369,7 +1369,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, locked, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic1.SlaveIf, locked, eventTimeout)
 			})
 			It("Step 3: recovered state reports clockClass 6 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, false)
@@ -1436,7 +1436,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, locked, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic1.SlaveIf, locked, eventTimeout)
 			})
 			It("Step 1: NIC-1 reports clockClass 6 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, true)
@@ -1456,7 +1456,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, freerun, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic2.SlaveIf, freerun, eventTimeout)
 			})
 			It("Step 3: NIC-1 still reports clockClass 6 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, locked, true)
@@ -1477,7 +1477,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, freerun, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, nic1.SlaveIf, freerun, eventTimeout)
 			})
 			It("Step 5: NIC-1 reports freerun clockClass 248 via metrics", func() {
 				ptptesthelper.VerifyNICClockClass(fullConfig, nic1, freerun, true)
@@ -2671,7 +2671,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, lockedCC, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, slaveIf[0], lockedCC, eventTimeout)
 			})
 			It("initial state reports clock class Locked (6) via metrics", func() {
 				checkClockClassState(fullConfig, lockedStr, pkg.TimeoutIn5Minutes)
@@ -2710,7 +2710,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				if !evCtx.available {
 					Skip("PTP events not available")
 				}
-				waitForClockClassViaEvent(evCtx.subs, lockedCC, eventTimeout)
+				waitForClockClassViaEvent(evCtx.subs, slaveIf[0], lockedCC, eventTimeout)
 			})
 			It("recovered state: all slave port roles are SLAVE via metrics", func() {
 				Eventually(func() error {
@@ -4637,20 +4637,19 @@ func waitForStateAndCC(subs event.Subscriptions, state ptpEvent.SyncState, cc in
 // waitForClockClassViaEvent blocks until a clock-class change event carrying the
 // expected class is observed on the cloud-event CLOCKCLASS channel, or fails at
 // timeout. It reads only the cloud-event pipeline (no metrics).
-func waitForClockClassViaEvent(subs event.Subscriptions, cc int, timeout time.Duration) {
+func waitForClockClassViaEvent(subs event.Subscriptions, iface string, cc int, timeout time.Duration) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		select {
 		case <-deadline.C:
-			Fail(fmt.Sprintf("Timed out waiting for clockClass %d via cloud events", cc))
+			Fail(fmt.Sprintf("Timed out waiting for clockClass %d on %s via cloud events", cc, iface))
 			return
 		case ev := <-subs.CLOCKCLASS:
 			if res, ok := processEvent(ptpEvent.PtpClockClassChange, ev); ok {
-				// Values are keyed by "<resource>/<dataType>"; look up by dataType.
-				if raw, ok2 := event.ValueByDataType(res.Values, "metric"); ok2 {
+				if raw, ok2 := event.ValueByInterfaceAndDataType(res.Values, iface, "metric"); ok2 {
 					if v, ok3 := raw.(float64); ok3 && int(v) == cc {
-						fmt.Fprintf(GinkgoWriter, "ClockClass %d observed via cloud events\n", cc)
+						fmt.Fprintf(GinkgoWriter, "ClockClass %d on %s observed via cloud events\n", cc, iface)
 						return
 					}
 				}
@@ -4667,20 +4666,19 @@ func waitForClockClassViaEvent(subs event.Subscriptions, cc int, timeout time.Du
 // waitForLockStateViaEvent blocks until a lock-state change event carrying the
 // expected sync state is observed on the cloud-event LOCKSTATE channel, or fails
 // at timeout. It reads only the cloud-event pipeline (no metrics).
-func waitForLockStateViaEvent(subs event.Subscriptions, state ptpEvent.SyncState, timeout time.Duration) {
+func waitForLockStateViaEvent(subs event.Subscriptions, iface string, state ptpEvent.SyncState, timeout time.Duration) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		select {
 		case <-deadline.C:
-			Fail(fmt.Sprintf("Timed out waiting for lock state %s via cloud events", state))
+			Fail(fmt.Sprintf("Timed out waiting for lock state %s on %s via cloud events", state, iface))
 			return
 		case ev := <-subs.LOCKSTATE:
 			if res, ok := processEvent(ptpEvent.PtpStateChange, ev); ok {
-				// Values are keyed by "<resource>/<dataType>"; look up by dataType.
-				if raw, ok2 := event.ValueByDataType(res.Values, "notification"); ok2 {
+				if raw, ok2 := event.ValueByInterfaceAndDataType(res.Values, iface, "notification"); ok2 {
 					if s, ok3 := raw.(string); ok3 && s == string(state) {
-						fmt.Fprintf(GinkgoWriter, "Lock state %s observed via cloud events\n", state)
+						fmt.Fprintf(GinkgoWriter, "Lock state %s on %s observed via cloud events\n", state, iface)
 						return
 					}
 				}

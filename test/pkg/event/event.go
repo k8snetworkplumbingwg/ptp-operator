@@ -860,6 +860,17 @@ func ValueByDataType(values exports.StoredEventValues, dataType string) (interfa
 	return nil, false
 }
 
+func ValueByInterfaceAndDataType(values exports.StoredEventValues, iface, dataType string) (interface{}, bool) {
+	ifaceSegment := "/" + iface + "/"
+	suffix := "/" + dataType
+	for key, val := range values {
+		if strings.Contains(key, ifaceSegment) && strings.HasSuffix(key, suffix) {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
 func createStoredEvent(data []byte) (aStoredEvent exports.StoredEvent, aType string, err error) {
 	apiVersion := ptphelper.PtpEventEnabled()
 	if apiVersion == 1 {
