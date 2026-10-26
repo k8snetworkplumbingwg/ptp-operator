@@ -13,6 +13,6 @@ kind: Kustomization
 images:
 - name: controller
   newName: ghcr.io/k8snetworkplumbingwg/ptp-operator
-  newTag: "5.0"
+  newTag: "5.1"
 patches:
 - path: env.yaml
