@@ -158,6 +158,43 @@ func findRegexInStream(stream io.ReadCloser, r *regexp.Regexp, timeout time.Dura
 	return matches, nil
 }
 
+// CountPodLogMatchesSince returns the number of regex matches in the pod's
+// current logs, optionally limited to entries at/after `since` (pass the zero
+// time to read the whole log). Unlike GetPodLogsRegex[Since], it neither follows
+// the stream nor waits: it reads the current snapshot once and returns the count
+// (0 with a nil error when there are no matches). This makes it suitable for
+// before/after delta comparisons where a count of zero is a valid baseline.
+func CountPodLogMatchesSince(namespace string, podName string, containerName, regex string, isLiteralText bool, since time.Time) (int, error) {
+	if isLiteralText {
+		regex = regexp.QuoteMeta(regex)
+	}
+	r := regexp.MustCompile(regex)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	opts := corev1.PodLogOptions{
+		Container: containerName,
+		Follow:    false,
+	}
+	if !since.IsZero() {
+		opts.SinceTime = &metav1.Time{Time: since}
+	}
+
+	stream, err := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open log snapshot for %s/%s container=%s: %w", namespace, podName, containerName, err)
+	}
+	defer stream.Close()
+
+	content, err := io.ReadAll(stream)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read log snapshot for %s/%s container=%s: %w", namespace, podName, containerName, err)
+	}
+
+	return len(r.FindAllStringSubmatch(string(content), -1)), nil
+}
+
 // returns last Regex match in the logs for a given pod
 func GetPodLogsRegexSince(namespace string, podName string, containerName, regex string, isLiteralText bool, timeout time.Duration, since time.Time) (matches [][]string, err error) {
 	const matchOnlyFullLines = `\s*^`

@@ -1625,6 +1625,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					expectedClockClass    fbprotocol.ClockClass
 					expectedClockClassStr string
 					crashDone             bool
+					basePushCount         int
 				)
 
 				BeforeAll(func() {
@@ -1670,6 +1671,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					killCmd := `for pid in $(ls /proc/ | grep '^[0-9]'); do ` +
 						`if [ "$(cat /proc/$pid/comm 2>/dev/null)" = "cloud-event-pro" ]; then ` +
 						`kill -9 $pid 2>/dev/null; fi; done`
+					// Baseline count of pushed events delivered to the consumer
+					// before the crash. After the restart, a strict increase proves
+					// a fresh push was delivered to the still-subscribed consumer.
+					// A count delta is immune to runner/node clock skew.
+					var countErr error
+					basePushCount, countErr = event.ConsumerPushedEventCount(time.Time{})
+					Expect(countErr).NotTo(HaveOccurred(), "could not read baseline consumer pushed-event count")
+
 					// Intentionally ignore the result: killing the proxy may crash
 					// the container and make the exec itself error.
 					_, _, _ = pods.ExecCommand(
@@ -1711,6 +1720,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(crashDone).To(BeTrue(), "cloud-event-proxy crash setup did not complete")
 					By(fmt.Sprintf("Verifying clockClass remains %s via metrics after restart", expectedClockClassStr))
 					checkClockClassState(fullConfig, expectedClockClassStr, pkg.TimeoutIn5Minutes)
+				})
+
+				// Proves subscriptions persist across cloud-event-proxy process runs
+				It("delivers pushed events to the subscribed consumer after cloud-event-proxy restart", func() {
+					if !event.IsCEPV2() {
+						Skip("subscription persistence applies to the CEPv2 cloud-event-proxy only")
+					}
+					Expect(crashDone).To(BeTrue(), "cloud-event-proxy crash setup did not complete")
+					By("Verifying a new event is pushed to the already-subscribed consumer after restart")
+					Eventually(func() (int, error) {
+						return event.ConsumerPushedEventCount(time.Time{})
+					}, 3*time.Minute, pkg.TimeoutInterval5Seconds).Should(BeNumerically(">", basePushCount),
+						"no new event was pushed to the subscribed consumer after the cloud-event-proxy restart")
 				})
 			})
 
