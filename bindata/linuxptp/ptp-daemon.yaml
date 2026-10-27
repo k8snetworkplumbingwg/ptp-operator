@@ -39,7 +39,7 @@ spec:
           args:
             - "--logtostderr"
             - "--api-port=9043"
-            - "--store-path=/var/run/ptp"
+            - "--api-host={{ .EventTransportHost }}"
           volumeMounts:
             - name: config-volume
               mountPath: /etc/linuxptp
@@ -55,6 +55,13 @@ spec:
                   fieldPath: spec.nodeName
             - name: NAME_SPACE
               value: {{.Namespace}}
+            # TODO: Remove POD_NAMESPACE once cloud-event-proxy reads NAME_SPACE
+            # (the convention used elsewhere in linuxptp-daemon) for the
+            # ConfigMap subscription store namespace.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
         - name: kube-rbac-proxy
           image: {{.KubeRbacProxy}}
           imagePullPolicy: {{.ImagePullPolicy}}

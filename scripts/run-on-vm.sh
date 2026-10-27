@@ -136,6 +136,20 @@ run_quiet_with_log_dump_on_failure() {
   return "${rc}"
 }
 
+# Dump the state of a workload and the namespace it lives in, for diagnosing a
+# rollout that never became ready. Best-effort: every command is allowed to fail
+# so one missing object does not hide the rest.
+dump_rollout_diagnostics() {
+  local kind="$1" name="$2" ns="$3"
+  echo -e "${COLOR_ERR}---- BEGIN ${kind}/${name} diagnostics ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+  run_ind kubectl get "${kind}" "${name}" -n "${ns}" -o wide || true
+  run_ind kubectl get pods -n "${ns}" -o wide || true
+  run_ind kubectl describe "${kind}" "${name}" -n "${ns}" || true
+  # Recent namespace events surface image-pull, scheduling and quota failures.
+  run_ind kubectl get events -n "${ns}" --sort-by=.lastTimestamp || true
+  echo -e "${COLOR_ERR}---- END ${kind}/${name} diagnostics ----${COLOR_RESET} ${COLOR_GRAY}@ $(log_ts)${COLOR_RESET}"
+}
+
 declare -A STEP_ROWS_DONE
 
 # Print the initial "LABELS <image>" list
@@ -430,7 +444,16 @@ if [[ "$RUN_PHASE" == "all" || "$RUN_PHASE" == "deploy" ]]; then
     run_quiet_with_log_dump_on_failure "retry-patch-ptpoperatorconfig" ./retry.sh 60 5 kubectl patch ptpoperatorconfig default -nopenshift-ptp --type=merge --patch '{"spec": {"ptpEventConfig": {"enableEventPublisher": true, "transportHost": "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043", "storageType": "local-sc"}, "daemonNodeSelector": {"node-role.kubernetes.io/worker": ""}}}'
 
     step "Waiting for linuxptp-daemon rollout"
-    run_quiet_with_log_dump_on_failure "retry-rollout-status" ./retry.sh 30 3 kubectl rollout status ds linuxptp-daemon -n openshift-ptp
+    # Bound each rollout-status attempt with --timeout so it cannot block
+    # forever (e.g. a DaemonSet pod stuck Pending/ImagePullBackOff); retry.sh
+    # re-runs until its own budget is spent, covering the window where the
+    # operator has not yet created the DaemonSet. On failure, dump the
+    # DaemonSet, pods and events so the cause is visible without a re-run.
+    if ! run_quiet_with_log_dump_on_failure "retry-rollout-status" \
+        ./retry.sh 180 5 kubectl rollout status ds linuxptp-daemon -n openshift-ptp --timeout=30s; then
+      dump_rollout_diagnostics ds linuxptp-daemon openshift-ptp
+      exit 1
+    fi
 
     step "Fixing Prometheus monitoring"
     run_quiet_with_log_dump_on_failure "fix-ptp-prometheus-monitoring" ./fix-ptp-prometheus-monitoring.sh

@@ -20,7 +20,7 @@ spec:
             - name: OPERATOR_NAME
               value: "ptp-operator"
             - name: RELEASE_VERSION
-              value: "v5.0.0"
+              value: "v5.1.0"
             - name: LINUXPTP_DAEMON_IMAGE
               value: "$IMG_PREFIX:lptpd"
             - name: KUBE_RBAC_PROXY_IMAGE
