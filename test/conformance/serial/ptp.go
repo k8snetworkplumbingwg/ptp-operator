@@ -701,6 +701,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					modifiedConf = strings.Replace(modifiedConf, "spp 1", "spp 0", 1) // Change first spp 1 to spp 0
 					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
 
+					gmPod, err := ptphelper.GetPTPPodWithPTPConfig(ptpConfig)
+					Expect(err).NotTo(HaveOccurred())
+					configReload, err := ptptesthelper.StartConfigReloadWaiter(gmPod)
+					Expect(err).NotTo(HaveOccurred())
+					defer configReload.Close()
+
 					// Update the PtpConfig
 					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
 						context.Background(),
@@ -710,8 +716,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					Expect(err).NotTo(HaveOccurred())
 
 					fmt.Fprintf(GinkgoWriter, "GM now uses spp 0 (slaves use spp 1 - mismatch!)\n")
-					// Wait for controller to reconcile and pods to restart
-					time.Sleep(60 * time.Second)
+					_, err = configReload.Wait()
+					Expect(err).NotTo(HaveOccurred())
 				})
 
 				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
@@ -765,6 +771,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// Wait for deletion
 					time.Sleep(10 * time.Second)
 
+					gmPod, err := ptphelper.GetPTPPodWithPTPConfig(originalGMConfig)
+					Expect(err).NotTo(HaveOccurred())
+					configReload, err := ptptesthelper.StartConfigReloadWaiter(gmPod)
+					Expect(err).NotTo(HaveOccurred())
+					defer configReload.Close()
+
 					// Recreate with the original config (spp 1)
 					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
 						context.Background(),
@@ -782,8 +794,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 					fmt.Fprintf(GinkgoWriter, "Restored test-grandmaster with original authentication settings\n")
 
+					_, err = configReload.Wait()
+					Expect(err).NotTo(HaveOccurred())
 					// Wait for pods to restart and stabilize
-					time.Sleep(60 * time.Second)
 					ptphelper.WaitForPtpDaemonToExist()
 					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
 					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
@@ -1315,12 +1328,21 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				nic1 = ptptesthelper.DiscoverNICInfo(*(*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), nodeName, "NIC-1")
 
 				By("Updating BC config in-place: gmCapable 0 -> gmCapable 1 + clockClass 248")
+				configReload, err := ptptesthelper.StartConfigReloadWaiter(fullConfig.DiscoveredClockUnderTestPod)
+				Expect(err).NotTo(HaveOccurred())
+				defer configReload.Close()
 				originalConf := ptptesthelper.EnableGMCapableInPlace(nic1.PtpConfigName)
 				DeferCleanup(func() {
+					configReload, err := ptptesthelper.StartConfigReloadWaiter(fullConfig.DiscoveredClockUnderTestPod)
+					Expect(err).NotTo(HaveOccurred())
+					defer configReload.Close()
 					ptptesthelper.RestorePtp4lConf(nic1.PtpConfigName, originalConf)
+					_, err = configReload.Wait()
+					Expect(err).NotTo(HaveOccurred())
 				})
-				By("Waiting for PTP daemon to apply gmCapable=1 config")
-				ptptesthelper.WaitForConfigContent(fullConfig, nic1.ConfigPath(), "gmCapable 1")
+				By("Waiting for PTP daemon to reload the modified config")
+				_, err = configReload.Wait()
+				Expect(err).NotTo(HaveOccurred())
 
 				evCtx = setupBCClockClassEvents(nodeName)
 			})
@@ -1412,16 +1434,24 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				nic2 = ptptesthelper.DiscoverNICInfo(*secondaryPtpConfig, nodeName, "NIC-2")
 
 				By("Updating BC configs in-place: gmCapable 0 -> gmCapable 1 + clockClass 248")
+				configReload, err := ptptesthelper.StartConfigReloadWaiter(fullConfig.DiscoveredClockUnderTestPod)
+				Expect(err).NotTo(HaveOccurred())
+				defer configReload.Close()
 				originalNic1Conf := ptptesthelper.EnableGMCapableInPlace(nic1.PtpConfigName)
 				originalNic2Conf := ptptesthelper.EnableGMCapableInPlace(nic2.PtpConfigName)
 				DeferCleanup(func() {
 					logrus.Info("Restoring original BC configs")
+					configReload, err := ptptesthelper.StartConfigReloadWaiter(fullConfig.DiscoveredClockUnderTestPod)
+					Expect(err).NotTo(HaveOccurred())
+					defer configReload.Close()
 					ptptesthelper.RestorePtp4lConf(nic1.PtpConfigName, originalNic1Conf)
 					ptptesthelper.RestorePtp4lConf(nic2.PtpConfigName, originalNic2Conf)
+					_, err = configReload.Wait()
+					Expect(err).NotTo(HaveOccurred())
 				})
-				By("Waiting for PTP daemon to apply gmCapable=1 config")
-				ptptesthelper.WaitForConfigContent(fullConfig, nic1.ConfigPath(), "gmCapable 1")
-				ptptesthelper.WaitForConfigContent(fullConfig, nic2.ConfigPath(), "gmCapable 1")
+				By("Waiting for PTP daemon to reload the modified configs")
+				_, err = configReload.Wait()
+				Expect(err).NotTo(HaveOccurred())
 
 				evCtx = setupBCClockClassEvents(nodeName)
 			})
