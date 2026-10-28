@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -375,6 +376,153 @@ spp -1
 // IsAuthEnabled returns true if PTP_AUTH_ENABLED environment variable is set to "true"
 func IsAuthEnabled() bool {
 	return os.Getenv("PTP_AUTH_ENABLED") == "true"
+}
+
+// PrepareAuthNegativeSAD returns a copy of the test SAD with only SPP 1/key 1
+// removed. The upstream signs with key 1, so without it the receiver cannot
+// verify incoming messages; key 2 stays so the receiver can keep signing its
+// own messages. Everything else is preserved verbatim.
+func PrepareAuthNegativeSAD(sad string) (string, error) {
+	lines := strings.SplitAfter(sad, "\n")
+	currentSection := ""
+	currentSPP := ""
+	sp1Sections := 0
+	key1Lines := 0
+	key2Lines := 0
+	removed := make([]bool, len(lines))
+
+	for i, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			currentSection = line
+			currentSPP = ""
+			continue
+		}
+		if currentSection != "[security_association]" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "spp" {
+			currentSPP = fields[1]
+			if currentSPP == "1" {
+				sp1Sections++
+			}
+			continue
+		}
+		if currentSPP != "1" || len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "1":
+			key1Lines++
+			removed[i] = true
+		case "2":
+			key2Lines++
+		}
+	}
+
+	if sp1Sections != 1 {
+		return "", fmt.Errorf("expected exactly one SPP 1 security association, found %d", sp1Sections)
+	}
+	if key1Lines != 1 {
+		return "", fmt.Errorf("expected exactly one SPP 1 key 1 line, found %d", key1Lines)
+	}
+	if key2Lines != 1 {
+		return "", fmt.Errorf("expected exactly one SPP 1 key 2 line, found %d", key2Lines)
+	}
+
+	var result strings.Builder
+	for i, line := range lines {
+		if !removed[i] {
+			result.WriteString(line)
+		}
+	}
+	return result.String(), nil
+}
+
+// PrepareAuthNegativePtp4lConf points a profile at an isolated SAD and sets
+// active_key_id 2 on every SPP 1 interface so they keep signing with key 2.
+// The receive interface must be one of those SPP 1 interfaces. Other config
+// lines are kept verbatim.
+func PrepareAuthNegativePtp4lConf(ptp4lConf, originalSAFile, isolatedSAFile, receiveInterface string) (string, []string, error) {
+	lines := strings.Split(ptp4lConf, "\n")
+	currentSection := ""
+	saFileSeen := false
+	loggingLevel6 := false
+	interfaceSPP := map[string]string{}
+	interfaceKeyLine := map[string]int{}
+
+	for i, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			currentSection = strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		if currentSection == "global" {
+			switch fields[0] {
+			case "sa_file":
+				if fields[1] != originalSAFile {
+					return "", nil, fmt.Errorf("global sa_file is %q, expected shared SAD %q", fields[1], originalSAFile)
+				}
+				saFileSeen = true
+				lines[i] = replacePtp4lOptionValue(rawLine, "sa_file", isolatedSAFile)
+			case "logging_level":
+				if fields[1] == "6" {
+					loggingLevel6 = true
+				}
+			}
+			continue
+		}
+		if currentSection == "" {
+			continue
+		}
+		switch fields[0] {
+		case "spp":
+			interfaceSPP[currentSection] = fields[1]
+		case "active_key_id":
+			interfaceKeyLine[currentSection] = i
+		}
+	}
+
+	if !saFileSeen {
+		return "", nil, fmt.Errorf("global sa_file %q is missing from ptp4l config", originalSAFile)
+	}
+	if !loggingLevel6 {
+		return "", nil, fmt.Errorf("global logging_level must stay at 6 so the auth error is logged")
+	}
+	if interfaceSPP[receiveInterface] != "1" {
+		return "", nil, fmt.Errorf("receive interface %q is missing from ptp4l config or does not use SPP 1", receiveInterface)
+	}
+
+	var transmitInterfaces []string
+	for interfaceName, spp := range interfaceSPP {
+		if spp != "1" {
+			continue
+		}
+		lineIndex, ok := interfaceKeyLine[interfaceName]
+		if !ok {
+			return "", nil, fmt.Errorf("SPP 1 interface %q has no active_key_id to switch to key 2", interfaceName)
+		}
+		lines[lineIndex] = replacePtp4lOptionValue(lines[lineIndex], "active_key_id", "2")
+		transmitInterfaces = append(transmitInterfaces, interfaceName)
+	}
+
+	sort.Strings(transmitInterfaces)
+	return strings.Join(lines, "\n"), transmitInterfaces, nil
+}
+
+// replacePtp4lOptionValue replaces the value of option on a single
+// "option value" line, keeping the option name and indentation.
+func replacePtp4lOptionValue(line, option, value string) string {
+	fields := strings.Fields(line)
+	if len(fields) != 2 || fields[0] != option {
+		return line
+	}
+	return strings.TrimSuffix(strings.TrimRight(line, " \t\r"), fields[1]) + value
 }
 
 const BaseTs2PhcConfig = `[nmea]
@@ -2408,24 +2556,6 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 	}
 	logrus.Infof("List of pods running ptp4l: %v", podNames)
 	return podList, nil
-}
-
-// CreateSecurityMismatchSecret creates a secret with mismatched keys for authentication negative testing.
-// When GM uses this secret (spp 0) and slaves use ptp-security-conf (spp 1), authentication will fail.
-func CreateSecurityMismatchSecret(namespace string) *v1core.Secret {
-	return &v1core.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pkg.PtpSecurityMismatchSecretName,
-			Namespace: namespace,
-		},
-		StringData: map[string]string{
-			"ptp-security.conf": `[security_association]
-spp 0
-1 AES128 HEX:0000000000000000000000000000000000000000000000000000000000000000
-2 SHA256-128 HEX:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-`,
-		},
-	}
 }
 
 // CreateTestSecretForVolumeMountTest creates a test secret for volume mount cleanup testing

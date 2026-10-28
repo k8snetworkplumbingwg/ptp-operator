@@ -3,6 +3,8 @@ package test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -644,155 +646,169 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 			})
 
-			It("Slave fails to sync when authentication mismatch occurs (negative test)", func() {
-				// Only run if authentication is enabled
-				authEnabled := os.Getenv("PTP_AUTH_ENABLED")
-				if authEnabled != "true" {
+			It("Slave loses synchronization when its upstream authentication key is removed (negative test)", func() {
+				if !testconfig.IsAuthEnabled() {
 					Skip("Authentication negative test requires PTP_AUTH_ENABLED=true")
 				}
-
-				if fullConfig.PtpModeDesired == testconfig.TelcoGrandMasterClock {
-					Skip("Skipping as slave interface is not available with a WPC-GM profile")
+				if fullConfig.PtpModeDesired != testconfig.OrdinaryClock {
+					Skip(fmt.Sprintf("Authentication negative test supports OC only, mode is %v", fullConfig.PtpModeDesired))
+				}
+				if fullConfig.PtpModeDiscovered != testconfig.OrdinaryClock {
+					Skip(fmt.Sprintf("Authentication negative test supports OC only, discovered mode is %v", fullConfig.PtpModeDiscovered))
+				}
+				if fullConfig.DiscoveredClockUnderTestSecondaryPtpConfig != nil {
+					Skip("Authentication negative test does not support multiple clock-under-test profiles or HA")
 				}
 
-				// Save original GM config for restoration
-				var originalGMConfig *ptpv1.PtpConfig
+				discoveredConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+				Expect(discoveredConfig).NotTo(BeNil(), "clock-under-test PtpConfig is required")
+				profileName, err := ptphelper.GetProfileName(discoveredConfig, true)
+				Expect(err).NotTo(HaveOccurred(), "could not resolve the clock-under-test receiver profile")
 
-				By("Creating attacker secret with different SPP (simulates key mismatch)", func() {
-					// Delete if already exists
-					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpSecurityMismatchSecretName,
-						metav1.DeleteOptions{},
-					)
-					time.Sleep(2 * time.Second)
+				ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), discoveredConfig.Name, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "could not get clock-under-test PtpConfig %s", discoveredConfig.Name)
+				profile, err := profileByName(ptpConfig, profileName)
+				Expect(err).NotTo(HaveOccurred(), "could not resolve receiver profile %s in PtpConfig %s", profileName, ptpConfig.Name)
+				Expect(profile.Ptp4lConf).NotTo(BeNil(), "receiver profile %s has no ptp4lConf", profileName)
+				Expect(ptpConfig.Spec.Profile).To(HaveLen(1), "Authentication negative test requires one ptp4l profile in PtpConfig %s", ptpConfig.Name)
 
-					// Create secret with spp 0 but DIFFERENT KEYS than ptp-security-conf
-					// GM signs with these keys, BC has different keys for spp 0 → signature mismatch
-					mismatchSecret := testconfig.CreateSecurityMismatchSecret(pkg.PtpLinuxDaemonNamespace)
+				receiveInterfaces := ptpv1.GetInterfaces(*ptpConfig, ptpv1.Slave)
+				Expect(receiveInterfaces).To(HaveLen(1), "Authentication negative test requires exactly one upstream receive interface in profile %s", profileName)
+				slaveInterface := receiveInterfaces[0]
 
-					_, err := client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Create(
-						context.Background(),
-						mismatchSecret,
-						metav1.CreateOptions{},
-					)
-					Expect(err).NotTo(HaveOccurred())
-					fmt.Fprintf(GinkgoWriter, "Created mismatch secret with only spp 0\n")
-				})
+				targetPod, err := ptphelper.GetPTPPodWithPTPConfig(ptpConfig)
+				Expect(err).NotTo(HaveOccurred(), "could not find the linuxptp-daemon pod for %s", ptpConfig.Name)
+				nodeName := targetPod.Spec.NodeName
+				Expect(nodeName).NotTo(BeEmpty(), "clock-under-test pod has no node identity")
+				fullConfig.DiscoveredClockUnderTestPod = targetPod
+				psOutput, err := listProcessesInPod(targetPod)
+				Expect(err).NotTo(HaveOccurred(), "could not list processes on node %s", nodeName)
+				Expect(ptp4lPIDsFromPS(psOutput, "")).To(HaveLen(1),
+					"Authentication negative test requires exactly one ptp4l process on node %s", nodeName)
 
-				By("Changing test-grandmaster to use spp 0 secret", func() {
-					// Get current PtpConfig
-					ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.GetOptions{},
-					)
-					Expect(err).NotTo(HaveOccurred())
+				var grandmasterID *string
+				if fullConfig.L2Config != nil && !ptphelper.IsExternalGM() {
+					Expect(fullConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(), "expected discovered grandmaster config")
+					gmConfigName := (*ptpv1.PtpConfig)(fullConfig.DiscoveredGrandMasterPtpConfig).Name
+					gmLabel := pkg.PtpGrandmasterNodeLabel
+					var id string
+					Eventually(func() error {
+						var getErr error
+						id, getErr = ptphelper.GetClockIDMaster(gmConfigName, pkg.PtpGrandMasterPolicyName, &gmLabel, nil, true)
+						return getErr
+					}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(Succeed(), "could not get the grandmaster clock ID")
+					grandmasterID = &id
+				}
 
-					// Save the original config for restoration
-					originalGMConfig = ptpConfig.DeepCopy()
+				By("establishing authenticated synchronization before changing the receiver SAD")
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, ptpConfig, grandmasterID,
+					metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+				Expect(err).To(Succeed(), "authenticated receiver baseline must be LOCKED/SLAVE with acceptable offset")
 
-					// Change sa_file to point to mismatch secret
-					// Also change interface spp from 1 to 0
-					ptp4lConf := *ptpConfig.Spec.Profile[0].Ptp4lConf
-					modifiedConf := strings.Replace(ptp4lConf,
-						"sa_file /etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf",
-						"sa_file /etc/ptp-secret-mount/ptp-security-mismatch/ptp-security.conf", 1)
-					modifiedConf = strings.Replace(modifiedConf, "spp 1", "spp 0", 1) // Change first spp 1 to spp 0
-					ptpConfig.Spec.Profile[0].Ptp4lConf = &modifiedConf
+				configFile, err := ptptesthelper.DiscoverPtp4lConfigByProfile(ptpConfig.Name, profileName, nodeName)
+				Expect(err).NotTo(HaveOccurred(), "could not resolve rendered ptp4l config for %s/%s", ptpConfig.Name, profileName)
 
-					// Update the PtpConfig
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
-						context.Background(),
-						ptpConfig,
-						metav1.UpdateOptions{},
-					)
-					Expect(err).NotTo(HaveOccurred())
+				By("getting the original SAD (Security Association Database)")
+				secret, err := client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), pkg.PtpSecurityConfSecretName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "could not get the ptp-security-conf Secret")
+				originalSAD, exists := secret.Data["ptp-security.conf"]
+				Expect(exists).To(BeTrue(), "ptp-security-conf is missing ptp-security.conf")
+				Expect(originalSAD).NotTo(BeEmpty(), "ptp-security-conf/ptp-security.conf is empty")
 
-					fmt.Fprintf(GinkgoWriter, "GM now uses spp 0 (slaves use spp 1 - mismatch!)\n")
-					// Wait for controller to reconcile and pods to restart
-					time.Sleep(60 * time.Second)
-				})
+				By("creating the mutated SAD with key 1 removed, keeping key 2 for the clock under test")
+				mutatedSAD, err := testconfig.PrepareAuthNegativeSAD(string(originalSAD))
+				Expect(err).NotTo(HaveOccurred(), "could not prepare the isolated SAD")
 
-				By("Verifying slave FAILS to sync due to SPP mismatch (2 minute check)", func() {
-					// For negative test: expect sync to FAIL
-					// Check that slave does NOT reach LOCKED state for 2 minutes
+				By("preparing the clock under test ptp4l config pointing to the isolated SAD and key 2")
+				secretEntryName := authNegativeSecretEntryName()
+				originalSAFile := "/etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf"
+				isolatedSAFile := "/etc/ptp-secret-mount/ptp-security-conf/" + secretEntryName
+				mutatedConf, transmitInterfaces, err := testconfig.PrepareAuthNegativePtp4lConf(
+					*profile.Ptp4lConf, originalSAFile, isolatedSAFile, slaveInterface)
+				Expect(err).NotTo(HaveOccurred(), "could not prepare receiver profile %s", profileName)
 
-					// Wait 2 minutes and continuously verify slave is NOT in LOCKED state
-					slavePod := fullConfig.DiscoveredClockUnderTestPod
-					Expect(slavePod).NotTo(BeNil())
+				By("creating the state object to hold before/after configuration")
+				state := &authNegativeState{
+					ptpConfigName:     ptpConfig.Name,
+					profileName:       profileName,
+					nodeName:          nodeName,
+					secretEntryName:   secretEntryName,
+					configFile:        configFile,
+					originalSAFile:    originalSAFile,
+					isolatedSAFile:    isolatedSAFile,
+					originalSAD:       append([]byte(nil), originalSAD...),
+					originalPtp4lConf: *profile.Ptp4lConf,
+				}
+				DeferCleanup(restoreAuthNegativeState, state)
 
-					// Use a simple metric check in a loop
-					failedToSync := false
-					for i := 0; i < 12; i++ { // 12 iterations × 10 seconds = 2 minutes
-						// Try to check if it's in LOCKED state (this will return error if not LOCKED)
-						if len(fullConfig.DiscoveredFollowerInterfaces) > 0 {
-							slaveInterface := fullConfig.DiscoveredFollowerInterfaces[0]
-							nodeNameStr := slavePod.Spec.NodeName
+				By("adding the isolated SAD as a second key in the existing shared secret to avoid a linuxptp-daemon restart")
+				err = setAuthNegativeSecretEntry(secretEntryName, []byte(mutatedSAD))
+				Expect(err).NotTo(HaveOccurred(), "could not add isolated SAD entry %s", secretEntryName)
 
-							err := metrics.CheckClockState(metrics.MetricClockStateLocked, slaveInterface, &nodeNameStr)
-							if err != nil {
-								// Error means NOT in LOCKED state - good for negative test
-								failedToSync = true
-							} else {
-								// No error means it IS in LOCKED state - bad for negative test!
-								Fail("Slave unexpectedly reached LOCKED state despite SPP mismatch")
-								return
-							}
-						}
-						time.Sleep(10 * time.Second)
+				By("verifying the new secret key is propagated to the linuxptp-daemon pod file system")
+				expectedSADHash := sha256.Sum256([]byte(mutatedSAD))
+				expectedSADHashText := hex.EncodeToString(expectedSADHash[:])
+				Eventually(func() error {
+					output, execErr := execInDaemonPodOnNode(nodeName, []string{"sha256sum", isolatedSAFile})
+					if execErr != nil {
+						return execErr
 					}
+					if fields := strings.Fields(output); len(fields) == 0 || fields[0] != expectedSADHashText {
+						return fmt.Errorf("mounted isolated SAD hash has not converged (expected sha256 %s)", expectedSADHashText)
+					}
+					return nil
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(), "isolated SAD was not projected to the receiver pod")
 
-					Expect(failedToSync).To(BeTrue(), "Slave should fail to sync for 2 minutes due to authentication mismatch")
-					fmt.Fprintf(GinkgoWriter, "✓ PASS: Authentication mismatch prevented sync (slave did not lock for 2 minutes)\n")
-				})
+				By("updating the clock under test with the prepared isolated SAD and key 2")
+				observationStart := time.Now()
+				err = updateAuthNegativeProfileConf(ptpConfig.Name, profileName, mutatedConf)
+				Expect(err).NotTo(HaveOccurred(), "could not update receiver profile %s", profileName)
+				Eventually(func() error {
+					output, execErr := execInDaemonPodOnNode(nodeName, []string{"cat", configFile})
+					if execErr != nil {
+						return execErr
+					}
+					return checkAuthNegativeAppliedConfig(output, isolatedSAFile, transmitInterfaces)
+				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(), "receiver profile did not apply the isolated SAD and keep key 2 active")
 
-				By("Restoring authentication to test-grandmaster (cleanup)", func() {
-					// Restore the original config with auth settings intact
-					Expect(originalGMConfig).NotTo(BeNil(), "Original GM config should have been saved")
+				By("checking for a fresh authentication rejection on the selected receive port")
+				// Per-profile log-tag matching is unnecessary here: the test enforces one
+				// profile and exactly one ptp4l process on the node, and the since-timestamp
+				// scopes the log window to the mutation. The (?m) flag is required because
+				// GetPodLogsRegexSince appends "\s*^" as its full-line match convention.
+				authErrorPattern := `(?m)port \d+ \(` + regexp.QuoteMeta(slaveInterface) + `\): auth: bad message`
+				pod, err := ptphelper.GetPtpPodOnNode(nodeName)
+				Expect(err).NotTo(HaveOccurred(), "could not refresh the clock-under-test daemon pod")
+				_, err = pods.GetPodLogsRegexSince(pod.Namespace, pod.Name, pkg.PtpContainerName,
+					authErrorPattern, false, pkg.TimeoutIn5Minutes, observationStart)
+				Expect(err).NotTo(HaveOccurred(), "no fresh auth: bad message log for interface %s", slaveInterface)
 
-					// Clear resource version for update
-					originalGMConfig.SetResourceVersion("")
+				By("checking that the receive interface stays LISTENING with a stable ptp4l process after authentication rejection")
+				baselinePID := -1
+				Eventually(func() error {
+					pid, err := sampleListeningPtp4l(nodeName, configFile, slaveInterface)
+					baselinePID = pid
+					return err
+				}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(Succeed(),
+					fmt.Sprintf("receive interface %s did not settle into LISTENING with a single ptp4l process for config %s on node %s",
+						slaveInterface, configFile, nodeName))
+				logrus.Infof("authentication negative test ptp4l baseline: config=%s pid=%d node=%s", configFile, baselinePID, nodeName)
+				Consistently(func() (int, error) {
+					return sampleListeningPtp4l(nodeName, configFile, slaveInterface)
+				}, pkg.TimeoutIn30Seconds, pkg.Timeout10Seconds).Should(Equal(baselinePID),
+					fmt.Sprintf("receive interface %s with ptp4l process for config %s did not stay LISTENING and running on node %s",
+						slaveInterface, configFile, nodeName))
 
-					// Delete the current config with spp 0
-					err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpGrandMasterPolicyName,
-						metav1.DeleteOptions{},
-					)
-					Expect(err).NotTo(HaveOccurred())
-
-					// Wait for deletion
-					time.Sleep(10 * time.Second)
-
-					// Recreate with the original config (spp 1)
-					_, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
-						context.Background(),
-						originalGMConfig,
-						metav1.CreateOptions{},
-					)
-					Expect(err).NotTo(HaveOccurred())
-
-					// Delete mismatch secret
-					client.Client.Secrets(pkg.PtpLinuxDaemonNamespace).Delete(
-						context.Background(),
-						pkg.PtpSecurityMismatchSecretName,
-						metav1.DeleteOptions{},
-					)
-
-					fmt.Fprintf(GinkgoWriter, "Restored test-grandmaster with original authentication settings\n")
-
-					// Wait for pods to restart and stabilize
-					time.Sleep(60 * time.Second)
-					ptphelper.WaitForPtpDaemonToExist()
-					fullConfig = testconfig.GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
-					podsRunningPTP4l, err := testconfig.GetPodsRunningPTP4l(&fullConfig)
-					Expect(err).NotTo(HaveOccurred())
-					ptphelper.WaitForPtpDaemonToBeReady(podsRunningPTP4l)
-
-					// Additional wait for clock sync to complete in multi-hop topologies (GM → BC → Slave)
-					time.Sleep(30 * time.Second)
-				})
+				By("restoring the original receiver profile and authentication SAD")
+				Expect(restoreAuthNegativeState(state)).To(Succeed(), "could not restore the authentication negative test receiver state")
+				pod, err = ptphelper.GetPtpPodOnNode(nodeName)
+				Expect(err).NotTo(HaveOccurred(), "could not reacquire the receiver daemon pod after cleanup")
+				fullConfig.DiscoveredClockUnderTestPod = &pod
+				err = ptptesthelper.BasicClockSyncCheck(fullConfig, ptpConfig, grandmasterID,
+					metrics.MetricClockStateLocked, metrics.MetricRoleSlave, true)
+				Expect(err).To(Succeed(), "receiver did not recover LOCKED/SLAVE sync with acceptable offset")
 			})
 
 			// Test That clock can sync in dual follower scenario when one port is down
@@ -4935,4 +4951,275 @@ func verifyClockClassCurrentState(expectedClockClass int, timeout time.Duration)
 			}
 		}
 	}
+}
+
+type authNegativeState struct {
+	ptpConfigName     string
+	profileName       string
+	nodeName          string
+	secretEntryName   string
+	configFile        string
+	originalSAFile    string
+	isolatedSAFile    string
+	originalSAD       []byte
+	originalPtp4lConf string
+	cleaned           bool
+}
+
+func profileByName(ptpConfig *ptpv1.PtpConfig, profileName string) (*ptpv1.PtpProfile, error) {
+	if ptpConfig == nil {
+		return nil, fmt.Errorf("PtpConfig is nil")
+	}
+	var match *ptpv1.PtpProfile
+	for i := range ptpConfig.Spec.Profile {
+		profile := &ptpConfig.Spec.Profile[i]
+		if profile.Name == nil || *profile.Name != profileName {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("PtpConfig %s has more than one profile named %q", ptpConfig.Name, profileName)
+		}
+		match = profile
+	}
+	if match == nil {
+		return nil, fmt.Errorf("PtpConfig %s has no profile named %q", ptpConfig.Name, profileName)
+	}
+	return match, nil
+}
+
+func authNegativeSecretEntryName() string {
+	return "auth-negative-" + time.Now().UTC().Format("20060102T150405.000000000") + ".conf"
+}
+
+func listProcessesInPod(pod *v1core.Pod) (string, error) {
+	if pod == nil {
+		return "", fmt.Errorf("clock-under-test pod is nil")
+	}
+	output, _, err := pods.ExecCommand(client.Client, false, pod, pkg.PtpContainerName,
+		[]string{"ps", "-eo", "pid=,args="})
+	if err != nil {
+		return "", fmt.Errorf("list processes in pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	return output.String(), nil
+}
+
+// ptp4lPIDsFromPS parses `ps -eo pid=,args=` output and returns the
+// PIDs of ptp4l processes whose -f argument is configFile; an empty configFile
+// selects every ptp4l process. Rows that do not parse or belong to other
+// executables (for example shell wrappers) are skipped, so a single unrelated
+// odd process row cannot fail the check.
+func ptp4lPIDsFromPS(psOutput, configFile string) []int {
+	var pids []int
+	for _, line := range strings.Split(psOutput, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 || path.Base(fields[1]) != "ptp4l" {
+			continue
+		}
+		if configFile == "" {
+			pids = append(pids, pid)
+			continue
+		}
+		for i := 2; i+1 < len(fields); i++ {
+			if fields[i] == "-f" && fields[i+1] == configFile {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids
+}
+
+// ptp4lPIDsOnNode lists ptp4l PIDs on the daemon pod running on nodeName
+// whose -f argument is configFile. It composes listProcessesInPod (which owns the ps
+// invocation) with ptp4lPIDsFromPS (which parses its output).
+func ptp4lPIDsOnNode(nodeName, configFile string) ([]int, error) {
+	pod, err := ptphelper.GetPtpPodOnNode(nodeName)
+	if err != nil {
+		return nil, err
+	}
+	psOutput, err := listProcessesInPod(&pod)
+	if err != nil {
+		return nil, err
+	}
+	return ptp4lPIDsFromPS(psOutput, configFile), nil
+}
+
+// sampleListeningPtp4l returns the single live ptp4l PID for configFile on
+// nodeName, requiring slaveInterface to be LISTENING. A crash-restart loop
+// still shows one live process at every sample, but never the same PID.
+func sampleListeningPtp4l(nodeName, configFile, slaveInterface string) (int, error) {
+	pids, err := ptp4lPIDsOnNode(nodeName, configFile)
+	if err != nil {
+		return 0, err
+	}
+	if len(pids) != 1 {
+		return 0, fmt.Errorf("expected exactly one live ptp4l process for %s on node %s, found %v", configFile, nodeName, pids)
+	}
+	if roleErr := metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleListening},
+		[]string{slaveInterface}, &nodeName); roleErr != nil {
+		return pids[0], fmt.Errorf("receive interface %s is not LISTENING: %w", slaveInterface, roleErr)
+	}
+	return pids[0], nil
+}
+
+func updateAuthNegativeProfileConf(configName, profileName, desired string) error {
+	ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+		context.Background(), configName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get PtpConfig %s: %w", configName, err)
+	}
+	profile, err := profileByName(ptpConfig, profileName)
+	if err != nil {
+		return err
+	}
+	updated := desired
+	profile.Ptp4lConf = &updated
+	if _, err = client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Update(
+		context.Background(), ptpConfig, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update PtpConfig %s: %w", configName, err)
+	}
+	return nil
+}
+
+func setAuthNegativeSecretEntry(entryName string, data []byte) error {
+	secret, err := client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Get(
+		context.Background(), pkg.PtpSecurityConfSecretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get Secret %s: %w", pkg.PtpSecurityConfSecretName, err)
+	}
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte)
+	}
+	secret.Data[entryName] = append([]byte(nil), data...)
+	if _, err = client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Update(
+		context.Background(), secret, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("set Secret %s entry %s: %w", pkg.PtpSecurityConfSecretName, entryName, err)
+	}
+	return nil
+}
+
+func removeAuthNegativeSecretEntry(state *authNegativeState) error {
+	ptpConfig, err := client.Client.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+		context.Background(), state.ptpConfigName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get PtpConfig %s before removing isolated SAD: %w", state.ptpConfigName, err)
+	}
+	profile, err := profileByName(ptpConfig, state.profileName)
+	if err != nil {
+		return err
+	}
+	if profile.Ptp4lConf != nil && strings.Contains(*profile.Ptp4lConf, "sa_file "+state.isolatedSAFile) {
+		return fmt.Errorf("profile %s still references isolated SAD %s", state.profileName, state.secretEntryName)
+	}
+	secret, err := client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Get(
+		context.Background(), pkg.PtpSecurityConfSecretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get Secret %s before removing isolated SAD: %w", pkg.PtpSecurityConfSecretName, err)
+	}
+	if _, exists := secret.Data[state.secretEntryName]; !exists {
+		return nil
+	}
+	delete(secret.Data, state.secretEntryName)
+	if _, err = client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Update(
+		context.Background(), secret, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("remove Secret %s entry %s: %w", pkg.PtpSecurityConfSecretName, state.secretEntryName, err)
+	}
+	return nil
+}
+
+func restoreAuthNegativeState(state *authNegativeState) error {
+	if state == nil || state.cleaned {
+		return nil
+	}
+	err := updateAuthNegativeProfileConf(state.ptpConfigName, state.profileName, state.originalPtp4lConf)
+	if err == nil {
+		err = waitAuthNegativeRenderedConfig(state, state.originalSAFile)
+	}
+	if err != nil {
+		// Single safety repair: if anything still references the isolated
+		// entry, make it a copy of the original SAD so the process can
+		// authenticate again.
+		if repairErr := setAuthNegativeSecretEntry(state.secretEntryName, state.originalSAD); repairErr != nil {
+			return fmt.Errorf("restore failed (%v), and repairing isolated SAD failed: %w", err, repairErr)
+		}
+		return err
+	}
+	if err := removeAuthNegativeSecretEntry(state); err != nil {
+		return fmt.Errorf("remove isolated SAD entry %s: %w", state.secretEntryName, err)
+	}
+	state.cleaned = true
+	return nil
+}
+
+func execInDaemonPodOnNode(nodeName string, command []string) (string, error) {
+	pod, err := ptphelper.GetPtpPodOnNode(nodeName)
+	if err != nil {
+		return "", err
+	}
+	output, _, err := pods.ExecCommand(client.Client, false, &pod, pkg.PtpContainerName, command)
+	if err != nil {
+		return "", err
+	}
+	return output.String(), nil
+}
+
+func waitAuthNegativeRenderedConfig(state *authNegativeState, expectedSAFile string) error {
+	deadline := time.Now().Add(pkg.TimeoutIn5Minutes)
+	var lastErr error
+	for {
+		output, err := execInDaemonPodOnNode(state.nodeName, []string{"cat", state.configFile})
+		if err != nil {
+			lastErr = err
+		} else if observed := parsePtp4lConf(output)["global"]["sa_file"]; observed != expectedSAFile {
+			lastErr = fmt.Errorf("rendered global sa_file is %q, expected %q", observed, expectedSAFile)
+		} else {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timed out waiting for rendered config at %s: %w", state.configFile, lastErr)
+		}
+		time.Sleep(pkg.Timeout10Seconds)
+	}
+}
+
+// parsePtp4lConf parses a rendered ptp4l config into a map of section
+// name to option name/value pairs.
+func parsePtp4lConf(config string) map[string]map[string]string {
+	options := make(map[string]map[string]string)
+	currentSection := ""
+	for _, rawLine := range strings.Split(config, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			currentSection = strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
+			continue
+		}
+		fields := strings.Fields(line)
+		if currentSection != "" && len(fields) == 2 {
+			if options[currentSection] == nil {
+				options[currentSection] = make(map[string]string)
+			}
+			options[currentSection][fields[0]] = fields[1]
+		}
+	}
+	return options
+}
+
+func checkAuthNegativeAppliedConfig(config, expectedSAFile string, transmitInterfaces []string) error {
+	options := parsePtp4lConf(config)
+	if options["global"]["sa_file"] != expectedSAFile {
+		return fmt.Errorf("rendered global sa_file is %q, expected %q", options["global"]["sa_file"], expectedSAFile)
+	}
+	if options["global"]["spp"] != "-1" || options["global"]["logging_level"] != "6" {
+		return fmt.Errorf("rendered global authentication defaults or logging level have not converged")
+	}
+	for _, interfaceName := range transmitInterfaces {
+		if options[interfaceName]["spp"] != "1" || options[interfaceName]["active_key_id"] != "2" {
+			return fmt.Errorf("rendered signing key has not converged to key 2 for interface %q", interfaceName)
+		}
+	}
+	return nil
 }
