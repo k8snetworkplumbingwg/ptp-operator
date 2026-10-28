@@ -515,20 +515,14 @@ func PrepareAuthNegativePtp4lConf(ptp4lConf, originalSAFile, isolatedSAFile, rec
 	return strings.Join(lines, "\n"), transmitInterfaces, nil
 }
 
+// replacePtp4lOptionValue replaces the value of option on a single
+// "option value" line, keeping the option name and indentation.
 func replacePtp4lOptionValue(line, option, value string) string {
-	optionIndex := strings.Index(line, option)
-	if optionIndex < 0 {
+	fields := strings.Fields(line)
+	if len(fields) != 2 || fields[0] != option {
 		return line
 	}
-	valueStart := optionIndex + len(option)
-	for valueStart < len(line) && (line[valueStart] == ' ' || line[valueStart] == '\t') {
-		valueStart++
-	}
-	valueEnd := valueStart
-	for valueEnd < len(line) && line[valueEnd] != ' ' && line[valueEnd] != '\t' && line[valueEnd] != '\r' {
-		valueEnd++
-	}
-	return line[:valueStart] + value + line[valueEnd:]
+	return strings.TrimSuffix(strings.TrimRight(line, " \t\r"), fields[1]) + value
 }
 
 const BaseTs2PhcConfig = `[nmea]

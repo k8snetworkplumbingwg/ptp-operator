@@ -709,15 +709,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				configFile, err := ptptesthelper.DiscoverPtp4lConfigByProfile(ptpConfig.Name, profileName, nodeName)
 				Expect(err).NotTo(HaveOccurred(), "could not resolve rendered ptp4l config for %s/%s", ptpConfig.Name, profileName)
 
+				By("getting the original SAD (Security Association Database)")
 				secret, err := client.Client.CoreV1().Secrets(pkg.PtpLinuxDaemonNamespace).Get(
 					context.Background(), pkg.PtpSecurityConfSecretName, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred(), "could not get the ptp-security-conf Secret")
 				originalSAD, exists := secret.Data["ptp-security.conf"]
 				Expect(exists).To(BeTrue(), "ptp-security-conf is missing ptp-security.conf")
 				Expect(originalSAD).NotTo(BeEmpty(), "ptp-security-conf/ptp-security.conf is empty")
+
+				By("creating the mutated SAD with key 1 removed, keeping key 2 for the clock under test")
 				mutatedSAD, err := testconfig.PrepareAuthNegativeSAD(string(originalSAD))
 				Expect(err).NotTo(HaveOccurred(), "could not prepare the isolated SAD")
 
+				By("preparing the clock under test ptp4l config pointing to the isolated SAD and key 2")
 				secretEntryName := authNegativeSecretEntryName()
 				originalSAFile := "/etc/ptp-secret-mount/ptp-security-conf/ptp-security.conf"
 				isolatedSAFile := "/etc/ptp-secret-mount/ptp-security-conf/" + secretEntryName
@@ -725,6 +729,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					*profile.Ptp4lConf, originalSAFile, isolatedSAFile, slaveInterface)
 				Expect(err).NotTo(HaveOccurred(), "could not prepare receiver profile %s", profileName)
 
+				By("creating the state object to hold before/after configuration")
 				state := &authNegativeState{
 					ptpConfigName:     ptpConfig.Name,
 					profileName:       profileName,
@@ -738,9 +743,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				}
 				DeferCleanup(restoreAuthNegativeState, state)
 
-				By("adding the isolated SAD without changing the shared authentication keys")
+				By("adding the isolated SAD as a second key in the existing shared secret to avoid a linuxptp-daemon restart")
 				err = setAuthNegativeSecretEntry(secretEntryName, []byte(mutatedSAD))
 				Expect(err).NotTo(HaveOccurred(), "could not add isolated SAD entry %s", secretEntryName)
+
+				By("verifying the new secret key is propagated to the linuxptp-daemon pod file system")
 				expectedSADHash := sha256.Sum256([]byte(mutatedSAD))
 				expectedSADHashText := hex.EncodeToString(expectedSADHash[:])
 				Eventually(func() error {
@@ -754,7 +761,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					return nil
 				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(Succeed(), "isolated SAD was not projected to the receiver pod")
 
-				By("pointing the named receiver profile at the isolated SAD and signing with retained key 2")
+				By("updating the clock under test with the prepared isolated SAD and key 2")
 				observationStart := time.Now()
 				err = updateAuthNegativeProfileConf(ptpConfig.Name, profileName, mutatedConf)
 				Expect(err).NotTo(HaveOccurred(), "could not update receiver profile %s", profileName)
@@ -779,37 +786,18 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(err).NotTo(HaveOccurred(), "no fresh auth: bad message log for interface %s", slaveInterface)
 
 				By("checking that the receive interface stays LISTENING with a stable ptp4l process after authentication rejection")
-				// ptp4l enters LISTENING at startup even when it would eventually
-				// synchronize, so LISTENING must hold throughout the observation
-				// window, not just in a first sample. Sample the clock role and
-				// the ptp4l process list together, settle once, then require the
-				// same state and the same PID for a sustained window: a
-				// crash-restart loop still shows exactly one live process at
-				// every sample, but never the same PID.
-				sampleListeningPtp4l := func() (int, error) {
-					pids, err := ptp4lPIDsOnNode(nodeName, configFile)
-					if err != nil {
-						return 0, err
-					}
-					if len(pids) != 1 {
-						return 0, fmt.Errorf("expected exactly one live ptp4l process for %s on node %s, found %v", configFile, nodeName, pids)
-					}
-					if roleErr := metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleListening},
-						[]string{slaveInterface}, &nodeName); roleErr != nil {
-						return pids[0], fmt.Errorf("receive interface %s is not LISTENING: %w", slaveInterface, roleErr)
-					}
-					return pids[0], nil
-				}
 				baselinePID := -1
 				Eventually(func() error {
-					pid, err := sampleListeningPtp4l()
+					pid, err := sampleListeningPtp4l(nodeName, configFile, slaveInterface)
 					baselinePID = pid
 					return err
 				}, pkg.TimeoutIn3Minutes, pkg.Timeout10Seconds).Should(Succeed(),
 					fmt.Sprintf("receive interface %s did not settle into LISTENING with a single ptp4l process for config %s on node %s",
 						slaveInterface, configFile, nodeName))
 				logrus.Infof("authentication negative test ptp4l baseline: config=%s pid=%d node=%s", configFile, baselinePID, nodeName)
-				Consistently(sampleListeningPtp4l, pkg.TimeoutIn30Seconds, pkg.Timeout10Seconds).Should(Equal(baselinePID),
+				Consistently(func() (int, error) {
+					return sampleListeningPtp4l(nodeName, configFile, slaveInterface)
+				}, pkg.TimeoutIn30Seconds, pkg.Timeout10Seconds).Should(Equal(baselinePID),
 					fmt.Sprintf("receive interface %s with ptp4l process for config %s did not stay LISTENING and running on node %s",
 						slaveInterface, configFile, nodeName))
 
@@ -5038,6 +5026,24 @@ func ptp4lPIDsOnNode(nodeName, configFile string) ([]int, error) {
 		return nil, err
 	}
 	return ptp4lPIDsFromPS(psOutput, configFile), nil
+}
+
+// sampleListeningPtp4l returns the single live ptp4l PID for configFile on
+// nodeName, requiring slaveInterface to be LISTENING. A crash-restart loop
+// still shows one live process at every sample, but never the same PID.
+func sampleListeningPtp4l(nodeName, configFile, slaveInterface string) (int, error) {
+	pids, err := ptp4lPIDsOnNode(nodeName, configFile)
+	if err != nil {
+		return 0, err
+	}
+	if len(pids) != 1 {
+		return 0, fmt.Errorf("expected exactly one live ptp4l process for %s on node %s, found %v", configFile, nodeName, pids)
+	}
+	if roleErr := metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleListening},
+		[]string{slaveInterface}, &nodeName); roleErr != nil {
+		return pids[0], fmt.Errorf("receive interface %s is not LISTENING: %w", slaveInterface, roleErr)
+	}
+	return pids[0], nil
 }
 
 func updateAuthNegativeProfileConf(configName, profileName, desired string) error {
