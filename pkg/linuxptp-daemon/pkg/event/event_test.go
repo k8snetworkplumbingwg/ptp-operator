@@ -277,19 +277,12 @@ func TestEventHandler_ProcessEvents(t *testing.T) {
 
 	eChannel := make(chan event.Event, 100)
 	eventManager := clockmgr.Init("node", eChannel, nil, nil, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	startLeapManager(t)
+	startEventProcessor(t, eventManager)
 	gmClk, err := clock.NewGM("ts2phc.0.config", leap.GetUtcOffset, pmcMock)
 	require.NoError(t, err)
 	addErr := eventManager.AddClock(gmClk)
 	assert.NoError(t, addErr)
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-		assert.Nil(t, leap.LeapMgr)
-	}()
 	time.Sleep(1 * time.Second)
 	for _, test := range tests {
 		select {
@@ -372,16 +365,14 @@ func TestTBCClockClassThroughProcessEvents(t *testing.T) {
 		},
 	}
 	eChannel := make(chan event.Event, 100)
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	startLeapManager(t)
 
-	eventManager := clockmgr.Init("node", eChannel, nil, nil, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	clockClassGauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_tbc_transition_clock_class", Help: testHelpStr},
+		[]string{"process", "config", "node"},
+	)
+	eventManager := clockmgr.Init("testnode", eChannel, nil, nil, clockClassGauge, nil)
+	startEventProcessor(t, eventManager)
 
 	tbcClk, err := clock.NewTBC(testBCCfgPTP4l, leap.GetUtcOffset, pmcMock)
 	require.NoError(t, err)
@@ -439,21 +430,21 @@ func TestTBCClockClassThroughProcessEvents(t *testing.T) {
 	// → downstreamAnnounceIWF → announceClockClass(6)
 	eChannel <- bcEvent(bcCfgDPLL, event.DPLL, &event.DPLLData{State: event.PTP_LOCKED, Offset: utils.ToPtr[int64](10)})
 
-	assert.True(t, waitForClockClass(eventManager.GetClock(testBCCfgPTP4l), 6, 5*time.Second),
+	assert.True(t, waitForMetric(clockClassGauge, 6),
 		"expected clock class 6 after BC reaches LOCKED")
 
 	// Phase 2: PTP4l source lost triggers LOCKED→HOLDOVER (class 135)
 	eChannel <- bcEvent(bcCfgPTP4l, event.PTP4l, &event.OffsetData{State: event.PTP_FREERUN, Offset: 10, SourceLost: true})
 
-	assert.True(t, waitForClockClass(eventManager.GetClock(testBCCfgPTP4l), 135, 5*time.Second),
+	assert.True(t, waitForMetric(clockClassGauge, 135),
 		"expected clock class 135 after BC enters HOLDOVER")
 }
 
-func waitForMetric(gauge *prometheus.GaugeVec, cfgName string, expected float64, timeout time.Duration) bool {
-	deadline := time.After(timeout)
+func waitForMetric(gauge *prometheus.GaugeVec, expected float64) bool {
+	deadline := time.After(5 * time.Second)
 	for {
 		val := testutil.ToFloat64(gauge.With(prometheus.Labels{
-			"process": "ptp4l", "config": cfgName, "node": "testnode", //nolint:goconst
+			"process": "ptp4l", "config": testBCCfgPTP4l, "node": "testnode", //nolint:goconst
 		}))
 		if val == expected {
 			return true
@@ -466,18 +457,29 @@ func waitForMetric(gauge *prometheus.GaugeVec, cfgName string, expected float64,
 	}
 }
 
-func waitForClockClass(clk clock.Clock, expected fbprotocol.ClockClass, timeout time.Duration) bool {
-	deadline := time.After(timeout)
-	for {
-		if clk.ClockClass() == expected {
-			return true
-		}
-		select {
-		case <-deadline:
-			return false
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
+func startLeapManager(t *testing.T) {
+	t.Helper()
+	require.NoError(t, leap.MockLeapFile())
+	manager := leap.GetManager()
+	require.NotNil(t, manager)
+	t.Cleanup(func() {
+		manager.Stop()
+		assert.Nil(t, leap.GetManager())
+	})
+}
+
+func startEventProcessor(t *testing.T, manager *clockmgr.ClockManager) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.ProcessEvents(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func TestTBCClockClassMetric(t *testing.T) {
@@ -496,11 +498,7 @@ func TestTBCClockClassMetric(t *testing.T) {
 			CurrentDS: protocol.CurrentDS{StepsRemoved: 1},
 		},
 	}
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	startLeapManager(t)
 
 	clockClassGauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -526,9 +524,7 @@ func TestTBCClockClassMetric(t *testing.T) {
 
 	eChannel := make(chan event.Event, 100)
 	eventManager := clockmgr.Init("testnode", eChannel, offsetGauge, clockStateGauge, clockClassGauge, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	startEventProcessor(t, eventManager)
 
 	tbcClk, err := clock.NewTBC(testBCCfgPTP4l, leap.GetUtcOffset, pmcMock)
 	require.NoError(t, err)
@@ -579,13 +575,13 @@ func TestTBCClockClassMetric(t *testing.T) {
 	// Trigger "stay LOCKED" → upstream data mismatch → announceClockClass(6)
 	eChannel <- bcEvent(bcCfgDPLL, event.DPLL, &event.DPLLData{State: event.PTP_LOCKED, Offset: utils.ToPtr[int64](10)})
 
-	assert.True(t, waitForMetric(clockClassGauge, bcCfgPTP4l, 6, 5*time.Second),
+	assert.True(t, waitForMetric(clockClassGauge, 6),
 		"expected clock class metric = 6 for %s after LOCKED", bcCfgPTP4l)
 
 	// PTP4l source lost → LOCKED→HOLDOVER (class 135)
 	eChannel <- bcEvent(bcCfgPTP4l, event.PTP4l, &event.OffsetData{State: event.PTP_FREERUN, Offset: 10, SourceLost: true})
 
-	assert.True(t, waitForMetric(clockClassGauge, bcCfgPTP4l, 135, 5*time.Second),
+	assert.True(t, waitForMetric(clockClassGauge, 135),
 		"expected clock class metric = 135 for %s after HOLDOVER", bcCfgPTP4l)
 }
 
@@ -689,11 +685,7 @@ func TestMultiClockIPCIsolation(t *testing.T) {
 			},
 		},
 	}
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	startLeapManager(t)
 
 	clockClassGauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_multi_ipc_clock_class", Help: testHelpStr},
@@ -711,9 +703,7 @@ func TestMultiClockIPCIsolation(t *testing.T) {
 	cache := ipc.NewCache(100)
 	eChannel := make(chan event.Event, 100)
 	eventManager := clockmgr.Init("node", eChannel, offsetGauge, clockStateGauge, clockClassGauge, cache)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	startEventProcessor(t, eventManager)
 
 	socketCh, cleanup := startIPCSocketListener(t, cache)
 	defer cleanup()
@@ -1023,11 +1013,7 @@ func TestOverallClockStateIntegration(t *testing.T) {
 			CurrentDS: protocol.CurrentDS{StepsRemoved: 1},
 		},
 	}
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	startLeapManager(t)
 
 	clockClassGauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_overall_clock_class", Help: testHelpStr},
@@ -1045,9 +1031,7 @@ func TestOverallClockStateIntegration(t *testing.T) {
 	cache := ipc.NewCache(100)
 	eChannel := make(chan event.Event, 100)
 	eventManager := clockmgr.Init("node", eChannel, offsetGauge, clockStateGauge, clockClassGauge, cache)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	startEventProcessor(t, eventManager)
 
 	socketCh, cleanup := startIPCSocketListener(t, cache)
 	defer cleanup()
@@ -1247,11 +1231,7 @@ func TestSyncEIPCIntegration(t *testing.T) {
 			CurrentDS: protocol.CurrentDS{StepsRemoved: 1},
 		},
 	}
-	assert.NoError(t, leap.MockLeapFile())
-	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	startLeapManager(t)
 
 	clockClassGauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_synce_clock_class", Help: testHelpStr},
@@ -1269,9 +1249,7 @@ func TestSyncEIPCIntegration(t *testing.T) {
 	cache := ipc.NewCache(100)
 	eChannel := make(chan event.Event, 100)
 	eventManager := clockmgr.Init("node", eChannel, offsetGauge, clockStateGauge, clockClassGauge, cache)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go eventManager.ProcessEvents(ctx)
+	startEventProcessor(t, eventManager)
 
 	socketCh, cleanup := startIPCSocketListener(t, cache)
 	defer cleanup()
@@ -1389,9 +1367,7 @@ func TestApplyingSkipsTBCEvents(t *testing.T) {
 
 	// Set applying BEFORE starting ProcessEvents
 	em.SetApplying(true)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go em.ProcessEvents(ctx)
+	startEventProcessor(t, em)
 
 	// Send a DPLL event that would normally be processed
 	eChannel <- event.Event{
