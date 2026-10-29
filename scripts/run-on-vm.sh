@@ -308,8 +308,8 @@ run_quiet_with_log_dump_on_failure "install-tools" bash ./install-tools.sh
 export BASHRCSOURCED=1
 PS1="${PS1:-}" source ~/.bashrc
 
-# Kill leftover gnss-sim from a previous run
-pkill -f gnss-sim || true
+# Kill leftover gnss-sim from a previous run (match --api-port like configGNSS.sh)
+pkill -f 'gnss-sim.*--api-port' || true
 
 # ── Images phase (--images) ──────────────────────────────────────────
 if [[ "$RUN_PHASE" == "images" ]]; then

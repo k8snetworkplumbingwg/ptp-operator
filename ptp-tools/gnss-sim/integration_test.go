@@ -166,9 +166,9 @@ func TestDPLLFullCycleWithSimulator(t *testing.T) {
 	snap = dpllSim.Snapshot()
 	assertDPLLState(t, snap, "HOLDOVER", 7, 4, 4, 1)
 
-	// Verify NMEA reflects signal loss
-	recent := buf.String()
-	if !strings.Contains(recent, ",V,") {
+	// Verify NMEA reflects signal loss. Simulator.Run emits ~1 Hz at a
+	// phase independent of the test clock, so poll instead of a fixed sleep.
+	if !waitFor(2*time.Second, func() bool { return strings.Contains(buf.String(), ",V,") }) {
 		t.Error("NMEA should report void after signal loss")
 	}
 
@@ -185,10 +185,20 @@ func TestDPLLFullCycleWithSimulator(t *testing.T) {
 	assertDPLLState(t, snap, "LOCKED", 6, 3, 3, 1)
 
 	// Verify NMEA reflects active signal
-	recent = buf.String()
-	if !strings.Contains(recent, ",A,") {
+	if !waitFor(2*time.Second, func() bool { return strings.Contains(buf.String(), ",A,") }) {
 		t.Error("NMEA should report active after signal restore")
 	}
+}
+
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return cond()
 }
 
 func assertDPLLState(t *testing.T, snap DPLLStateView, state string, cc, freq, phase, pps int) {

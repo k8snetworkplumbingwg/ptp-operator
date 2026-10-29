@@ -62,7 +62,7 @@ func (p NMEAPosition) lonField() string {
 // that has lost its GNSS fix.
 //
 // The time field uses the format HHMMSS.00 to match the validation in
-// ptp-operator test/pkg/ptphelper (checkGNMRCString).
+// ptp-operator test helpers that validate GNRMC time/status fields.
 func GenerateGNRMC(t time.Time, pos NMEAPosition, signalActive bool) string {
 	utc := t.UTC()
 	timeFld := utc.Format("150405") + ".00"

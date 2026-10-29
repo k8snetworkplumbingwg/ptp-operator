@@ -7,7 +7,9 @@ set -euo pipefail
 # mock PHC's extts timestamps are in UTC and ts2phc (which converts
 # NMEA to TAI via the leapfile) sees a permanent ~37 s offset.
 if ! python3 -c "
-import ctypes, time
+import ctypes, ctypes.util, os, time
+# Match linux uapi timex (tai + 11 trailing 32-bit pads) so the kernel
+# copy-out cannot overrun the ctypes allocation.
 class Timex(ctypes.Structure):
     _fields_ = [('modes',ctypes.c_uint),('offset',ctypes.c_long),
         ('freq',ctypes.c_long),('maxerror',ctypes.c_long),
@@ -19,9 +21,12 @@ class Timex(ctypes.Structure):
         ('shift',ctypes.c_int),('stabil',ctypes.c_long),
         ('jitcnt',ctypes.c_long),('calcnt',ctypes.c_long),
         ('errcnt',ctypes.c_long),('stbcnt',ctypes.c_long),
-        ('tai',ctypes.c_int)]
+        ('tai',ctypes.c_int),('_padding',ctypes.c_int * 11)]
+libc = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6', use_errno=True)
 tx = Timex(modes=0x0080, constant=37)
-ctypes.CDLL('libc.so.6').adjtimex(ctypes.byref(tx))
+if libc.adjtimex(ctypes.byref(tx)) == -1:
+    e = ctypes.get_errno()
+    raise OSError(e, os.strerror(e))
 d = time.clock_gettime(11) - time.clock_gettime(0)
 print(f'TAI offset set: {d:.0f}s')
 "; then

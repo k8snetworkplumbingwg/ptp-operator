@@ -14,6 +14,10 @@
 #   --must-gather-image <url>       Full image URL for the ptp must-gather image.
 #                                   When provided, must-gather runs for oc mode and on failure.
 #
+# Environment:
+#   GNSS_SIM_DEPLOY=auto|on|off     Deploy gnss-sim for tgm/tgmoc/tgmbc (default: auto =
+#                                   only when a Kind netdevsim cluster is detected).
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -258,8 +262,14 @@ modes_include_telco_gm() {
   return 1
 }
 
-# Deploy gnss-sim once for the Kind cluster (idempotent). Does not export
-# GNSS_SIM_IFACE* — those stay T-GM-mode-only via export_gnss_sim_env.
+# Deploy gnss-sim once for the Kind/netdevsim cluster (idempotent). Does not
+# export GNSS_SIM_IFACE* — those stay T-GM-mode-only via export_gnss_sim_env.
+#
+# GNSS_SIM_DEPLOY controls whether the simulator is installed:
+#   auto (default) — deploy only when a Kind netdevsim cluster is detected
+#                    and --mode includes tgm/tgmoc/tgmbc
+#   on|true|1|yes  — force deploy (even on baremetal) when T-GM modes are present
+#   off|false|0|no — never deploy (baremetal / hardware GNSS)
 deploy_gnss_sim() {
   export GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
 
@@ -270,6 +280,32 @@ deploy_gnss_sim() {
   fi
 
   bash "${SCRIPT_DIR}/configGNSS.sh"
+}
+
+is_kind_netdevsim_cluster() {
+  kubectl get nodes -o name 2>/dev/null | grep -q 'node/kind-netdevsim'
+}
+
+should_deploy_gnss_sim() {
+  if ! modes_include_telco_gm; then
+    return 1
+  fi
+  local mode="${GNSS_SIM_DEPLOY:-auto}"
+  case "${mode,,}" in
+    on|true|1|yes)
+      return 0
+      ;;
+    off|false|0|no)
+      return 1
+      ;;
+    auto|"")
+      is_kind_netdevsim_cluster
+      ;;
+    *)
+      echo "Error: invalid GNSS_SIM_DEPLOY=${mode} (use auto|on|off)" >&2
+      exit 1
+      ;;
+  esac
 }
 
 # Export GNSS_SIM_* for the test framework for a T-GM mode run. Assumes the
@@ -285,7 +321,8 @@ export_gnss_sim_env() {
   if [ -n "$GNSS_KERNEL_DEV" ]; then
     export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-$(basename "$GNSS_KERNEL_DEV")}"
   else
-    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ttyGNSS_TS2PHC}"
+    # Must match gnss-sim --pty-links and the daemon's /var/run/ptp mount.
+    export GNSS_SIM_NMEA_DEVICE="${GNSS_SIM_NMEA_DEVICE:-/var/run/ptp/ttyGNSS_TS2PHC}"
   fi
   export GNSS_SIM_IFACE1="${GNSS_SIM_IFACE1:-ens1f0}"
   export GNSS_SIM_IFACE2="${GNSS_SIM_IFACE2:-ens1f1}"
@@ -295,16 +332,20 @@ clear_gnss_sim_env() {
   unset GNSS_SIM_API_HOST GNSS_SIM_NMEA_DEVICE GNSS_SIM_IFACE1 GNSS_SIM_IFACE2
 }
 
-if modes_include_telco_gm; then
-  echo "Deploying gnss-sim once before mode loop (T-GM modes present)"
+GNSS_SIM_DEPLOYED=0
+if should_deploy_gnss_sim; then
+  echo "Deploying gnss-sim once before mode loop (GNSS_SIM_DEPLOY=${GNSS_SIM_DEPLOY:-auto})"
   deploy_gnss_sim
+  GNSS_SIM_DEPLOYED=1
+elif modes_include_telco_gm; then
+  echo "Skipping gnss-sim deploy (GNSS_SIM_DEPLOY=${GNSS_SIM_DEPLOY:-auto}; Kind/netdevsim not detected — use GNSS_SIM_DEPLOY=on to force)"
 else
   echo "Skipping gnss-sim deploy (no tgm/tgmoc/tgmbc in --mode)"
 fi
 
 overall_exit=0
 for mode in "${TEST_MODES[@]}"; do
-  if is_telco_gm_mode "${mode}"; then
+  if is_telco_gm_mode "${mode}" && [[ "${GNSS_SIM_DEPLOYED}" -eq 1 ]]; then
     echo "Exporting GNSS_SIM_* env for T-GM mode ${mode}"
     export_gnss_sim_env
   else

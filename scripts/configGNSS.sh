@@ -13,10 +13,12 @@
 # Usage: ./configGNSS.sh
 #   Env: GNSS_SIM_IMAGE  — container image (required, e.g. 192.168.64.52/test:gnss-sim)
 #        GNSS_SIM_API_PORT — API port (default 9200)
+#        GNSS_SIM_HOLDOVER_TIMEOUT — DPLL holdover seconds (default 60)
 #
 set -euo pipefail
 
 GNSS_SIM_API_PORT="${GNSS_SIM_API_PORT:-9200}"
+GNSS_SIM_HOLDOVER_TIMEOUT="${GNSS_SIM_HOLDOVER_TIMEOUT:-60}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -z "${GNSS_SIM_IMAGE:-}" ]; then
@@ -34,8 +36,11 @@ kubectl delete deployment gnss-sim -n openshift-ptp --ignore-not-found --wait=fa
 kubectl delete pod gnss-sim -n openshift-ptp --ignore-not-found --wait=false 2>/dev/null || true
 kubectl wait --for=delete pod -l app=gnss-sim -n openshift-ptp --timeout=30s 2>/dev/null || true
 
-# Substitute the image placeholder in the manifest and apply
-sed "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g" "${SCRIPT_DIR}/gnss-sim-deployment.yaml" \
+# Substitute image/port/holdover placeholders and apply
+sed -e "s|GNSS_SIM_IMAGE|${GNSS_SIM_IMAGE}|g" \
+    -e "s|GNSS_SIM_API_PORT|${GNSS_SIM_API_PORT}|g" \
+    -e "s|GNSS_SIM_HOLDOVER_TIMEOUT|${GNSS_SIM_HOLDOVER_TIMEOUT}|g" \
+    "${SCRIPT_DIR}/gnss-sim-deployment.yaml" \
     | kubectl apply -f -
 
 echo "Waiting for gnss-sim deployment to become ready..."

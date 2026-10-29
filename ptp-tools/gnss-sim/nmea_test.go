@@ -159,7 +159,7 @@ func TestGenerateGPZDA(t *testing.T) {
 }
 
 // TestGNRMCTimeFormatMatchesTestValidation verifies that the time field
-// format matches what checkGNMRCString in ptphelper.go expects:
+// format matches what ptphelper GNRMC validation expects:
 //
 //	formattedTime := time.Now().UTC().Format("150405") + ".00"
 func TestGNRMCTimeFormatMatchesTestValidation(t *testing.T) {

@@ -211,11 +211,13 @@ func (sim *Simulator) generate(now time.Time) {
 	// Apply artificial time offset for testing threshold transitions
 	t := now.Add(time.Duration(snap.OffsetNs) * time.Nanosecond)
 
-	// GenerateGNRMC and GenerateGNGGA both branch on signalActive internally;
-	// when signalActive is false they produce fixed no-fix output and ignore
-	// the satellite/HDOP/gpsFix parameters entirely, so no local overrides are needed.
+	// ts2phc keys off RMC status A/V only; do not emit A when gpsFix is NoFix
+	// even if SignalActive is still true (API can set those independently).
+	rmcActive := snap.SignalActive && snap.GPSFix > GPSFixNoFix
+	// GenerateGNGGA branches on signalActive; when false it produces fixed
+	// no-fix output and ignores satellite/HDOP/gpsFix parameters.
 	sentences := []string{
-		GenerateGNRMC(t, snap.Position, snap.SignalActive),
+		GenerateGNRMC(t, snap.Position, rmcActive),
 		GenerateGNGGA(t, snap.Position, snap.SignalActive, snap.Satellites, snap.HDOP, snap.GPSFix),
 		GenerateGPZDA(t),
 	}
