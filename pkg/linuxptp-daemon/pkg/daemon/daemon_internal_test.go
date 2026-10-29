@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bigkevmcd/go-configparser"
 	"github.com/golang/glog"
@@ -259,10 +258,8 @@ func applyTestProfile(t *testing.T, profile *ptpv1.PtpProfile) {
 	stopCh := make(<-chan struct{})
 	assert.NoError(t, leap.MockLeapFile())
 	defer func() {
-		close(leap.LeapMgr.Close)
-		// Sleep to allow context to switch
-		time.Sleep(100 * time.Millisecond)
-		assert.Nil(t, leap.LeapMgr)
+		leap.GetManager().Stop()
+		assert.Nil(t, leap.GetManager())
 	}()
 	dn := New(
 		"test-node-name",
@@ -356,10 +353,8 @@ func Test_applyProfile_TBC(t *testing.T) {
 	stopCh := make(<-chan struct{})
 	assert.NoError(t, leap.MockLeapFile())
 	defer func() {
-		close(leap.LeapMgr.Close)
-		// Sleep to allow context to switch
-		time.Sleep(100 * time.Millisecond)
-		assert.Nil(t, leap.LeapMgr)
+		leap.GetManager().Stop()
+		assert.Nil(t, leap.GetManager())
 	}()
 	dn := New(
 		"test-node-name",
@@ -479,9 +474,8 @@ func Test_applyProfile_TGM(t *testing.T) {
 	stopCh := make(<-chan struct{})
 	assert.NoError(t, leap.MockLeapFile())
 	defer func() {
-		close(leap.LeapMgr.Close)
-		time.Sleep(100 * time.Millisecond)
-		assert.Nil(t, leap.LeapMgr)
+		leap.GetManager().Stop()
+		assert.Nil(t, leap.GetManager())
 	}()
 	dn := New(
 		"test-node-name",

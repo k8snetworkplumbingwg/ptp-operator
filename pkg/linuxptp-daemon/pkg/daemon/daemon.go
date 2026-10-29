@@ -914,8 +914,8 @@ func (dn *Daemon) createProcesses(runID int, nodeProfile *ptpv1.PtpProfile, topo
 			dn.processManager.clockMgr.ConfigureOSClockFilter(osClockFilterConfig(nodeProfile))
 			dprocess, err = NewPhc2sysProcess(env)
 		case ts2phcProcessName:
-			if leap.LeapMgr != nil {
-				leap.LeapMgr.SetPtp4lConfigPath(clockCfgName(runID))
+			if manager := leap.GetManager(); manager != nil {
+				manager.SetPtp4lConfigPath(clockCfgName(runID))
 			}
 			var ts2phcProc *ptpProcess
 			ts2phcProc, err = NewTs2phcProcess(env)
