@@ -269,6 +269,10 @@ func (l *LeapManager) Run() {
 // Stop requests shutdown and waits until the worker has released its registration.
 func (l *LeapManager) Stop() {
 	l.closeOnce.Do(func() { close(l.Close) })
+	// Run's sync.Once also joins an active worker, including deferred cleanup.
+	// If no worker has started, Run executes the loop with shutdown already
+	// signaled so deferred cleanup releases the registration; later Run calls
+	// are no-ops.
 	l.Run()
 }
 
