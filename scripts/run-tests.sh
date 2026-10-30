@@ -67,7 +67,7 @@ JUNIT_OUTPUT_DIR="${JUNIT_OUTPUT_DIR:-/tmp/artifacts}"
 JUNIT_OUTPUT_FILE="${JUNIT_OUTPUT_FILE:-unit_report.xml}"
 SUITE=../test/conformance
 export KUBECONFIG=${KUBECONFIG:-~/.kube/config}
-go install github.com/onsi/ginkgo/v2/ginkgo
+(cd "${SCRIPT_DIR}/../test" && GOFLAGS=-mod=mod go install github.com/onsi/ginkgo/v2/ginkgo)
 
 mkdir -p "$JUNIT_OUTPUT_DIR"
 

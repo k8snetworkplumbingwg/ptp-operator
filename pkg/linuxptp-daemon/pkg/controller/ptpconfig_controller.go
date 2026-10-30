@@ -33,7 +33,7 @@ type PtpConfigReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs/status,verbs=get;update;patch
+// Daemon RBAC is provided by config/custom/rbac.yaml (linuxptp-daemon ClusterRole).
 
 // Reconcile handles PtpConfig changes and updates the daemon configuration
 func (r *PtpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -8,9 +8,15 @@ grep -vE "zz_generated|mock_|/test/|vendor/|/bin/" coverage.raw.out > coverage.o
 # graph; run them explicitly so new tests are not silently skipped in CI.
 # coverage-gate.sh also runs this script on the PR base ref, where gnss-sim may
 # not exist yet — skip gracefully in that case.
-go test ./test/pkg/ptphelper/... ./test/pkg/pods/...
-# Pure testconfig unit tests (exclude discovery helpers that need a live cluster).
-go test ./test/pkg/testconfig/ -run 'TestClockNodeInfo|TestHasGNSSDeviceWrapperFindsSibling|TestPreferDiffNodeSolution|TestStripPhc2sysRealtimeOpts|TestIsTelcoGMMode|TestDirectConnectionTopologySolutions' -count=1
+if [ -f test/go.mod ]; then
+	(cd test && go test ./pkg/ptphelper/... ./pkg/pods/...)
+	# Pure testconfig unit tests (exclude discovery helpers that need a live cluster).
+	(cd test && go test ./pkg/testconfig/ -run 'TestClockNodeInfo|TestHasGNSSDeviceWrapperFindsSibling|TestPreferDiffNodeSolution|TestStripPhc2sysRealtimeOpts|TestIsTelcoGMMode|TestDirectConnectionTopologySolutions' -count=1)
+else
+	go test ./test/pkg/ptphelper/... ./test/pkg/pods/...
+	# Pure testconfig unit tests (exclude discovery helpers that need a live cluster).
+	go test ./test/pkg/testconfig/ -run 'TestClockNodeInfo|TestHasGNSSDeviceWrapperFindsSibling|TestPreferDiffNodeSolution|TestStripPhc2sysRealtimeOpts|TestIsTelcoGMMode|TestDirectConnectionTopologySolutions' -count=1
+fi
 if [ -d ptp-tools/gnss-sim ]; then
 	(cd ptp-tools/gnss-sim && go test ./...)
 fi
