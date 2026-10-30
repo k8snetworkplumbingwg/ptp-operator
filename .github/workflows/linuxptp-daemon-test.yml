@@ -1,14 +1,14 @@
-name: Test
+name: "linuxptp-daemon: Test"
 
 on:
   push:
     paths-ignore:
-      - '.github/**'
+      - 'pkg/linuxptp-daemon/.github/**'
       - 'docs/**'
       - '**.md'
   pull_request:
     paths-ignore:
-      - '.github/**'
+      - 'pkg/linuxptp-daemon/.github/**'
       - 'docs/**'
       - '**.md'
 
@@ -16,6 +16,9 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
     
     - name: Check out code into the Go module directory
@@ -31,6 +34,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -47,6 +53,9 @@ jobs:
         run: make test
   cloud-event-proxy-e2e:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     needs: [build,test]
     steps:
       - name: Checkout code
@@ -62,6 +71,9 @@ jobs:
 
   kind:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     needs: [build,test]
     steps:
       - name: Checkout Code
