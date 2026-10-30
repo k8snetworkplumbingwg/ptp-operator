@@ -1,0 +1,58 @@
+# Behavior profiles for Intel E810 hardware
+# Pin names use E810 conventions (GNSS-1PPS, SMA1, SMA2, U.FL1, U.FL2)
+
+behaviorProfiles:
+  t-gm:
+    sources:
+      - name: GNSS
+        sourceType: gnss
+        subsystem: "{subsystem}"
+        boardLabel: GNSS-1PPS
+        gnssConfig:
+          match:
+            ethernetDevice:
+              vendorID: "8086"
+              deviceID: "159B"
+    conditions:
+      - name: "Initialize T-GM"
+        triggers:
+          - conditionType: init
+            sourceName: GNSS
+        desiredStates:
+          # Connect GNSS to DPLL
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: GNSS-1PPS
+              eec:
+                state: selectable
+              pps:
+                state: selectable
+          # Disable all SMA/U.FL outputs
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: SMA1
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: SMA2
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: U.FL1
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: U.FL2
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected

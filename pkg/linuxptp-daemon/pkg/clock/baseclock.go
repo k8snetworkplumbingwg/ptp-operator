@@ -1,0 +1,107 @@
+package clock
+
+import (
+	"strings"
+	"sync"
+
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/event"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/ipc"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/utils"
+)
+
+// DataHolder manages process data slice with thread safety.
+type DataHolder struct {
+	data   []*event.Data
+	dataMu sync.RWMutex
+}
+
+// GetData returns the Data entry for the given process, creating one if needed.
+func (dh *DataHolder) GetData(processName event.EventSource) *event.Data {
+	return dh.getData(processName, true)
+}
+
+func (dh *DataHolder) getData(processName event.EventSource, withWindow bool) *event.Data {
+	dh.dataMu.Lock()
+	defer dh.dataMu.Unlock()
+	for _, d := range dh.data {
+		if d.ProcessName == processName {
+			return d
+		}
+	}
+	d := &event.Data{ProcessName: processName, State: event.PTP_UNKNOWN}
+	if withWindow {
+		d.Window = utils.NewWindow(event.WindowSize)
+	}
+	dh.data = append(dh.data, d)
+	return d
+}
+
+// Reset clears the stored data.
+func (dh *DataHolder) Reset() {
+	dh.dataMu.RLock()
+	defer dh.dataMu.RUnlock()
+	dh.data = nil
+}
+
+// ProcessData returns all clock data accumulated from processed events.
+func (dh *DataHolder) ProcessData() []*event.Data {
+	dh.dataMu.RLock()
+	defer dh.dataMu.RUnlock()
+	return dh.data
+}
+
+// BaseClock ...
+type BaseClock struct {
+	DataHolder
+	sendIPC          func(ipc.Message)
+	cfgName          string
+	overallSyncState event.PTPState
+	osClock          *OsClock
+	threshold        event.PtpClockThreshold
+}
+
+// ConfigName ..
+func (c *BaseClock) ConfigName() string { return c.cfgName }
+
+// ConfigNames returns every config name events for this clock may arrive under. A
+// ptp4l-based clock also receives ts2phc events, which arrive under the matching
+// ts2phc.{runID}.config name, so that alias is included. Composite clocks override
+// this to add their members' config names.
+func (c *BaseClock) ConfigNames() []string {
+	names := []string{c.cfgName}
+	if ts2phc := strings.Replace(c.cfgName, "ptp4l.", "ts2phc.", 1); ts2phc != c.cfgName {
+		names = append(names, ts2phc)
+	}
+	return names
+}
+
+// Reset resets the clock state.
+func (c *BaseClock) Reset() {
+	c.osClock.Reset()
+	c.DataHolder.Reset()
+	c.overallSyncState = event.PTP_FREERUN
+}
+
+// ProcessData returns all clock data accumulated from processed events.
+func (c *BaseClock) ProcessData() []*event.Data {
+	d := c.DataHolder.ProcessData()
+	return append(d, c.osClock.ProcessData()...)
+}
+
+// SetOsClock Set OsClock
+func (c *BaseClock) SetOsClock(osClock *OsClock) {
+	c.osClock = osClock
+}
+
+// SetIPC sets the IPC sender function
+func (c *BaseClock) SetIPC(f func(message ipc.Message)) {
+	c.sendIPC = f
+}
+
+func newBaseClock(cfgName string, threshold event.PtpClockThreshold) BaseClock {
+	return BaseClock{
+		cfgName:          cfgName,
+		threshold:        threshold,
+		overallSyncState: event.PTP_NOTSET,
+	}
+}
