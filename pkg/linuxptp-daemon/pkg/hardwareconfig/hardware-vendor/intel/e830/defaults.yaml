@@ -1,0 +1,15 @@
+# E830 (Carter Flats) - Unmanaged DPLL
+# This DPLL only reports device status via unsolicited notifications.
+# No pins are reported, so no phase offset or frequency status is available.
+
+# Clock ID transformation method for this hardware
+# "direct" - use serial number bytes directly (keeps ff-ff in middle)
+clockIdTransformation:
+  method: direct
+
+# DPLL monitoring flags intrinsic to this hardware.
+# E830 CF DPLL only provides phase status (PPS lock/unlock) via the pps device.
+# Phase offset and frequency status (eec device) are not available.
+dpllFlags:
+  - noPhaseOffset
+  - noFrequencyStatus

@@ -1,0 +1,56 @@
+package clock
+
+import (
+	fbprotocol "github.com/facebook/time/ptp/protocol"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/event"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/ipc"
+)
+
+// Clock represents a PTP clock instance tied to a specific config profile.
+type Clock interface {
+	AddEvent(ev event.Event) SyncState
+	GetState() event.PTPState
+	SystemClockUpdate()
+	Reset()
+	ConfigName() string
+	// ConfigNames returns every config name events for this clock may arrive
+	// under, so the clock manager can route them all here. It always includes
+	// ConfigName.
+	ConfigNames() []string
+	ClockType() event.ClockType
+	ClockClass() fbprotocol.ClockClass
+	SetIPC(func(message ipc.Message))
+	SetEventLoopbackFunc(f func(event.Event))
+	GetData(processName event.EventSource) *event.Data
+	ProcessData() []*event.Data
+	SetOsClock(*OsClock)
+}
+
+// SyncState holds the composite synchronization state of a clock.
+type SyncState struct {
+	State          event.PTPState
+	ClockClass     fbprotocol.ClockClass
+	SourceLost     bool
+	ClkLog         string
+	LastLoggedTime int64
+	LeadingIFace   string
+	ClockAccuracy  fbprotocol.ClockAccuracy
+	ClockOffset    int64
+	// HAProfileStatus maps each HA member profile name to whether it is the
+	// currently selected (active) source. Exactly one member is active at a time
+	// (phc2sys disciplines the system clock from a single source). It is nil for
+	// every non-HA clock
+	HAProfileStatus map[string]bool
+}
+
+func emitOverallSyncStateIfChanged(sendIPC func(ipc.Message), overallSyncState *event.PTPState, clockState, osClockState event.PTPState, profile string) {
+	next := event.WorstOfState(clockState, osClockState)
+	if next != *overallSyncState {
+		*overallSyncState = next
+		sendIPC(ipc.Message{
+			Type:    ipc.TypeSyncState,
+			Profile: profile,
+			Values:  ipc.SyncStateValue{State: event.PtpStateToIPCState(next)},
+		})
+	}
+}
