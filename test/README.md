@@ -9,7 +9,7 @@ Install Ginkgo v2 CLI following the [Migration Guide](https://onsi.github.io/gin
 To run the conformance tests, first set the following environment variables:
 - **PTP_LOG_LEVEL**: sets the log level (defaults to info), valid values are:  trace, debug, info, warn, error, fatal, panic
 - **KUBECONFIG**: this is the path to the openshift kubeconfig
-- **PTP_TEST_MODE**: this is the desired mode to run the tests. Choose between: Discovery, OC, DualFollower, BC, DualNICBC, DualNICBCHA, TGM, and TBC. See below for an explanation for each mode.
+- **PTP_TEST_MODE**: this is the desired mode to run the tests. Choose between: Discovery, OC, DualFollower, BC, DualNICBC, DualNICBCHA, TGM, TGMOC, TGMBC, and TBC. See below for an explanation for each mode.
 - **DISCOVERY_MODE**: This is a legacy option and is equivalent to setting "Discovery" option in the PTP_TEST_MODE environment variable
 - **ENABLE_TEST_CASE**: This is an option to run the long running tests separated by comma. For example, to run reboot test, `ENABLE_TEST_CASE=reboot` shall be used.
 - **SKIP_INTERFACES**: passes a list of interfaces to be skipped in the form "eno1,ens2f1" `SKIP_INTERFACES="eno1,ens2f1"`. These interfaces are excluded from L2 discovery and any solver solutions containing them are also discarded.
@@ -375,15 +375,35 @@ In the simulated CI cluster, the DualNICBCHA scenario uses the same port placeme
 
 #### TGM (Telecom Grandmaster / T-GM)
 
-The TGM configuration exercises a Westport Channel (E810-XXVDA4T) telecom grandmaster: GNSS feeds `ts2phc`, which disciplines the NIC PHC; two ports on the same WPC NIC act as PTP masters (`PTP_TEST_MODE=TGM`, PtpConfig `test-wpc-grandmaster`). The L2 solver requires a WPC NIC with a connected GNSS device (`StepIsWPCNic` + `HasGNSSDevice`) and a second port on that same NIC:
+The TGM configuration exercises a Westport Channel (E810-XXVDA4T) telecom grandmaster: GNSS feeds `ts2phc`, which disciplines the NIC PHC; two ports on the same WPC NIC act as PTP masters (`PTP_TEST_MODE=TGM`, PtpConfig `test-wpc-grandmaster`). The L2 solver requires a WPC NIC with a connected GNSS device (`StepIsWPCNic` + `HasGNSSDevice`) and a second port on that same NIC (`GrandmasterSibling`):
 
 ![multi_tgm](doc/multi_tgm.svg)
 
-**Not supported in the netdevsim / Kind simulator.** There is no WPC NIC or GNSS in the CI cluster, so auto-config will not resolve TGM there. Illustrative role placement (same diagram language as the CI scenarios):
+**Supported in the netdevsim / Kind simulator** via `gnss-sim` and `wpc=1` netdevsim devices (see [netdevsim PTP simulation](../docs/netdevsim-ptp-simulation.md)). `run-tests.sh` deploys gnss-sim automatically when a Kind netdevsim cluster is detected and `--mode` includes `tgm`/`tgmoc`/`tgmbc` (`GNSS_SIM_DEPLOY=auto`). On baremetal, leave simulation off (default) so real GNSS/WPC hardware is used; set `GNSS_SIM_DEPLOY=on` to force the simulator. Illustrative Kind role placement:
 
 ![scenario-tgm](doc/scenario-tgm.svg)
 
 On the ptpcimno lab (verified via NodePtpDevice + `/dev/gnss0`), WPC+GNSS is present on **cnfdf31 NIC4 ens4\*** (GNSS on `ens4f0`) and **cnfdf32 NIC6 ens7\*** (GNSS on `ens7f0`). **cnfdf30 has only E810-XXVDA4 (no WPC/GNSS).** TGM fits the existing L1–L6 direct cabling (no inter-node link required for the CUT); see `ptpcimno-topology-direct.drawio` page **TGM**.
+
+#### TGMOC (T-GM + Ordinary Clock)
+
+TGMOC places a WPC T-GM as the grandmaster and a downstream ordinary clock as the clock under test (`PTP_TEST_MODE=TGMOC`). Solver algo `TGMOC` requires WPC+GNSS on the GM ports (`Grandmaster` + `GrandmasterSibling` on the same NIC) and an OC slave on the same LAN but a different node (so priority-override tests cannot wipe the GM):
+
+![multi_tgmoc](doc/multi_tgmoc.svg)
+
+In Kind/netdevsim this resolves for example as (OC CUT: worker.ens1f0, WPC T-GM: worker2.ens3f0/ens3f1 + GNSS):
+
+![scenario-tgmoc](doc/scenario-tgmoc.svg)
+
+#### TGMBC (T-GM + Boundary Clock)
+
+TGMBC places a WPC T-GM as the grandmaster and a boundary clock as the clock under test (`PTP_TEST_MODE=TGMBC`). Solver algos `TGMBC` / `TGMBCWithSlaves` require WPC+GNSS GM ports, a BC slave on the GM LAN (different node), a BC master on the same NIC as the BC slave, and optionally a downstream OC on the BC master LAN (not on the GNSS GM node):
+
+![multi_tgmbc](doc/multi_tgmbc.svg)
+
+In Kind/netdevsim this resolves for example as (BC CUT: worker nic1, WPC T-GM: worker2.ens3f0/ens3f1 + GNSS, optional OC: worker3.ens5f0). Cascading holdover tests assert GM and BC clock-class / `clock_state` through GNSS loss and recovery:
+
+![scenario-tgmbc](doc/scenario-tgmbc.svg)
 
 #### TBC (Telecom Boundary Clock / T-BC)
 
@@ -415,6 +435,9 @@ It is also possible to use an existing Grandmaster to synchronize clock to. This
 | OC      | true       | OC + discovered External GM |
 | BC      | true       | BC + discovered External GM |
 | Dual NIC BC      | true       |  Dual NIC BC + discovered External GM |
+| TGM      | false/not set       | WPC T-GM only (GNSS/ts2phc) |
+| TGMOC      | false/not set       | WPC T-GM + downstream OC |
+| TGMBC      | false/not set       | WPC T-GM + downstream BC (+ optional OC) |
 | TBC      | false/not set       | T-BC + self configured local GM |
 | TBC      | true       | T-BC + discovered External GM |
 | Discovery     | true/false       | Discovered Clock + discovered External GM |
@@ -535,20 +558,40 @@ The representation in the code of the visual representation of the algorithm rep
 	}
 ```
 
-TGM and TBC follow the same pattern (see `multi_tgm.svg`, `multi_tbc.svg`, `multi_tbc_extgm.svg`):
+TGM / TGMOC / TGMBC and TBC follow the same pattern (see `multi_tgm.svg`, `multi_tgmoc.svg`, `multi_tgmbc.svg`, `multi_tbc.svg`, `multi_tbc_extgm.svg`):
 
 ```
 	TGMAlgo := [][][]int{
-		{{int(StepIsWPCNic), 1, 0}, {int(StepHasGNSSDevice), 1, 0}}, // p0: WPC + GNSS
-		{{int(StepIsWPCNic), 1, 1}, {int(StepSameNic), 2, 0, 1}},    // p1: WPC sibling of p0
+		{{int(StepIsWPCNic), 1, 0}, {int(StepHasGNSSDevice), 1, 0}}, // p0: Grandmaster, WPC + GNSS
+		{{int(StepIsWPCNic), 1, 1}, {int(StepSameNic), 2, 0, 1}},    // p1: GrandmasterSibling, WPC same NIC
+	}
+
+	TGMOCAlgo := [][][]int{
+		{{int(StepIsWPCNic), 1, 0}, {int(StepHasGNSSDevice), 1, 0}}, // p0: WPC GM + GNSS
+		{{int(StepIsWPCNic), 1, 1}, {int(StepSameNic), 2, 0, 1}},    // p1: WPC sibling
+		{{int(StepSameLan2), 2, 0, 2}, {int(StepSameNode), 2, 0, 2, Negative}}, // p2: OC CUT, same LAN, different node
+	}
+
+	TGMBCAlgo := [][][]int{
+		{{int(StepIsWPCNic), 1, 0}, {int(StepHasGNSSDevice), 1, 0}}, // p0: WPC GM + GNSS
+		{{int(StepIsWPCNic), 1, 1}, {int(StepSameNic), 2, 0, 1}},    // p1: WPC sibling
+		{{int(StepSameLan2), 2, 0, 2}, {int(StepSameNode), 2, 0, 2, Negative}}, // p2: BC slave (CUT), same LAN, different node
+		{{int(StepSameNic), 2, 2, 3}},                               // p3: BC master same NIC as p2
+	}
+
+	TGMBCWithSlavesAlgo := [][][]int{
+		// ...same steps as TGMBC, then:
+		{{int(StepSameLan2), 2, 3, 4}, // p4: OC on BC master LAN
+			{int(StepSameNic), 2, 0, 4, Negative},
+			{int(StepSameLan2), 2, 0, 4, Negative},
+			{int(StepSameNode), 2, 0, 4, Negative}}, // p4 must not share NIC/LAN/node with GNSS GM (p0)
 	}
 
 	TBCAlgo := [][][]int{
 		{{int(StepIsWPCNic), 1, 0}},                              // p0: T-BC receiver on WPC
 		{{int(StepSameNic), 2, 0, 1}},                             // p1: transmitter 1 same NIC
 		{{int(StepSameNic), 2, 0, 2}},                             // p2: transmitter 2 same NIC
-		{{int(StepSameLan2), 2, 0, 3}, {int(StepSameNode), 2, 0, 3, Negative}}, // p3: local GM, same LAN, different node
-		{{int(StepIsWPCNic), 1, 3}, {int(StepHasGNSSDevice), 1, 3}}, // p3: WPC + GNSS
+		{{int(StepSameLan2), 2, 0, 3}, {int(StepSameNode), 2, 0, 3, Negative}}, // p3: local software GM, same LAN, different node (not required to be WPC/GNSS)
 	}
 ```
 
@@ -598,7 +641,7 @@ The CI topology created by `configServers.sh` is shown below (nodes, NICs with t
 ![ptp-ci-direct](doc/ptp-ci-direct.svg)
 
 ## Using a Kind cluster and netdevsim to created ptp-operator configurations
-The overall configuration for of the ptp CI test cluster is described above: a kind cluster with 3 workers ("servers") whose netdevsim ports are directly connected. The L2 discovery and graph solver resolve the OC, BC, DualNICBC, DualNICBCHA and DualFollower scenarios from this cabling — the scenario sections above show, for each mode, where the clocks and clock ports land (scenario-*.svg). TGM and TBC also have solver definitions and illustrative diagrams (`scenario-tgm.svg`, `scenario-tbc.svg`), but they require Westport Channel hardware and GNSS and **cannot be deployed in the netdevsim simulator** yet; see the TGM/TBC sections above and the lab pages in `ptpcimno-topology-direct.drawio`. The multi-page draw.io source for the README diagrams is [doc/ptp-test-diagrams.drawio](doc/ptp-test-diagrams.drawio) (one page per SVG; export a page to SVG with the same name under `doc/`).
+The overall configuration for of the ptp CI test cluster is described above: a kind cluster with 3 workers ("servers") whose netdevsim ports are directly connected. The L2 discovery and graph solver resolve the OC, BC, DualNICBC, DualNICBCHA, DualFollower, TGM, TGMOC, and TGMBC scenarios from this cabling — the scenario sections above show, for each mode, where the clocks and clock ports land (scenario-*.svg). TGM/TGMOC/TGMBC use netdevsim `wpc=1` plus `gnss-sim` for GNSS/DPLL (see [netdevsim PTP simulation](../docs/netdevsim-ptp-simulation.md)). TBC still requires Westport Channel hardware (and GNSS for the local-GM path) and is not deployed in the netdevsim simulator; see the TBC section and the lab pages in `ptpcimno-topology-direct.drawio`. The multi-page draw.io source for the README diagrams is [doc/ptp-test-diagrams.drawio](doc/ptp-test-diagrams.drawio) (one page per SVG; export a page to SVG with the same name under `doc/`).
 
 ## Scripts documentation
 - `configpair.sh`: creates a 2 netdevsim interfaces and connected via a virtual link
@@ -611,7 +654,7 @@ The overall configuration for of the ptp CI test cluster is described above: a k
 - `kind-config.yaml`: reference kind cluster configuration
 - `reset-devices.sh`: loads the netdevsim kernel driver
 - `run-on-vm.sh`: top level script called by the github action to run CI tests.  Can also be used on local VM with netdevsim to run tests locally.
-- `run-tests.sh`: Configurable PTP conformance test runner. Supports serial, parallel, or both execution kinds, selectable test modes, and optional linuxptp-daemon image for pmc pod tests.
+- `run-tests.sh`: Configurable PTP conformance test runner. Supports serial, parallel, or both execution kinds, selectable test modes, and optional linuxptp-daemon image for pmc pod tests. For `tgm`/`tgmoc`/`tgmbc`, gnss-sim is deployed when a Kind netdevsim cluster is detected (`GNSS_SIM_DEPLOY=auto`, default). Use `GNSS_SIM_DEPLOY=on` to force deploy, or `off` to use baremetal GNSS.
 ```
 ./run-tests.sh --kind <serial|parallel|both> --mode <modes> [--loglevel <level>] [--linuxptp-daemon-image <url>]
 ```
