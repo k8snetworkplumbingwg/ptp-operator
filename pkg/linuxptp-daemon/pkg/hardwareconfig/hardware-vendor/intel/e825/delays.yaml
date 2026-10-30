@@ -1,0 +1,121 @@
+# Delay Compensation Model for Intel E825 (GNR-D)
+# This file defines the three-layer model: Topology (components), Physics (connections), and Intent (routes)
+#
+# NOTE: Delay values (delayPs) are specified with the correct sign for the target DPLL hardware.
+# Different DPLL implementations may treat phase adjustment direction differently.
+# The system sums these values directly without negation and passes them to the DPLL.
+
+# 1. Inventory - static phase transfer nodes
+components:
+  - id: "NAC0 PTP phase output"
+    description: "Network adapter card PTP phase output"
+
+  - id: "NAC0 PTP phase input 1kHz"
+    description: "Network adapter card PTP phase input, Frequency - 1kHz"
+
+  - id: "NAC0 PTP phase input 1Hz"
+    description: "Network adapter card PTP phase input, Frequency - 1Hz"
+
+  - id: "DPLL 1kHz input"
+    description: "DPLL phase reference input from NAC0, REF0P, Frequency - 1kHz"
+    compensationPoint:
+      name: "GNR-D_SDP2"
+      type: dpll
+
+  - id: "DPLL 1Hz phase output"
+    description: "DPLL phase signal output to NAC0, Frequency - 1Hz, OUT8N, pin #21 on Perla-2"
+    compensationPoint:
+      name: "GNR_D_SDP1"
+      type: dpll
+  
+  - id: "DPLL 1kHz phase output"
+    description: "DPLL phase signal output to NAC0, Frequency - 1kHz, OUT8P, pin #20 on Perla-2"
+    compensationPoint:
+      name: "GNR_D_SDP3"
+      type: dpll
+
+  - id: "DPLL ESync output 1"
+    description: "DPLL ESync output pin to CF1, OUT2, pin #14 on Perla-2"
+    compensationPoint:
+      name: "OCP1_CLK"
+      type: dpll
+
+  - id: "DPLL ESync output 2"
+    description: "DPLL ESync output pin to CF2, OUT5, pin #15 on Perla-2"
+    compensationPoint:
+      name: "OCP2_CLK"
+      type: dpll
+
+  - id: "CF1 ESync input"
+    description: "CF1 ESync input from DPLL"
+
+  - id: "CF2 ESync input"
+    description: "CF2 ESync input from DPLL"
+  
+# 2. Topology: Physical connections (graph edges)
+# Each connection defines a delay segment in the signal path
+connections:
+  # NAC to Timing Module routing/wiring
+  - from: "NAC0 PTP phase output"
+    to: "DPLL 1kHz input"
+    description: "Routing delay from NAC to DPLL 1kHz input"
+    delayPs: 750
+
+  # DPLL to NAC (during holdover)
+  - from: "DPLL 1kHz phase output"
+    to: "NAC0 PTP phase input 1kHz"
+    description: "Routing delay from DPLL 1kHz phase output to NAC0 PTP phase input"
+    delayPs: 7500
+  - from: "DPLL 1Hz phase output"
+    to: "NAC0 PTP phase input 1Hz"
+    description: "Routing delay from DPLL 1Hz phase output to NAC0 PTP phase input"
+    delayPs: 7500
+
+
+  - from: "DPLL ESync output 1"
+    to: "CF1 ESync input"
+    description: "Internal routing delay from DPLL output 1 to CF1 input"
+    delayPs: 37500
+  - from: "DPLL ESync output 2"
+    to: "CF2 ESync input"
+    description: "Internal routing delay from DPLL output 2 to CF2 input"
+    delayPs: 37500
+  
+
+
+# 3. Logic: Where do we compensate for the delay
+# Routes define compensation strategies for specific signal paths
+# One route to many segments, one route to one compensator
+routes:
+  - name: "NAC PTP to DPLL"
+    description: "Compensate for delays from NAC PTP output to DPLL input"
+    sequence:
+      - "NAC0 PTP phase output"
+      - "DPLL 1kHz input"
+    compensator: "DPLL 1kHz input"
+  - name: "DPLL to NAC 1kHz"
+    description: "Compensate for delays from DPLL to NAC"
+    sequence:
+      - "DPLL 1kHz phase output"
+      - "NAC0 PTP phase input 1kHz"
+    compensator: "DPLL 1kHz phase output"
+  - name: "DPLL to NAC 1Hz"
+    description: "Compensate for delays from DPLL to NAC"
+    sequence:
+      - "DPLL 1Hz phase output"
+      - "NAC0 PTP phase input 1Hz"
+    compensator: "DPLL 1Hz phase output"
+  
+  - name: "DPLL to CF1"
+    description: "Compensate for delays from DPLL output to Carter Flats input"
+    sequence:
+      - "DPLL ESync output 1"
+      - "CF1 ESync input"
+    compensator: "DPLL ESync output 1"
+
+  - name: "DPLL to CF2"
+    description: "Compensate for delays from DPLL output to Carter Flats input"
+    sequence:
+      - "DPLL ESync output 2"
+      - "CF2 ESync input"
+    compensator: "DPLL ESync output 2"

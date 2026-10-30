@@ -1,0 +1,86 @@
+version: "2"
+run:
+  concurrency: 8
+  issues-exit-code: 1
+  tests: true
+issues:
+  new-from-rev: 40b7193bca87852ab9db658680d70bf2a96d10f6
+linters:
+  settings:
+    govet:
+      # Enable all analyzers.
+      # Default: false
+      enable-all: true
+      # Disable analyzers by name.
+      # Run `go tool vet help` to see all analyzers.
+      # Default: []
+      disable:
+        - fieldalignment
+      # Settings per analyzer.
+      settings:
+        shadow:
+          # Whether to be strict about shadowing; can be noisy.
+          # Default: false
+          strict: true
+    gocyclo:
+      # minimal code complexity to report, 30 by default (but we recommend 10-20)
+      min-complexity: 45
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+    decorder:
+      # Required order of `type`, `const`, `var` and `func` declarations inside a file.
+      # Default: types before constants before variables before functions.
+      dec-order:
+        - type
+        - const
+        - var
+        - func
+  exclusions:
+    generated: lax
+    rules:
+      - path: (.+)\.go$
+        text: "ST1000: at least one file in a package should have a package comment"
+      - path: (.+)\.go$
+        text: "package-comments: should have a package comment"
+      - path: (.+)_test.go$
+        linters:
+          - goconst
+      - path: pkg/daemon/ptp_process.go
+        text: "unexported-return"
+      - path: pkg/daemon/chronyd.go
+        text: "unexported-return"
+
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
+  default: none
+  enable:
+    - bodyclose
+    - decorder
+    - dogsled
+    - goconst
+    - gocyclo
+    #- gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
