@@ -1,14 +1,20 @@
-name: "Coverage Quality Gate"
+name: "linuxptp-daemon: Coverage"
 on:
   push:
-    branches: [ main ]
+    branches: [monorepo]
   pull_request:
-    branches: [ main ]
+    branches: [monorepo]
+
+env:
+  GOFLAGS: -mod=mod
 
 jobs:
   coverage:
     if: "!contains(github.event.pull_request.labels.*.name, 'skip-coverage')"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - uses: actions/checkout@v5
         with:

@@ -1,11 +1,17 @@
-name: 'Close stale issues and PRs'
+name: "linuxptp-daemon: Close Stale Issues and PRs"
 on:
   schedule:
     - cron: '30 1 * * *'
 
+env:
+  GOFLAGS: -mod=mod
+
 jobs:
   stale:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - uses: actions/stale@v9
         with:

@@ -1,20 +1,25 @@
 # This workflow will build a golang project
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
 
-name: Go mod tidy and vendor
+name: "linuxptp-daemon: Go mod tidy and vendor"
 
 on:
   push:
     branches:
-      - "main"
+      - "monorepo"
   pull_request:
     branches:
-      - "main"
+      - "monorepo"
+
+env:
+  GOFLAGS: -mod=mod
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - uses: actions/checkout@v4
 
@@ -24,10 +29,10 @@ jobs:
           go-version-file: go.mod
 
       - name: Tidy
-        run: go mod tidy
+        run: GOWORK=off go mod tidy
 
       - name: Vendor
-        run: go mod vendor
+        run: GOWORK=off go mod vendor
 
       - name: Check for diff
         run: |

@@ -1,10 +1,11 @@
-name: "Push linuxptp daemon on merge to main"
+name: "linuxptp-daemon: Image Push"
 
 permissions:
   contents: read
   packages: write  # This gives GitHub Actions permission to push to GHCR
 
 env:
+  GOFLAGS: -mod=mod
   IMAGE_NAME: ghcr.io/${{ github.repository }}
   BUILD_PLATFORMS: linux/amd64
   image-push-owner: 'k8snetworkplumbingwg'
@@ -12,11 +13,14 @@ env:
 on:
   push:
     branches:
-      - main
+      - monorepo
 
 jobs:
   build-and-push-image-linuxptp-daemon:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - name: Check out the repo
         uses: actions/checkout@v3

@@ -2,7 +2,6 @@
 
 set -eu
 
-REPO=github.com/k8snetworkplumbingwg/ptp-operator
 WHAT=${WHAT:-manager}
 GOFLAGS=${GOFLAGS:-}
 GLDFLAGS=${GLDFLAGS:-}
@@ -13,6 +12,9 @@ GOARCH=$(go env GOARCH)
 
 # Go to the root of the repo (skip if .git is absent, e.g. remote builder)
 cdup="$(git rev-parse --show-cdup 2>/dev/null)" && test -n "$cdup" && cd "$cdup"
+
+# Get the module path from go.mod dynamically
+REPO=$(go list -m)
 
 if [ -z ${VERSION_OVERRIDE+a} ]; then
 	if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -29,5 +31,6 @@ export BIN_PATH=build/_output/bin/
 export BIN_NAME=ptp-operator
 mkdir -p ${BIN_PATH}
 
-echo "Building ${REPO}/cmd/${WHAT} (${VERSION_OVERRIDE})"
-CGO_ENABLED=${CGO_ENABLED} CC="gcc -fuse-ld=gold" GOOS=${GOOS} GOARCH=${GOARCH} go build ${GOFLAGS} -ldflags "${GLDFLAGS} -s -w" -o ${BIN_PATH}/${BIN_NAME} ${REPO}
+echo "Building ${REPO} (${VERSION_OVERRIDE})"
+# Build from current directory - main.go is at root level
+CGO_ENABLED=${CGO_ENABLED} CC="gcc -fuse-ld=gold" GOOS=${GOOS} GOARCH=${GOARCH} go build ${GOFLAGS} -ldflags "${GLDFLAGS} -s -w" -o ${BIN_PATH}/${BIN_NAME} .
