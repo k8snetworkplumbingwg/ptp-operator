@@ -1,6 +1,6 @@
 # Community meetings
 ## Schedule
-TIME: 09:00 MT/16:00 GMT every wednesday
+TIME: 08:00 MT/15:00 GMT every wednesday
 ## Link
 https://meet.jit.si/k8snetworkplumbingwg-ptp
 ## Agenda
