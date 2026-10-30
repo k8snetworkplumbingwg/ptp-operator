@@ -1,0 +1,211 @@
+package daemon
+
+import (
+	"math"
+	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/alias"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/config"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/event"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/parser"
+	"github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/parser/constants"
+)
+
+// TestReplayDualUpstreamLog replays the actual ptp4l log sequence from OCPBUGS-111881
+// and verifies openshift_ptp_interface_role metrics after each phase.
+//
+// Sequence observed on the node (log-dual-upstream.txt):
+//
+//	Initial boot:
+//	  port 1 (eno8303): INITIALIZING → LISTENING → UNCALIBRATED → SLAVE
+//	  port 2 (eno8403): INITIALIZING → LISTENING → PRE_MASTER → MASTER
+//
+//	Switchover (eno8303 link down):
+//	  port 1 (eno8303): SLAVE → FAULTY
+//	  port 2 (eno8403): MASTER → UNCALIBRATED → [SLAVE if eno8303 doesn't recover fast enough]
+//
+//	Recovery (eno8303 link up):
+//	  port 1 (eno8303): FAULTY → LISTENING → UNCALIBRATED → SLAVE
+//	  port 2 (eno8403): SLAVE → PRE_MASTER → MASTER
+func TestReplayDualUpstreamLog(t *testing.T) {
+	InitializeOffsetMaps()
+
+	process := &ptpProcess{
+		ExecProcess: ExecProcess{
+			name:       ptp4lProcessName,
+			configName: "ptp4l.1.config",
+			messageTag: "[ptp4l.1.config]",
+			eventCh:    make(chan event.Event, 10),
+		},
+		ifaces: config.IFaces{
+			{Name: "eno8303"},
+			{Name: "eno8403"},
+		},
+		logParser: parser.NewPTP4LExtractor(),
+	}
+
+	// --- Phase 1: Initial boot ---
+	// ptp4l elects eno8303 as SLAVE, eno8403 becomes MASTER
+	bootLines := []string{
+		"ptp4l[82484.979]: [ptp4l.1.config:5] port 1 (eno8303): INITIALIZING to LISTENING on INIT_COMPLETE",
+		"ptp4l[82484.999]: [ptp4l.1.config:5] port 2 (eno8403): INITIALIZING to LISTENING on INIT_COMPLETE",
+		"ptp4l[82485.340]: [ptp4l.1.config:5] port 1 (eno8303): LISTENING to UNCALIBRATED on RS_SLAVE",
+		"ptp4l[82485.340]: [ptp4l.1.config:5] port 2 (eno8403): LISTENING to PRE_MASTER on RS_MASTER",
+		"ptp4l[82485.590]: [ptp4l.1.config:5] port 2 (eno8403): PRE_MASTER to MASTER on QUALIFICATION_TIMEOUT_EXPIRES",
+		"ptp4l[82533.101]: [ptp4l.1.config:5] port 1 (eno8303): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+	}
+	for _, line := range bootLines {
+		processWithParser(process, line)
+	}
+	assert.Equal(t, float64(SLAVE), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8303")), "boot: eno8303 should be SLAVE")
+	assert.Equal(t, float64(MASTER), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8403")), "boot: eno8403 should be MASTER")
+
+	// --- Phase 2: Switchover (eno8303 link down) ---
+	// eno8403 transitions MASTER → UNCALIBRATED (BMCA re-eval, not FAULTY) → SLAVE
+	switchoverLines := []string{
+		"ptp4l[82736.439]: [ptp4l.1.config:5] port 1 (eno8303): SLAVE to FAULTY on FAULT_DETECTED (FT_UNSPECIFIED)",
+		"ptp4l[82736.000]: [ptp4l.1.config:5] port 2 (eno8403): MASTER to UNCALIBRATED on RS_SLAVE",
+		"ptp4l[82737.000]: [ptp4l.1.config:5] port 2 (eno8403): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+	}
+	for _, line := range switchoverLines {
+		processWithParser(process, line)
+	}
+	assert.Equal(t, float64(FAULTY), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8303")), "switchover: eno8303 should be FAULTY")
+	assert.Equal(t, float64(SLAVE), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8403")), "switchover: eno8403 should be SLAVE")
+
+	// --- Phase 3: Recovery (eno8303 link up) ---
+	// ptp4l logs all transitions; eno8403 goes SLAVE → PRE_MASTER → MASTER as eno8303 takes over
+	recoveryLines := []string{
+		"ptp4l[82736.439]: [ptp4l.1.config:5] port 1 (eno8303): FAULTY to LISTENING on INIT_COMPLETE",
+		"ptp4l[82736.774]: [ptp4l.1.config:5] port 1 (eno8303): LISTENING to UNCALIBRATED on RS_SLAVE",
+		"ptp4l[82736.774]: [ptp4l.1.config:5] port 2 (eno8403): SLAVE to PRE_MASTER on RS_MASTER",
+		"ptp4l[82737.024]: [ptp4l.1.config:5] port 2 (eno8403): PRE_MASTER to MASTER on QUALIFICATION_TIMEOUT_EXPIRES",
+		"ptp4l[82752.903]: [ptp4l.1.config:5] port 1 (eno8303): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+	}
+	for _, line := range recoveryLines {
+		processWithParser(process, line)
+	}
+	assert.Equal(t, float64(SLAVE), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8303")), "recovery: eno8303 should be SLAVE")
+	assert.Equal(t, float64(MASTER), testutil.ToFloat64(InterfaceRole.WithLabelValues(ptp4lProcessName, NodeName, "eno8403")), "recovery: eno8403 should be MASTER")
+}
+
+// TestSourceLostOnListening covers a dual-follower OC whose grandmaster is
+// removed while the links stay up. The active slave port drops SLAVE→LISTENING
+// (announce timeout, not FAULTY), which must be reported to the BC/OC clock as a
+// source-lost fact so it can enter holdover. A backup follower port sitting in
+// LISTENING during normal operation must NOT produce that fact.
+func TestSourceLostOnListening(t *testing.T) {
+	InitializeOffsetMaps()
+
+	process := &ptpProcess{
+		ExecProcess: ExecProcess{
+			name:       ptp4lProcessName,
+			configName: "ptp4l.0.config",
+			messageTag: "[ptp4l.0.config]",
+			eventCh:    make(chan event.Event, 10),
+		},
+		clockType: event.OC,
+		ifaces: config.IFaces{
+			{Name: "ens3f0"},
+			{Name: "ens3f1"},
+		},
+		logParser: parser.NewPTP4LExtractor(),
+	}
+
+	// ens3f0 becomes the active slave; ens3f1 stays a passive backup in LISTENING.
+	// The backup's startup LISTENING transition exercises the guard: a port in
+	// LISTENING that is not the active slave must not emit a source-lost fact.
+	setupLines := []string{
+		"ptp4l[100.000]: [ptp4l.0.config:5] port 1 (ens3f0): INITIALIZING to LISTENING on INIT_COMPLETE",
+		"ptp4l[100.010]: [ptp4l.0.config:5] port 2 (ens3f1): INITIALIZING to LISTENING on INIT_COMPLETE",
+		"ptp4l[100.500]: [ptp4l.0.config:5] port 1 (ens3f0): LISTENING to UNCALIBRATED on RS_SLAVE",
+		"ptp4l[101.000]: [ptp4l.0.config:5] port 1 (ens3f0): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+	}
+	for _, line := range setupLines {
+		processWithParser(process, line)
+	}
+	assert.Empty(t, drainEvents(process.eventCh), "a non-active port in LISTENING must not emit source-lost")
+
+	// Grandmaster removed: the active slave ens3f0 falls back to LISTENING.
+	processWithParser(process, "ptp4l[103.000]: [ptp4l.0.config:5] port 1 (ens3f0): SLAVE to LISTENING on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES")
+	evs := drainEvents(process.eventCh)
+	if assert.Len(t, evs, 1, "active slave dropping to LISTENING must emit one source-lost event") {
+		ptp, ok := evs[0].Data.(*event.OffsetData)
+		assert.True(t, ok && ptp.SourceLost, "emitted event must carry SourceLost=true")
+		assert.Equal(t, "ens3f0", evs[0].IFace)
+	}
+}
+
+func TestTS2PHCOffsetEventConversion(t *testing.T) {
+	for _, source := range []event.EventSource{event.GNSS, event.PPS} {
+		t.Run(string(source), func(t *testing.T) {
+			for _, tt := range []struct {
+				name   string
+				offset float64
+			}{
+				{name: "unavailable", offset: math.NaN()},
+				{name: "zero", offset: 0},
+				{name: "positive", offset: 123},
+				{name: "negative", offset: -123},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					p := newTS2PHCPollTestProcess()
+					p.ifaces[0].Source = source
+					processParsedMetrics(p, &parser.Metrics{
+						From: constants.TS2PHC, Iface: "ens0", Source: constants.Master,
+						ClockState: constants.ClockStateFreeRun,
+						Offset:     tt.offset, MaxOffset: tt.offset,
+					})
+					events := drainEvents(p.eventCh)
+					require.Len(t, events, 1)
+					ev := events[0]
+					assert.Equal(t, event.TS2PHC, ev.Source)
+					assert.Equal(t, "ens0", ev.IFace)
+					assert.Equal(t, p.configName, ev.CfgName)
+					if math.IsNaN(tt.offset) {
+						require.IsType(t, &event.StateData{}, ev.Data)
+						assert.Equal(t, &event.StateData{State: event.PTP_FREERUN}, ev.Data)
+						// The state-only event remains usable by clock aggregation
+						// without inserting a fabricated offset into its window.
+						d := &event.Data{ProcessName: event.TS2PHC}
+						d.AddEvent(ev)
+						d.UpdateState()
+						assert.Equal(t, event.PTP_FREERUN, d.State)
+						require.Len(t, d.Details, 1)
+						assert.False(t, d.Details[0].HasOffset)
+						assert.True(t, math.IsNaN(testutil.ToFloat64(Offset.WithLabelValues(
+							constants.Master, ts2phcProcessName, NodeName, alias.GetAlias("ens0")))))
+					} else {
+						require.IsType(t, &event.OffsetData{}, ev.Data)
+						od := ev.Data.(*event.OffsetData)
+						assert.Equal(t, event.PTP_FREERUN, od.State)
+						assert.Equal(t, int64(tt.offset), od.Offset)
+						if source == event.GNSS {
+							require.NotNil(t, od.NMEALocked)
+							assert.True(t, *od.NMEALocked)
+						} else {
+							assert.Nil(t, od.NMEALocked)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// drainEvents non-blockingly collects all events currently queued on ch.
+func drainEvents(ch chan event.Event) []event.Event {
+	var evs []event.Event
+	for {
+		select {
+		case ev := <-ch:
+			evs = append(evs, ev)
+		default:
+			return evs
+		}
+	}
+}
