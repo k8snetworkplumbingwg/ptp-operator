@@ -9,19 +9,19 @@
 # the `language` matrix defined below to confirm you have the correct set of
 # supported CodeQL languages.
 #
-name: "CodeQL Advanced"
+name: "linuxptp-daemon: CodeQL Advanced"
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [monorepo]
     paths-ignore:
-      - '.github/**'
+      - 'pkg/linuxptp-daemon/.github/**'
       - 'docs/**'
       - '**.md'
   pull_request:
-    branches: [ "main" ]
+    branches: [monorepo]
     paths-ignore:
-      - '.github/**'
+      - 'pkg/linuxptp-daemon/.github/**'
       - 'docs/**'
       - '**.md'
   schedule:
@@ -36,6 +36,9 @@ jobs:
     #   - https://gh.io/using-larger-runners (GitHub.com only)
     # Consider using larger runners or machines with greater resources for possible analysis time improvements.
     runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     permissions:
       # required for all workflows
       security-events: write

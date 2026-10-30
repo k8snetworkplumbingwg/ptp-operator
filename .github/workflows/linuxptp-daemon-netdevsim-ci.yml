@@ -25,6 +25,9 @@ jobs:
   # ------------------------------------------------------------------
   dkms-test:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - name: Runner info
         run: |
@@ -146,6 +149,9 @@ jobs:
   ptp-images:
     needs: dkms-test
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     timeout-minutes: 45
     steps:
       - name: Runner info
@@ -219,6 +225,9 @@ jobs:
   ptp-test:
     needs: ptp-images
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     timeout-minutes: 90
     strategy:
       fail-fast: false
