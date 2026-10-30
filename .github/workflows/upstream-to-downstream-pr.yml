@@ -1,0 +1,150 @@
+name: Upstream merge to downstream main PR
+
+# After an upstream monorepo PR merges to the "monorepo" branch, apply those
+# changes onto downstream main as one GitHub-signed snapshot commit and open a
+# simple PR from the bot fork.
+# No Jira automation here. A human retitles the downstream PR with a Jira key;
+# standalone-pr-sync then fans out up to three standalone PRs (two when CEP
+# is folded into linuxptp-daemon).
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - monorepo
+  workflow_dispatch:
+    inputs:
+      upstream_pr:
+        description: 'Merged upstream PR number (topic branch sync/upstream-main-pr-N)'
+        required: false
+        default: ''
+      commit_sha:
+        description: 'Single commit SHA to apply (used when range is empty)'
+        required: false
+        default: ''
+      range:
+        description: 'Commit range FROM..TO to apply (overrides commit_sha)'
+        required: false
+        default: ''
+      pr_title:
+        description: 'Downstream PR title (default: tip commit subject)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Format the patch and print the PR without pushing'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  open-downstream-pr:
+    name: Open downstream main PR
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Authenticate push-forks App
+        id: push-forks
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PUSH_FORKS_APP_ID }}
+          private-key: ${{ secrets.PUSH_FORKS_APP_PRIVATE_KEY }}
+          owner: ${{ vars.SYNC_BOT_FORK_OWNER || 'ptp-monorepo-sync-bot' }}
+
+      - name: Authenticate push-prs App
+        id: push-prs
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PUSH_PRS_APP_ID }}
+          private-key: ${{ secrets.PUSH_PRS_APP_PRIVATE_KEY }}
+          owner: ${{ vars.PR_TARGET_OWNER || 'openshift' }}
+
+      - name: Checkout upstream monorepo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch merged PR commits
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
+      - name: Determine run parameters
+        id: params
+        run: |
+          set -euo pipefail
+
+          FORK_OWNER="${{ vars.SYNC_BOT_FORK_OWNER || secrets.SYNC_BOT_FORK_OWNER || 'ptp-monorepo-sync-bot' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            UPSTREAM_PR="${{ github.event.pull_request.number }}"
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            COMMIT_SHA=""
+            echo "Mode: merged pull_request #${UPSTREAM_PR} (${RANGE})"
+          else
+            UPSTREAM_PR="${{ github.event.inputs.upstream_pr }}"
+            PR_TITLE="${{ github.event.inputs.pr_title }}"
+            RANGE="${{ github.event.inputs.range }}"
+            COMMIT_SHA="${{ github.event.inputs.commit_sha }}"
+            echo "Mode: workflow_dispatch (pr=${UPSTREAM_PR} range=${RANGE} commit=${COMMIT_SHA})"
+          fi
+
+          {
+            echo "fork_owner=${FORK_OWNER}"
+            echo "dry_run=${DRY_RUN}"
+            echo "upstream_pr=${UPSTREAM_PR}"
+            echo "range=${RANGE}"
+            echo "commit=${COMMIT_SHA}"
+            echo "pr_title<<EOF"
+            echo "${PR_TITLE}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config --global user.name "ptp-monorepo-sync-bot[bot]"
+          git config --global user.email "ptp-monorepo-sync-bot[bot]@users.noreply.github.com"
+
+      - name: Open downstream main PR
+        env:
+          GH_TOKEN: ${{ steps.push-prs.outputs.token }}
+          PUSH_FORKS_TOKEN: ${{ steps.push-forks.outputs.token }}
+          DOWNSTREAM_MONOREPO_REPO: ${{ vars.DOWNSTREAM_MONOREPO_REPO || 'openshift/ptp-network-operator' }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            "--fork-owner" "${{ steps.params.outputs.fork_owner }}"
+            "--upstream-repo" "${{ github.repository }}"
+            "--base" "main"
+          )
+
+          if [ -n "${{ steps.params.outputs.range }}" ]; then
+            ARGS+=("--range" "${{ steps.params.outputs.range }}")
+          else
+            ARGS+=("--commit" "${{ steps.params.outputs.commit }}")
+          fi
+
+          if [ -n "${{ steps.params.outputs.upstream_pr }}" ]; then
+            ARGS+=("--upstream-pr" "${{ steps.params.outputs.upstream_pr }}")
+          fi
+
+          if [ -n "${{ steps.params.outputs.pr_title }}" ]; then
+            ARGS+=("--pr-title" "${{ steps.params.outputs.pr_title }}")
+          fi
+
+          if [ "${{ steps.params.outputs.dry_run }}" = "true" ]; then
+            ARGS+=("--dry-run")
+          fi
+
+          ./scripts/create-downstream-main-pr.sh "${ARGS[@]}"

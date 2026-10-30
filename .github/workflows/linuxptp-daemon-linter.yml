@@ -1,12 +1,12 @@
-name: golangci-lint
+name: "linuxptp-daemon: golangci-lint"
 
 on:
   push:
     branches:
-      - main
+      - monorepo
   pull_request:
     branches:
-      - main
+      - monorepo
 
 permissions:
   contents: read
@@ -17,6 +17,9 @@ jobs:
     name: Run GolangCI-Lint
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -31,4 +34,5 @@ jobs:
       - name: lint test
         uses: golangci/golangci-lint-action@v9
         with:
+          working-directory: pkg/linuxptp-daemon
           version: v2.12
