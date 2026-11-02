@@ -18,7 +18,6 @@ mutation CreateSignedCommit($input: CreateCommitOnBranchInput!) {
       signature {
         isValid
         wasSignedByGitHub
-        reason
       }
     }
   }
