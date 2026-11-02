@@ -335,7 +335,8 @@ CREATE_OUT="$(gh pr create \
     --base "${BASE_BRANCH}" \
     --head "${FORK_OWNER}:${TOPIC_BRANCH}" \
     --title "${PR_TITLE}" \
-    --body "${PR_BODY}" 2>&1)"
+    --body "${PR_BODY}" \
+    --no-maintainer-edit 2>&1)"
 CREATE_RC=$?
 set -e
 if [ "$CREATE_RC" -eq 0 ]; then
