@@ -1,0 +1,15 @@
+apiVersion: ptp.openshift.io/v2alpha1
+kind: HardwareConfig
+metadata:
+  name: t-gm-minimal
+spec:
+  profile:
+    name: GNR-D-T-GM-MINIMAL
+    clockType: T-GM
+    clockChain:
+      structure:
+      - name: leader
+        hardwareSpecificDefinitions: intel/e825
+        dpll:
+          networkInterface: ens7f0
+  relatedPtpProfileName: 01-tgm

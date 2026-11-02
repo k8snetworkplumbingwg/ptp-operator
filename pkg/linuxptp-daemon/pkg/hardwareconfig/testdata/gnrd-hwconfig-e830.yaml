@@ -1,0 +1,27 @@
+apiVersion: ptp.openshift.io/v2alpha1
+kind: HardwareConfig
+metadata:
+  name: t-bc-e830
+spec:
+  profile:
+    name: GNR-D-T-BC-E830
+    clockType: T-BC
+    clockChain:
+      structure:
+      - name: leader
+        hardwareSpecificDefinitions: dell/XR8720t
+        dpll:
+          holdoverParameters:
+            maxInSpecOffset: 20
+            localMaxHoldoverOffset: 30
+            localHoldoverTimeout: 288
+      - name: cf1
+        hardwareSpecificDefinitions: intel/e830
+        dpll:
+          networkInterface: enp108s0f0
+      - name: cf2
+        hardwareSpecificDefinitions: intel/e830
+        dpll:
+          networkInterface: enp109s0f0
+
+  relatedPtpProfileName: 01-tbc-tr

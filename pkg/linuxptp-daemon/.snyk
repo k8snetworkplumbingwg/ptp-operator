@@ -1,0 +1,12 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.0
+exclude:
+  global:
+    - '**/*_test.go'
+    - bin
+    - hack
+    - pkg/daemon/testdata/**
+    - vendor/**
+# ignores vulnerabilities until expiry date; change duration by modifying expiry date
+ignore:
+patch: {}

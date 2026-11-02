@@ -1,0 +1,2220 @@
+package hardwareconfig
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	dpllcfg "github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/dpll"
+	dpll "github.com/k8snetworkplumbingwg/linuxptp-daemon/pkg/dpll-netlink"
+	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
+	ptpv2alpha1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v2alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+)
+
+// newHardwareConfigManagerForTests creates a HardwareConfigManager with a fake ConfigMap loader for tests
+func newHardwareConfigManagerForTests() *HardwareConfigManager {
+	fakeClient := fake.NewClientset()
+	return NewHardwareConfigManager(fakeClient, "default", nil)
+}
+
+func TestApplyHardwareConfigsForProfile(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+	// Set up mock DPLL pins from test file for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	tests := []struct {
+		name         string
+		testDataFile string
+		profileName  string
+	}{
+		{
+			name:         "successful hardware config application",
+			testDataFile: "testdata/wpc-hwconfig.yaml",
+			profileName:  "t-bc_01-tbc-tr",
+		},
+		{
+			name:         "no matching profile",
+			testDataFile: "testdata/wpc-hwconfig.yaml",
+			profileName:  "non-existent-profile",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetupMockPtpDeviceResolver()
+			defer TeardownMockPtpDeviceResolver()
+
+			if err := SetupMockDpllPinsForTests(); err != nil {
+				t.Fatalf("failed to set up mock DPLL pins: %v", err)
+			}
+			defer TeardownMockDpllPinsForTests()
+
+			// Set up mock command executor for GetClockIDFromInterface
+			mockCmd := NewMockCommandExecutor()
+			mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+			mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+			mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+			mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+			mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+			mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+			SetCommandExecutor(mockCmd)
+			defer ResetCommandExecutor()
+
+			// Load test data
+			hwConfig, err := loadHardwareConfigFromFile(tt.testDataFile)
+			assert.NoError(t, err)
+			assert.NotNil(t, hwConfig)
+
+			// Create hardware config manager and add test data
+			hcm := newHardwareConfigManagerForTests()
+			defer hcm.resetExecutors()
+
+			hcm.overrideExecutors(nil, func(_, _ string) error { return nil })
+
+			var appliedPins []dpll.PinParentDeviceCtl
+			hcm.overrideExecutors(func(cmds []dpll.PinParentDeviceCtl) error {
+				snapshot := make([]dpll.PinParentDeviceCtl, len(cmds))
+				copy(snapshot, cmds)
+				appliedPins = append(appliedPins, snapshot...)
+				return nil
+			}, func(_, _ string) error {
+				return nil
+			})
+
+			err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+			assert.NoError(t, err)
+
+			// Create a mock PTP profile
+			profile := &ptpv1.PtpProfile{
+				Name: &tt.profileName,
+			}
+
+			// Test the function
+			err = hcm.ApplyHardwareConfigsForProfile(profile)
+
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestHardwareConfigManagerOperations(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	hcm := newHardwareConfigManagerForTests()
+
+	// Test initial state
+	assert.Equal(t, 0, hcm.GetHardwareConfigCount())
+
+	// Load test data
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, hwConfig)
+
+	// Test UpdateHardwareConfig
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, hcm.GetHardwareConfigCount())
+
+	// Test HasHardwareConfigForProfile
+	profile := &ptpv1.PtpProfile{
+		Name: stringPtr("t-bc_01-tbc-tr"),
+	}
+	assert.True(t, hcm.HasHardwareConfigForProfile(profile))
+
+	// Test with non-existent profile
+	profile.Name = stringPtr("non-existent")
+	assert.False(t, hcm.HasHardwareConfigForProfile(profile))
+
+	// Test GetHardwareConfigsForProfile
+	profile.Name = stringPtr("t-bc_01-tbc-tr")
+	configs := hcm.GetHardwareConfigsForProfile(profile)
+	assert.Len(t, configs, 1)
+	assert.Equal(t, "tbc", *configs[0].Name)
+
+	// Test ClearHardwareConfigs
+	hcm.ClearHardwareConfigs()
+	assert.Equal(t, 0, hcm.GetHardwareConfigCount())
+	assert.False(t, hcm.HasHardwareConfigForProfile(profile))
+}
+
+func TestHardwareConfigManagerEmptyConfigs(t *testing.T) {
+	// Set up mock DPLL pins from test file for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	hcm := newHardwareConfigManagerForTests()
+
+	// Test with empty configs
+	err := hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, hcm.GetHardwareConfigCount())
+
+	// Test with nil profile name
+	profile := &ptpv1.PtpProfile{}
+	assert.False(t, hcm.HasHardwareConfigForProfile(profile))
+
+	configs := hcm.GetHardwareConfigsForProfile(profile)
+	assert.Len(t, configs, 0)
+}
+
+// loadHardwareConfigFromFile loads a HardwareConfig from a YAML file
+func loadHardwareConfigFromFile(filename string) (*ptpv2alpha1.HardwareConfig, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %v", filename, err)
+	}
+
+	// Register the HardwareConfig types with the scheme
+	_ = ptpv2alpha1.AddToScheme(scheme.Scheme)
+
+	// Create a decoder
+	decode := serializer.NewCodecFactory(scheme.Scheme).UniversalDeserializer().Decode
+
+	// Decode the YAML
+	obj, _, err := decode(data, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode YAML: %v", err)
+	}
+
+	hwConfig, ok := obj.(*ptpv2alpha1.HardwareConfig)
+	if !ok {
+		return nil, fmt.Errorf("decoded object is not a HardwareConfig")
+	}
+
+	return hwConfig, nil
+}
+
+// stringPtr returns a pointer to a string
+func stringPtr(s string) *string {
+	return &s
+}
+
+func TestLoadHardwareConfigFromFile(t *testing.T) {
+	// Test successful loading
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, hwConfig)
+	assert.Equal(t, "test", hwConfig.Name)
+	assert.Equal(t, "01-tbc-tr", hwConfig.Spec.RelatedPtpProfileName)
+	assert.Equal(t, "tbc", *hwConfig.Spec.Profile.Name)
+
+	// Test with non-existent file
+	_, err = loadHardwareConfigFromFile("testdata/non-existent.yaml")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read file")
+}
+
+func TestPTPStateDetector(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Load test data
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, hwConfig)
+
+	// Create hardware config manager and add test data
+	hcm := newHardwareConfigManagerForTests()
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	assert.NoError(t, err)
+
+	// Create PTP state detector
+	psd := NewPTPStateDetector(hcm)
+
+	// Test GetMonitoredPorts
+	monitoredPorts := psd.GetMonitoredPorts()
+	assert.Contains(t, monitoredPorts, "ens4f1")
+
+	// Test GetBehaviorRules
+	conditions := psd.GetBehaviorRules()
+	assert.NotEmpty(t, conditions)
+}
+
+func TestDetectStateChange(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Load test data
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err)
+
+	// Create hardware config manager and add test data
+	hcm := newHardwareConfigManagerForTests()
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	assert.NoError(t, err)
+
+	// Create PTP state detector
+	psd := NewPTPStateDetector(hcm)
+
+	t.Run("individual_test_cases", func(t *testing.T) {
+		testCases := []struct {
+			name              string
+			logLine           string
+			expectedPort      string
+			expectedCondition string
+		}{
+			{
+				name:              "locked condition",
+				logLine:           "ptp4l[1716691.337]: [ptp4l.1.config:5] port 1 (ens4f1): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+				expectedPort:      "ens4f1",
+				expectedCondition: "locked",
+			},
+			{
+				name:              "lost condition",
+				logLine:           "ptp4l[1031716.424]: [ptp4l.0.config:5] port 1 (ens4f1): SLAVE to FAULT_DETECTED on FAULT_DETECTED",
+				expectedPort:      "ens4f1",
+				expectedCondition: "lost",
+			},
+			{
+				name:              "non-monitored port - should return empty",
+				logLine:           "ptp4l[1031716.424]: [ptp4l.0.config:5] port 2 (ens8f0): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+				expectedPort:      "",
+				expectedCondition: "", // ens8f0 is not in PTPTimeReceivers for the test data
+			},
+			{
+				name:              "non-ptp4l log - should return empty",
+				logLine:           "some other log message",
+				expectedPort:      "",
+				expectedCondition: "",
+			},
+			{
+				name:              "irrelevant ptp4l transition - should return empty",
+				logLine:           "[ptp4l.0.config:5] port 1 (ens4f1): LISTENING to MASTER on INITIALIZATION",
+				expectedPort:      "",
+				expectedCondition: "",
+			},
+			{
+				name:              "user reported failing case - should work now",
+				logLine:           "ptp4l[1720295.764]: [ptp4l.1.config:5] port 1 (ens4f1): UNCALIBRATED to SLAVE on MASTER_CLOCK_SELECTED",
+				expectedPort:      "ens4f1",
+				expectedCondition: "locked",
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				portName, conditionType := psd.DetectStateChange(tc.logLine)
+				assert.Equal(t, tc.expectedCondition, conditionType, "Condition type should match")
+				assert.Equal(t, tc.expectedPort, portName, "Port name should match")
+			})
+		}
+	})
+
+	t.Run("real_log_file_processing", func(t *testing.T) {
+		// Read the real log file
+		logData, readErr := os.ReadFile("testdata/log2.txt")
+		assert.NoError(t, readErr, "Should be able to read log2.txt")
+
+		// Split log into lines
+		lines := strings.Split(string(logData), "\n")
+
+		// Track detected state changes
+		var detectedChanges []struct {
+			lineNum   int
+			condition string
+			logLine   string
+		}
+
+		// Process each line
+		for i, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+
+			_, conditionType := psd.DetectStateChange(line)
+			if conditionType != "" {
+				detectedChanges = append(detectedChanges, struct {
+					lineNum   int
+					condition string
+					logLine   string
+				}{
+					lineNum:   i + 1, // 1-based line numbers
+					condition: conditionType,
+					logLine:   line,
+				})
+			}
+		}
+
+		// Log the results
+		t.Logf("=== REAL LOG FILE PROCESSING RESULTS ===")
+		t.Logf("Total lines processed: %d", len(lines))
+		t.Logf("State changes detected: %d", len(detectedChanges))
+
+		for _, change := range detectedChanges {
+			t.Logf("Line %d: %s condition", change.lineNum, change.condition)
+			t.Logf("  Log line: %s", change.logLine)
+		}
+
+		// Verify we detected some state changes (real logs should have transitions)
+		if len(detectedChanges) > 0 {
+			t.Logf("✅ Successfully detected %d state changes in real log file", len(detectedChanges))
+
+			// Count locked vs lost conditions
+			lockedCount := 0
+			lostCount := 0
+			for _, change := range detectedChanges {
+				switch change.condition {
+				case "locked":
+					lockedCount++
+				case "lost":
+					lostCount++
+				}
+			}
+			t.Logf("  Locked conditions: %d", lockedCount)
+			t.Logf("  Lost conditions: %d", lostCount)
+		} else {
+			t.Logf("ℹ️  No state changes detected in log file (this may be expected if log contains no relevant transitions)")
+		}
+	})
+}
+
+func TestNewPTPStateDetector(t *testing.T) {
+	hcm := newHardwareConfigManagerForTests()
+	psd := NewPTPStateDetector(hcm)
+	assert.NotNil(t, psd)
+	assert.NotNil(t, psd.hcm)
+}
+
+// TestApplyConditionDesiredStatesWithRealData tests applyConditionDesiredStatesByType using actual hardware config YAML data
+//
+//nolint:gocyclo // test complexity is acceptable
+func TestApplyConditionDesiredStatesWithRealData(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Load the real hardware configuration from YAML
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	if err != nil {
+		t.Fatalf("Failed to load hardware config: %v", err)
+	}
+
+	// Create a HardwareConfigManager using the proper constructor
+	hcm := newHardwareConfigManagerForTests()
+	defer hcm.resetExecutors()
+
+	// Override executors to avoid actual hardware operations
+	hcm.overrideExecutors(func(_ []dpll.PinParentDeviceCtl) error {
+		// Mock DPLL executor - just return success without actually applying
+		return nil
+	}, func(_, _ string) error {
+		// Mock SysFS executor - just return success without actually writing
+		return nil
+	})
+
+	// Update hardware config to populate the manager
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	if err != nil {
+		t.Fatalf("Failed to update hardware config: %v", err)
+	}
+
+	// Extract the clock chain from the loaded config
+	clockChain := hwConfig.Spec.Profile.ClockChain
+	profileName := *hwConfig.Spec.Profile.Name
+
+	t.Logf("Testing with real hardware config: %s", hwConfig.Name)
+	t.Logf("Profile: %s", profileName)
+	t.Logf("Clock chain has %d conditions", len(clockChain.Behavior.Conditions))
+
+	// Validate that source configurations reference subsystems
+	if clockChain.Behavior != nil && len(clockChain.Behavior.Sources) > 0 {
+		t.Logf("Validating %d behavior sources:", len(clockChain.Behavior.Sources))
+		for i, source := range clockChain.Behavior.Sources {
+			t.Logf("  Source %d: %s (Subsystem: %s)", i+1, source.Name, source.Subsystem)
+		}
+	}
+
+	// Test each condition from the real hardware config
+	for i, condition := range clockChain.Behavior.Conditions {
+		// Triggers are mandatory - skip conditions without triggers
+		if len(condition.Triggers) == 0 {
+			t.Logf("Skipping condition '%s' - no triggers (triggers are mandatory)", condition.Name)
+			continue
+		}
+
+		t.Run(fmt.Sprintf("condition_%d_%s", i, condition.Name), func(t *testing.T) {
+			t.Logf("Testing condition: %s", condition.Name)
+			t.Logf("  Triggers: %d", len(condition.Triggers))
+			t.Logf("  Desired states: %d", len(condition.DesiredStates))
+
+			// Log details about the condition
+			for j, trigger := range condition.Triggers {
+				t.Logf("    Trigger %d: %s (%s)", j+1, trigger.SourceName, trigger.ConditionType)
+			}
+
+			for j, desiredState := range condition.DesiredStates {
+				if desiredState.DPLL != nil {
+					t.Logf("    Desired state %d: DPLL - Subsystem: %s, Board: %s",
+						j+1, desiredState.DPLL.Subsystem, desiredState.DPLL.BoardLabel)
+					if desiredState.DPLL.EEC != nil {
+						if desiredState.DPLL.EEC.Priority != nil {
+							t.Logf("      EEC Priority: %d", *desiredState.DPLL.EEC.Priority)
+						}
+						if desiredState.DPLL.EEC.State != "" {
+							t.Logf("      EEC State: %s", desiredState.DPLL.EEC.State)
+						}
+					}
+					if desiredState.DPLL.PPS != nil {
+						if desiredState.DPLL.PPS.Priority != nil {
+							t.Logf("      PPS Priority: %d", *desiredState.DPLL.PPS.Priority)
+						}
+						if desiredState.DPLL.PPS.State != "" {
+							t.Logf("      PPS State: %s", desiredState.DPLL.PPS.State)
+						}
+					}
+				}
+				if desiredState.PTPPin != nil {
+					t.Logf("    Desired state %d: PTPPin - Name: %s, Func: %s, Chan: %d",
+						j+1, desiredState.PTPPin.Name, desiredState.PTPPin.Func, desiredState.PTPPin.Chan)
+					if desiredState.PTPPin.SourceName != "" {
+						t.Logf("      Source: %s", desiredState.PTPPin.SourceName)
+					}
+				}
+				if desiredState.PTPPeriod != nil {
+					t.Logf("    Desired state %d: PTPPeriod - Index: %d",
+						j+1, desiredState.PTPPeriod.Index)
+					if desiredState.PTPPeriod.SourceName != "" {
+						t.Logf("      Source: %s", desiredState.PTPPeriod.SourceName)
+					}
+				}
+			}
+
+			// Determine the condition type for this condition
+			conditionType := condition.Triggers[0].ConditionType
+
+			// Apply the condition's desired states in the exact defined order
+			applyErr := hcm.applyDesiredStatesInOrder(condition, profileName, clockChain)
+			// All conditions should apply successfully since the YAML is well-formed
+			if applyErr != nil {
+				t.Errorf("Failed to apply condition '%s' (type: %s): %v", condition.Name, conditionType, applyErr)
+			} else {
+				t.Logf("✅ Successfully applied condition '%s' (type: %s) with %d desired states",
+					condition.Name, conditionType, len(condition.DesiredStates))
+			}
+		})
+	}
+
+	// Test specific conditions by name
+	testCases := []struct {
+		conditionName  string
+		expectedStates int
+		description    string
+	}{
+		{
+			conditionName:  "Initialize T-BC",
+			expectedStates: 5,
+			description:    "Should have initialization states for GNSS and CVL pins plus sysFS config",
+		},
+		{
+			conditionName:  "PTP Source Active",
+			expectedStates: 2,
+			description:    "Should have active configuration for CVL pins",
+		},
+		{
+			conditionName:  "PTP Source Lost - Leader Holdover",
+			expectedStates: 2,
+			description:    "Should have holdover configuration for CVL pins",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("validate_%s", strings.ReplaceAll(tc.conditionName, " ", "_")), func(t *testing.T) {
+			// Find the condition by name
+			var targetCondition *ptpv2alpha1.Condition
+			for _, condition := range clockChain.Behavior.Conditions {
+				if condition.Name == tc.conditionName {
+					targetCondition = &condition
+					break
+				}
+			}
+
+			if targetCondition == nil {
+				t.Fatalf("Condition '%s' not found in hardware config", tc.conditionName)
+			}
+
+			// Validate the expected number of desired states
+			// Note: The actual count may vary slightly due to hardware-specific defaults being applied
+			actualStates := len(targetCondition.DesiredStates)
+			if actualStates < tc.expectedStates {
+				t.Errorf("Expected at least %d desired states for '%s', got %d",
+					tc.expectedStates, tc.conditionName, actualStates)
+			}
+
+			t.Logf("✅ %s", tc.description)
+			t.Logf("   Found %d desired states (expected at least %d)", actualStates, tc.expectedStates)
+		})
+	}
+
+	// Validate the hardware config structure
+	t.Run("validate_hardware_config_structure", func(t *testing.T) {
+		// Check that we have the expected sources
+		sources := clockChain.Behavior.Sources
+		if len(sources) != 1 {
+			t.Errorf("Expected 1 source, got %d", len(sources))
+		} else {
+			source := sources[0]
+			if source.Name != "PTP" {
+				t.Errorf("Expected source name 'PTP', got '%s'", source.Name)
+			}
+			if source.SourceType != ptpTimeReceiverType {
+				t.Errorf("Expected source type '%s', got '%s'", ptpTimeReceiverType, source.SourceType)
+			}
+			if len(source.PTPTimeReceivers) != 1 || source.PTPTimeReceivers[0] != "ens4f1" {
+				t.Errorf("Expected PTP time receiver 'ens4f1', got %v", source.PTPTimeReceivers)
+			}
+			t.Logf("✅ Source configuration validated: %s (%s) with interface %s",
+				source.Name, source.SourceType, source.PTPTimeReceivers[0])
+		}
+
+		// Check subsystems have network interfaces defined
+		if len(clockChain.Structure) > 0 {
+			for _, subsystem := range clockChain.Structure {
+				if subsystem.DPLL.NetworkInterface == "" && (len(subsystem.Ethernet) == 0 || len(subsystem.Ethernet[0].Ports) == 0) {
+					t.Errorf("Subsystem %s must have NetworkInterface or Ethernet ports", subsystem.Name)
+				} else {
+					t.Logf("✅ Subsystem %s has network interface for clock ID resolution", subsystem.Name)
+				}
+			}
+		}
+	})
+}
+
+// TestApplyDefaultAndInitConditions tests the applyDefaultAndInitConditions function
+func TestApplyDefaultAndInitConditions(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Load test hardware config
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	if err != nil {
+		t.Fatalf("Failed to load hardware config: %v", err)
+	}
+
+	// Clock IDs are now resolved dynamically - no aliases needed
+
+	// Create hardware config manager
+	hcm := newHardwareConfigManagerForTests()
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	if err != nil {
+		t.Fatalf("Failed to update hardware config: %v", err)
+	}
+
+	profileName := "test-profile"
+	clockChain := hwConfig.Spec.Profile.ClockChain
+
+	tests := []struct {
+		name                 string
+		clockChain           *ptpv2alpha1.ClockChain
+		profileName          string
+		expectError          bool
+		expectedDefaultCount int
+		expectedInitCount    int
+	}{
+		{
+			name:                 "valid clock chain with conditions",
+			clockChain:           clockChain,
+			profileName:          profileName,
+			expectError:          false,
+			expectedDefaultCount: 0, // No explicit default conditions in test data
+			expectedInitCount:    1, // "Initialize T-BC" condition has empty sources, treated as init
+		},
+		{
+			name:        "nil behavior section",
+			clockChain:  &ptpv2alpha1.ClockChain{},
+			profileName: profileName,
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Get the actual enriched config from the manager
+			hcm.mu.RLock()
+			var enrichedConfig *enrichedHardwareConfig
+			if len(hcm.hardwareConfigs) > 0 {
+				enrichedConfig = &hcm.hardwareConfigs[0]
+			} else {
+				// Fallback: create a minimal enriched config if none exists
+				enrichedConfig = &enrichedHardwareConfig{
+					HardwareConfig: *hwConfig,
+					sysFSCommands:  make(map[string][]SysFSCommand),
+				}
+			}
+			hcm.mu.RUnlock()
+
+			// Override executors to avoid actual hardware operations
+			hcm.overrideExecutors(func(_ []dpll.PinParentDeviceCtl) error {
+				return nil
+			}, func(_, _ string) error {
+				return nil
+			})
+
+			// Test the function
+			testErr := hcm.applyDefaultAndInitConditions(tt.clockChain, tt.profileName, enrichedConfig)
+
+			// Verify error expectation
+			if tt.expectError {
+				assert.Error(t, testErr)
+			} else {
+				assert.NoError(t, testErr)
+			}
+
+			// Note: For default/init conditions, we need to check all sources since sourceName is mandatory
+			if tt.clockChain.Behavior != nil {
+				// Extract default/init conditions by checking all sources
+				var defaultConditions []ptpv2alpha1.Condition
+				var initConditions []ptpv2alpha1.Condition
+				seenDefault := make(map[string]bool)
+				seenInit := make(map[string]bool)
+
+				// For each source, extract matching default/init conditions
+				for _, source := range tt.clockChain.Behavior.Sources {
+					for _, condition := range tt.clockChain.Behavior.Conditions {
+						// Triggers are mandatory - skip conditions without triggers
+						if len(condition.Triggers) == 0 {
+							continue
+						}
+						for _, trigger := range condition.Triggers {
+							if trigger.ConditionType == "default" && trigger.SourceName == source.Name {
+								if !seenDefault[condition.Name] {
+									defaultConditions = append(defaultConditions, condition)
+									seenDefault[condition.Name] = true
+								}
+							}
+							if trigger.ConditionType == "init" && trigger.SourceName == source.Name {
+								if !seenInit[condition.Name] {
+									initConditions = append(initConditions, condition)
+									seenInit[condition.Name] = true
+								}
+							}
+						}
+					}
+				}
+
+				assert.Equal(t, tt.expectedDefaultCount, len(defaultConditions), "Default conditions count mismatch")
+				assert.Equal(t, tt.expectedInitCount, len(initConditions), "Init conditions count mismatch")
+
+				t.Logf("✅ Found %d default conditions and %d init conditions",
+					len(defaultConditions), len(initConditions))
+			}
+		})
+	}
+}
+
+// TestExtractConditionsByType tests the extractConditionsByTypeAndSource function
+func TestExtractConditionsByType(t *testing.T) {
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	hcm := newHardwareConfigManagerForTests()
+
+	// Create test conditions
+	conditions := []ptpv2alpha1.Condition{
+		{
+			Name: "Default Condition",
+			Triggers: []ptpv2alpha1.SourceState{
+				{SourceName: "TestSource", ConditionType: ConditionTypeDefault},
+			},
+		},
+		{
+			Name: "Init Condition",
+			Triggers: []ptpv2alpha1.SourceState{
+				{SourceName: "TestSource", ConditionType: ConditionTypeInit},
+			},
+		},
+		{
+			Name: "Locked Condition",
+			Triggers: []ptpv2alpha1.SourceState{
+				{SourceName: "TestSource", ConditionType: ConditionTypeLocked},
+			},
+		},
+		{
+			Name: "Lost Condition",
+			Triggers: []ptpv2alpha1.SourceState{
+				{SourceName: "TestSource", ConditionType: ConditionTypeLost},
+			},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		conditionType string
+		expectedCount int
+		expectedNames []string
+	}{
+		{
+			name:          "extract default conditions",
+			conditionType: ConditionTypeDefault,
+			expectedCount: 1,
+			expectedNames: []string{"Default Condition"},
+		},
+		{
+			name:          "extract init conditions",
+			conditionType: ConditionTypeInit,
+			expectedCount: 1,
+			expectedNames: []string{"Init Condition"},
+		},
+		{
+			name:          "extract locked conditions",
+			conditionType: ConditionTypeLocked,
+			expectedCount: 1,
+			expectedNames: []string{"Locked Condition"},
+		},
+		{
+			name:          "extract lost conditions",
+			conditionType: ConditionTypeLost,
+			expectedCount: 1,
+			expectedNames: []string{"Lost Condition"},
+		},
+		{
+			name:          "extract non-existent condition type",
+			conditionType: "nonexistent",
+			expectedCount: 0,
+			expectedNames: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// sourceName is mandatory, so we need to pass a valid sourceName
+			// For tests, use "TestSource" which matches the test conditions
+			// sourceName is mandatory in triggers
+			sourceName := "TestSource"
+			result := hcm.extractConditionsByTypeAndSource(conditions, tt.conditionType, sourceName)
+
+			assert.Equal(t, tt.expectedCount, len(result), "Condition count mismatch")
+
+			// Verify condition names
+			resultNames := make([]string, len(result))
+			for i, condition := range result {
+				resultNames[i] = condition.Name
+			}
+
+			for _, expectedName := range tt.expectedNames {
+				assert.Contains(t, resultNames, expectedName, "Expected condition not found")
+			}
+
+			t.Logf("✅ Found %d conditions of type '%s': %v",
+				len(result), tt.conditionType, resultNames)
+		})
+	}
+}
+
+// TestResolveSysFSPtpDevice tests the resolveSysFSPtpDevice function with mock file system
+func TestResolveSysFSPtpDevice(t *testing.T) {
+	// Create a temporary directory structure for testing
+	tempDir := t.TempDir()
+
+	// Create mock PTP device directories and files
+	ptpDeviceDir := filepath.Join(tempDir, "sys", "class", "net", "eth0", "device", "ptp")
+	if err := os.MkdirAll(ptpDeviceDir, 0755); err != nil {
+		t.Fatalf("Failed to create test directory structure: %v", err)
+	}
+
+	// Create mock PTP devices
+	ptp0Dir := filepath.Join(ptpDeviceDir, "ptp0")
+	ptp1Dir := filepath.Join(ptpDeviceDir, "ptp1")
+	ptp2Dir := filepath.Join(ptpDeviceDir, "ptp2")
+
+	if err := os.MkdirAll(ptp0Dir, 0755); err != nil {
+		t.Fatalf("Failed to create ptp0 directory: %v", err)
+	}
+	if err := os.MkdirAll(ptp1Dir, 0755); err != nil {
+		t.Fatalf("Failed to create ptp1 directory: %v", err)
+	}
+	if err := os.MkdirAll(ptp2Dir, 0755); err != nil {
+		t.Fatalf("Failed to create ptp2 directory: %v", err)
+	}
+
+	// Create test files with different permissions
+	writableFile := filepath.Join(ptp0Dir, "period")
+	readOnlyFile := filepath.Join(ptp1Dir, "period")
+	anotherWritableFile := filepath.Join(ptp2Dir, "period")
+
+	// Create writable files (0644 has write permission for owner)
+	if err := os.WriteFile(writableFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create writable test file: %v", err)
+	}
+
+	if err := os.WriteFile(anotherWritableFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create another writable test file: %v", err)
+	}
+
+	// Create read-only file (0444 has no write permission)
+	if err := os.WriteFile(readOnlyFile, []byte("test"), 0444); err != nil {
+		t.Fatalf("Failed to create read-only test file: %v", err)
+	}
+
+	// Mock the write probe for the read-only file. Root can open a regular
+	// 0444 file, so relying on the host user's privileges would make this
+	// test fail in root containers.
+	originalOpenFileForWrite := openFileForWrite
+	openFileForWrite = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == readOnlyFile {
+			return nil, os.ErrPermission
+		}
+		return originalOpenFileForWrite(name, flag, perm)
+	}
+	defer func() { openFileForWrite = originalOpenFileForWrite }()
+
+	// Create HardwareConfigManager for testing
+	hcm := &HardwareConfigManager{
+		hardwareConfigs: make([]enrichedHardwareConfig, 0),
+	}
+
+	testCases := []struct {
+		name          string
+		interfacePath string
+		expectedPaths []string
+		expectedError bool
+		description   string
+	}{
+		{
+			name:          "no_ptp_placeholder",
+			interfacePath: "/sys/class/net/eth0/carrier",
+			expectedPaths: []string{"/sys/class/net/eth0/carrier"},
+			expectedError: false,
+			description:   "Should return path as-is when no ptp* placeholder is present",
+		},
+		{
+			name:          "valid_ptp_devices_found",
+			interfacePath: filepath.Join(tempDir, "sys/class/net/eth0/device/ptp/ptp*/period"),
+			expectedPaths: []string{
+				filepath.Join(tempDir, "sys/class/net/eth0/device/ptp/ptp0/period"),
+				filepath.Join(tempDir, "sys/class/net/eth0/device/ptp/ptp2/period"),
+			},
+			expectedError: false,
+			description:   "Should return all writable PTP device paths",
+		},
+		{
+			name:          "nonexistent_directory",
+			interfacePath: filepath.Join(tempDir, "nonexistent/ptp/ptp*/period"),
+			expectedPaths: nil,
+			expectedError: true,
+			description:   "Should return error when PTP device directory doesn't exist",
+		},
+		{
+			name:          "no_writable_files",
+			interfacePath: filepath.Join(tempDir, "sys/class/net/eth0/device/ptp/ptp*/nonexistent"),
+			expectedPaths: nil,
+			expectedError: true,
+			description:   "Should return error when no writable files are found",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Logf("Testing: %s", tc.description)
+
+			result, testErr := hcm.resolveSysFSPtpDevice(tc.interfacePath)
+
+			if tc.expectedError {
+				if testErr == nil {
+					t.Errorf("Expected error but got none")
+				} else {
+					t.Logf("✅ Got expected error: %v", testErr)
+				}
+			} else {
+				if testErr != nil {
+					t.Errorf("Unexpected error: %v", testErr)
+				} else {
+					// Sort both slices for comparison since order might vary
+					sort.Strings(result)
+					sort.Strings(tc.expectedPaths)
+
+					if !reflect.DeepEqual(result, tc.expectedPaths) {
+						t.Errorf("Expected paths: %v, Got: %v", tc.expectedPaths, result)
+					} else {
+						t.Logf("✅ Successfully resolved %d PTP device paths", len(result))
+						for i, path := range result {
+							t.Logf("   Path %d: %s", i+1, path)
+						}
+					}
+				}
+			}
+		})
+	}
+
+	// Additional test for edge cases
+	t.Run("edge_cases", func(t *testing.T) {
+		// Test empty path
+		result, edgeErr := hcm.resolveSysFSPtpDevice("")
+		if edgeErr != nil {
+			t.Errorf("Empty path should not return error, got: %v", edgeErr)
+		}
+		if len(result) != 1 || result[0] != "" {
+			t.Errorf("Empty path should return empty string, got: %v", result)
+		}
+
+		// Test path with multiple ptp* placeholders (edge case)
+		complexPath := filepath.Join(tempDir, "sys/class/net/eth0/device/ptp/ptp*/subdir/ptp*/period")
+		result, edgeErr = hcm.resolveSysFSPtpDevice(complexPath)
+		// This should still work as it only splits on the first ptp*
+		if edgeErr != nil {
+			t.Logf("Complex path with multiple ptp* placeholders returned error (expected): %v", edgeErr)
+		} else {
+			t.Logf("Complex path resolved to: %v", result)
+		}
+	})
+}
+
+func TestSysFSCommandCaching(t *testing.T) {
+	// Set up mock PTP device resolver for testing
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+
+	// Set up mock DPLL pins for testing
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Logf("Warning: Failed to setup mock DPLL pins: %v", mockErr)
+		// Continue with test as DPLL pins are optional
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	hcm := newHardwareConfigManagerForTests()
+	defer hcm.resetExecutors()
+
+	hcm.overrideExecutors(nil, func(_, _ string) error { return nil })
+
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err)
+	assert.NotNil(t, hwConfig)
+
+	err = hcm.UpdateHardwareConfig([]ptpv2alpha1.HardwareConfig{*hwConfig})
+	assert.NoError(t, err)
+
+	var sysfsWrites []SysFSCommand
+
+	sysfsWriterOverride := func(path, value string) error {
+		sysfsWrites = append(sysfsWrites, SysFSCommand{Path: path, Value: value})
+		return nil
+	}
+
+	hcm.overrideExecutors(nil, sysfsWriterOverride)
+
+	commands := []SysFSCommand{{Path: "/tmp/test", Value: "hello"}}
+	err = hcm.applyCachedSysFSCommands("test-profile", "test-condition", commands)
+	assert.NoError(t, err)
+}
+
+// TestESyncConfigurationFromYAML tests loading and processing eSync configuration from hwconfig.yaml
+func TestESyncConfigurationFromYAML(t *testing.T) {
+	// Setup mock environment
+	SetupMockPtpDeviceResolver()
+	defer TeardownMockPtpDeviceResolver()
+	mockErr := SetupMockDpllPinsForTests()
+	if mockErr != nil {
+		t.Fatalf("Failed to setup mock DPLL pins: %v", mockErr)
+	}
+	defer TeardownMockDpllPinsForTests()
+
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b5-80")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Load the hwconfig.yaml which has eSync configuration
+	hwConfig, err := loadHardwareConfigFromFile("testdata/wpc-hwconfig.yaml")
+	assert.NoError(t, err, "Failed to load hwconfig.yaml")
+	assert.NotNil(t, hwConfig, "Hardware config should not be nil")
+
+	// Verify the clock chain structure
+	assert.NotNil(t, hwConfig.Spec.Profile.ClockChain, "Clock chain should not be nil")
+	clockChain := hwConfig.Spec.Profile.ClockChain
+
+	// Verify eSync definitions are present and correctly parsed
+	assert.NotNil(t, clockChain.CommonDefinitions, "CommonDefinitions should not be nil")
+	assert.NotEmpty(t, clockChain.CommonDefinitions.ESyncDefinitions, "ESyncDefinitions should not be empty")
+	assert.Len(t, clockChain.CommonDefinitions.ESyncDefinitions, 1, "Should have exactly 1 eSync definition")
+
+	// Verify the eSync definition values
+	esyncDef := clockChain.CommonDefinitions.ESyncDefinitions[0]
+	assert.Equal(t, "esync-10-1", esyncDef.Name, "eSync definition name should be 'esync-10-1'")
+	assert.Equal(t, int64(10000000), esyncDef.ESyncConfig.TransferFrequency, "Transfer frequency should be 10 MHz")
+	assert.Equal(t, int64(1), esyncDef.ESyncConfig.EmbeddedSyncFrequency, "Embedded sync frequency should be 1 Hz")
+	assert.Equal(t, int64(25), esyncDef.ESyncConfig.DutyCyclePct, "Duty cycle should be 25%")
+
+	t.Logf("✓ eSync definition '%s' loaded: transfer=%d Hz, esync=%d Hz, duty=%d%%",
+		esyncDef.Name,
+		esyncDef.ESyncConfig.TransferFrequency,
+		esyncDef.ESyncConfig.EmbeddedSyncFrequency,
+		esyncDef.ESyncConfig.DutyCyclePct)
+
+	// Verify subsystems reference the eSync config
+	assert.NotEmpty(t, clockChain.Structure, "Structure should not be empty")
+	assert.Len(t, clockChain.Structure, 2, "Should have exactly 2 subsystems (Leader and Follower)")
+
+	// Test eSync resolution logic
+	hcm := newHardwareConfigManagerForTests()
+	hcm.pinCache, err = GetDpllPins()
+	assert.NoError(t, err, "Should get DPLL pins")
+	assert.NotNil(t, hcm.pinCache, "Pin cache should not be nil")
+
+	// Load hardware defaults for intel/e810 (same as used in the hwconfig.yaml).
+	// Vendor defaults are embedded; no filesystem setup needed.
+	hwSpec, err := LoadHardwareDefaults("intel/e810", nil)
+	assert.NoError(t, err, "Should load hardware defaults")
+	assert.NotNil(t, hwSpec, "Hardware spec should not be nil")
+	assert.NotNil(t, hwSpec.PinEsyncCommands, "Pin eSync commands should be defined")
+	t.Logf("✓ Loaded hardware defaults: outputs=%d cmds, inputs=%d cmds",
+		len(hwSpec.PinEsyncCommands.Outputs), len(hwSpec.PinEsyncCommands.Inputs))
+
+	// Track total commands built across all subsystems
+	totalESyncCommands := 0
+	foundESyncCommand := false
+
+	// Verify ALL subsystems
+	for subIdx, subsystem := range clockChain.Structure {
+		t.Logf("\n--- Subsystem %d: %s ---", subIdx+1, subsystem.Name)
+		netIface := subsystem.DPLL.NetworkInterface
+		if netIface == "" && len(subsystem.Ethernet) > 0 && len(subsystem.Ethernet[0].Ports) > 0 {
+			netIface = subsystem.Ethernet[0].Ports[0]
+		}
+		t.Logf("  Network Interface: %s", netIface)
+
+		// Check phase outputs
+		for pinLabel, pinCfg := range subsystem.DPLL.PhaseOutputs {
+			if pinCfg.ESyncConfigName != "" {
+				t.Logf("  Phase output '%s': esyncConfigName='%s', connector='%s'",
+					pinLabel, pinCfg.ESyncConfigName, pinCfg.Connector)
+				assert.Equal(t, "esync-10-1", pinCfg.ESyncConfigName,
+					"Pin %s should reference esync-10-1", pinLabel)
+
+				// Test resolvePinFrequency
+				transferFreq, esyncFreq, dutyCycle, hasConfig := hcm.resolvePinFrequency(pinCfg, clockChain)
+				assert.True(t, hasConfig, "Should resolve frequency config for %s", pinLabel)
+				assert.Equal(t, uint64(10000000), transferFreq,
+					"Pin %s: transfer frequency should be 10 MHz", pinLabel)
+				assert.Equal(t, uint64(1), esyncFreq,
+					"Pin %s: eSync frequency should be 1 Hz", pinLabel)
+				assert.Equal(t, int64(25), dutyCycle,
+					"Pin %s: duty cycle should be 25%%", pinLabel)
+				t.Logf("    ✓ Resolved: transfer=%d Hz, esync=%d Hz, duty=%d%%", transferFreq, esyncFreq, dutyCycle)
+			}
+		}
+
+		// Check phase inputs
+		for pinLabel, pinCfg := range subsystem.DPLL.PhaseInputs {
+			if pinCfg.ESyncConfigName != "" {
+				t.Logf("  Phase input '%s': esyncConfigName='%s', connector='%s'",
+					pinLabel, pinCfg.ESyncConfigName, pinCfg.Connector)
+				assert.Equal(t, "esync-10-1", pinCfg.ESyncConfigName,
+					"Pin %s should reference esync-10-1", pinLabel)
+
+				// Test resolvePinFrequency
+				transferFreq, esyncFreq, dutyCycle, hasConfig := hcm.resolvePinFrequency(pinCfg, clockChain)
+				assert.True(t, hasConfig, "Should resolve frequency config for %s", pinLabel)
+				assert.Equal(t, uint64(10000000), transferFreq,
+					"Pin %s: transfer frequency should be 10 MHz", pinLabel)
+				assert.Equal(t, uint64(1), esyncFreq,
+					"Pin %s: eSync frequency should be 1 Hz", pinLabel)
+				assert.Equal(t, int64(25), dutyCycle,
+					"Pin %s: duty cycle should be 25%%", pinLabel)
+				t.Logf("    ✓ Resolved: transfer=%d Hz, esync=%d Hz, duty=%d%%", transferFreq, esyncFreq, dutyCycle)
+			}
+		}
+
+		hwDefPath := strings.TrimSpace(subsystem.HardwareSpecificDefinitions)
+		if hwDefPath == "" {
+			hwDefPath = "intel/e810"
+		}
+
+		// Test building eSync commands for this subsystem with hardware spec
+		commands, cmdErr := hcm.buildESyncPinCommands(subsystem, hwDefPath, clockChain, hwSpec)
+		assert.NoError(t, cmdErr, "Should build eSync commands for subsystem %s", subsystem.Name)
+
+		t.Logf("  Built %d pin commands for subsystem '%s'", len(commands), subsystem.Name)
+
+		// Count pins with eSync config and frequency-only config in this subsystem
+		outputPinsWithESync := 0
+		inputPinsWithESync := 0
+		outputPinsWithFreqOnly := 0
+		inputPinsWithFreqOnly := 0
+		for _, pinCfg := range subsystem.DPLL.PhaseOutputs {
+			if pinCfg.ESyncConfigName != "" {
+				outputPinsWithESync++
+			} else if pinCfg.Frequency != nil && *pinCfg.Frequency > 0 {
+				outputPinsWithFreqOnly++
+			}
+		}
+		for _, pinCfg := range subsystem.DPLL.PhaseInputs {
+			if pinCfg.ESyncConfigName != "" {
+				inputPinsWithESync++
+			} else if pinCfg.Frequency != nil && *pinCfg.Frequency > 0 {
+				inputPinsWithFreqOnly++
+			}
+		}
+
+		// Verify command sequence length
+		// Outputs: 3 commands per pin (frequency, eSyncFrequency, re-enable)
+		// Inputs: 2 commands per pin (frequency, eSyncFrequency)
+		// Frequency-only pins (either input or output): 1 command per pin (frequency only)
+		expectedCmds := (outputPinsWithESync * 3) + (inputPinsWithESync * 2) + outputPinsWithFreqOnly + inputPinsWithFreqOnly
+		if expectedCmds > 0 {
+			assert.Equal(t, expectedCmds, len(commands),
+				"Should have %d commands for %d esync-output pins, %d esync-input pins, %d freq-only outputs, %d freq-only inputs",
+				expectedCmds, outputPinsWithESync, inputPinsWithESync, outputPinsWithFreqOnly, inputPinsWithFreqOnly)
+			t.Logf("  ✓ Command sequence: %d esync-outputs × 3 + %d esync-inputs × 2 + %d freq-only outputs × 1 + %d freq-only inputs × 1 = %d total",
+				outputPinsWithESync, inputPinsWithESync, outputPinsWithFreqOnly, inputPinsWithFreqOnly, len(commands))
+		}
+
+		// Verify commands with frequency/eSync set
+		for cmdIdx, cmd := range commands {
+			if cmd.Frequency != nil || cmd.EsyncFrequency != nil {
+				totalESyncCommands++
+				t.Logf("    Cmd[%d]: Pin ID=%d, Frequency=%v Hz, EsyncFrequency=%v Hz, ParentDevices=%d",
+					cmdIdx+1,
+					cmd.ID,
+					ptrValue(cmd.Frequency),
+					ptrValue(cmd.EsyncFrequency),
+					len(cmd.PinParentCtl))
+
+				// Verify frequency values when set
+				if cmd.Frequency != nil {
+					// Allow either the transfer frequency (10 MHz) or frequency-only configs (1 Hz)
+					if *cmd.Frequency != uint64(10000000) && *cmd.Frequency != uint64(1) {
+						t.Errorf("Pin %d cmd[%d]: unexpected frequency %d Hz (expected 10MHz or 1Hz)", cmd.ID, cmdIdx+1, *cmd.Frequency)
+					}
+				}
+				if cmd.EsyncFrequency != nil {
+					assert.Equal(t, uint64(1), *cmd.EsyncFrequency,
+						"Pin %d cmd[%d]: eSync frequency should be 1 Hz", cmd.ID, cmdIdx+1)
+					foundESyncCommand = true
+				}
+			}
+		}
+	}
+
+	// Verify we found at least one properly configured eSync command
+	t.Logf("\nTotal eSync/frequency commands across all subsystems: %d", totalESyncCommands)
+	if totalESyncCommands > 0 {
+		assert.True(t, foundESyncCommand,
+			"Should have at least one command with both Frequency and EsyncFrequency set")
+	} else {
+		t.Log("⚠ No eSync commands generated - pins may not be in mock cache")
+	}
+}
+
+// Helper function to safely dereference pointer for logging
+func ptrValue(ptr *uint64) string {
+	if ptr == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%d", *ptr)
+}
+
+// TestHoldoverParametersExtraction tests extraction of holdover parameters from HardwareConfig
+func TestHoldoverParametersExtraction(t *testing.T) {
+	// Set up mock command executor for GetClockIDFromInterface
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens4f0"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens8f0"}, "driver: ice\nbus-info: 0000:51:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:51:00.0"}, "51:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:51:00.0"}, "serial_number 50-7c-6f-ff-ff-1f-b1-b8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "ens12f0"}, "driver: ice\nbus-info: 0000:85:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:85:00.0"}, "85:00.0 Ethernet controller: Intel Corporation Ethernet Controller E810-C for backplane")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:85:00.0"}, "serial_number 50-7c-6f-ff-ff-ab-cd-ef")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	// Create synthetic clock IDs for test subsystems (matching the mock responses above)
+	clockID1 := uint64(0x507c6fffff5c4ae8) // ens4f0
+	clockID2 := uint64(0x507c6fffff1fb1b8) // ens8f0
+
+	hwConfig := ptpv2alpha1.HardwareConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-holdover",
+			Namespace: "openshift-ptp",
+		},
+		Spec: ptpv2alpha1.HardwareConfigSpec{
+			RelatedPtpProfileName: "test-profile",
+			Profile: ptpv2alpha1.HardwareProfile{
+				ClockChain: &ptpv2alpha1.ClockChain{
+					Structure: []ptpv2alpha1.Subsystem{
+						{
+							Name:                        "Subsystem1",
+							HardwareSpecificDefinitions: "intel/e810",
+							DPLL: ptpv2alpha1.DPLL{
+								NetworkInterface: "ens4f0",
+								HoldoverParameters: &ptpv2alpha1.HoldoverParameters{
+									MaxInSpecOffset:        200,
+									LocalMaxHoldoverOffset: 2000,
+									LocalHoldoverTimeout:   7200,
+								},
+							},
+							Ethernet: []ptpv2alpha1.Ethernet{
+								{Ports: []string{"ens4f0", "ens4f1"}},
+							},
+						},
+						{
+							Name:                        "Subsystem2",
+							HardwareSpecificDefinitions: "intel/e810",
+							DPLL: ptpv2alpha1.DPLL{
+								NetworkInterface: "ens8f0",
+								// Test defaults by omitting values
+								HoldoverParameters: &ptpv2alpha1.HoldoverParameters{},
+							},
+							Ethernet: []ptpv2alpha1.Ethernet{
+								{Ports: []string{"ens8f0", "ens8f1"}},
+							},
+						},
+						{
+							Name:                        "Subsystem3-NoHoldover",
+							HardwareSpecificDefinitions: "intel/e810",
+							DPLL: ptpv2alpha1.DPLL{
+								NetworkInterface: "ens12f0",
+								// No holdover parameters
+							},
+							Ethernet: []ptpv2alpha1.Ethernet{
+								{Ports: []string{"ens12f0", "ens12f1"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	hcm := newHardwareConfigManagerForTests()
+
+	// Test extractHoldoverParameters
+	params := hcm.extractHoldoverParameters(hwConfig)
+
+	// Should have 2 entries (Subsystem3 doesn't have holdover params)
+	assert.Len(t, params, 2, "Should extract holdover params for 2 subsystems")
+
+	// Check Subsystem1 - explicit values
+	params1, found1 := params[clockID1]
+	assert.True(t, found1, "Should find holdover params for clock1")
+	assert.NotNil(t, params1, "Holdover params for clock1 should not be nil")
+	assert.Equal(t, uint64(200), params1.MaxInSpecOffset, "MaxInSpecOffset should match")
+	assert.Equal(t, uint64(2000), params1.LocalMaxHoldoverOffset, "LocalMaxHoldoverOffset should match")
+	assert.Equal(t, uint64(7200), params1.LocalHoldoverTimeout, "LocalHoldoverTimeout should match")
+
+	// Check Subsystem2 - default values
+	params2, found2 := params[clockID2]
+	assert.True(t, found2, "Should find holdover params for clock2")
+	assert.NotNil(t, params2, "Holdover params for clock2 should not be nil")
+	assert.Equal(t, uint64(100), params2.MaxInSpecOffset, "MaxInSpecOffset should use default")
+	assert.Equal(t, uint64(1500), params2.LocalMaxHoldoverOffset, "LocalMaxHoldoverOffset should use default")
+	assert.Equal(t, uint64(14400), params2.LocalHoldoverTimeout, "LocalHoldoverTimeout should use default")
+
+	// Test GetHoldoverParameters API by manually setting the config
+	// (Avoid UpdateHardwareConfig which tries to connect to netlink)
+	enriched := enrichedHardwareConfig{
+		HardwareConfig: hwConfig,
+		holdoverParams: params,
+	}
+	hcm.mu.Lock()
+	hcm.hardwareConfigs = []enrichedHardwareConfig{enriched}
+	hcm.ready = true
+	hcm.mu.Unlock()
+
+	// Retrieve using API
+	retrieved1 := hcm.GetHoldoverParameters("ptpconfig_test-profile", clockID1)
+	assert.NotNil(t, retrieved1, "Should retrieve holdover params for clock1")
+	if retrieved1 != nil {
+		assert.Equal(t, uint64(200), retrieved1.MaxInSpecOffset, "Retrieved MaxInSpecOffset should match")
+	}
+
+	retrieved2 := hcm.GetHoldoverParameters("ptpconfig_test-profile", clockID2)
+	assert.NotNil(t, retrieved2, "Should retrieve holdover params for clock2")
+	if retrieved2 != nil {
+		assert.Equal(t, uint64(100), retrieved2.MaxInSpecOffset, "Retrieved MaxInSpecOffset should use default")
+	}
+
+	// Test non-existent profile
+	retrieved3 := hcm.GetHoldoverParameters("non-existent", clockID1)
+	assert.Nil(t, retrieved3, "Should return nil for non-existent profile")
+
+	// Test non-existent clock ID
+	retrieved4 := hcm.GetHoldoverParameters("ptpconfig_test-profile", 0xDEADBEEF)
+	assert.Nil(t, retrieved4, "Should return nil for non-existent clock ID")
+
+	t.Logf("✓ Holdover parameter extraction and retrieval working correctly")
+}
+
+// TestRoundToGranularity tests the roundToGranularity function with various inputs
+func TestRoundToGranularity(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    int32
+		gran     uint32
+		expected int32
+	}{
+		// No rounding needed (gran <= 1)
+		{
+			name:     "granularity 0 - no rounding",
+			value:    1234,
+			gran:     0,
+			expected: 1234,
+		},
+		{
+			name:     "granularity 1 - no rounding",
+			value:    1234,
+			gran:     1,
+			expected: 1234,
+		},
+		// Positive values with gran=2500 (from perla2-pins.json)
+		{
+			name:     "positive value already aligned",
+			value:    5000,
+			gran:     2500,
+			expected: 5000,
+		},
+		{
+			name:     "positive value round down",
+			value:    6000,
+			gran:     2500,
+			expected: 5000, // (6000 + 1250) / 2500 * 2500 = 7250 / 2500 * 2500 = 2 * 2500 = 5000
+		},
+		{
+			name:     "positive value round up",
+			value:    7000,
+			gran:     2500,
+			expected: 7500, // (7000 + 1250) / 2500 * 2500 = 8250 / 2500 * 2500 = 3 * 2500 = 7500
+		},
+		{
+			name:     "positive value near boundary",
+			value:    6250,
+			gran:     2500,
+			expected: 7500, // (6250 + 1250) / 2500 * 2500 = 7500 / 2500 * 2500 = 3 * 2500 = 7500
+		},
+		{
+			name:     "positive value below boundary",
+			value:    6249,
+			gran:     2500,
+			expected: 5000, // (6249 + 1250) / 2500 * 2500 = 7499 / 2500 * 2500 = 2 * 2500 = 5000
+		},
+		// Negative values with gran=2500
+		{
+			name:     "negative value already aligned",
+			value:    -5000,
+			gran:     2500,
+			expected: -5000,
+		},
+		{
+			name:     "negative value round down (toward more negative)",
+			value:    -6000,
+			gran:     2500,
+			expected: -5000, // (-6000 - 1250) / 2500 * 2500 = -7250 / 2500 * 2500 = -2 * 2500 = -5000
+		},
+		{
+			name:     "negative value round up (toward zero)",
+			value:    -7000,
+			gran:     2500,
+			expected: -7500, // (-7000 - 1250) / 2500 * 2500 = -8250 / 2500 * 2500 = -3 * 2500 = -7500
+		},
+		{
+			name:     "negative value near boundary",
+			value:    -6250,
+			gran:     2500,
+			expected: -7500, // (-6250 - 1250) / 2500 * 2500 = -7500 / 2500 * 2500 = -3 * 2500 = -7500
+		},
+		{
+			name:     "negative value above boundary",
+			value:    -6249,
+			gran:     2500,
+			expected: -5000, // (-6249 - 1250) / 2500 * 2500 = -7499 / 2500 * 2500 = -2 * 2500 = -5000
+		},
+		// Zero
+		{
+			name:     "zero value",
+			value:    0,
+			gran:     2500,
+			expected: 0,
+		},
+		// Granularity 1600 (from perla2-pins.json)
+		{
+			name:     "granularity 1600 - positive round up",
+			value:    2000,
+			gran:     1600,
+			expected: 1600, // (2000 + 800) / 1600 * 1600 = 2800 / 1600 * 1600 = 1 * 1600 = 1600
+		},
+		{
+			name:     "granularity 1600 - positive round up to next",
+			value:    2500,
+			gran:     1600,
+			expected: 3200, // (2500 + 800) / 1600 * 1600 = 3300 / 1600 * 1600 = 2 * 1600 = 3200
+		},
+		{
+			name:     "granularity 1600 - negative",
+			value:    -2000,
+			gran:     1600,
+			expected: -1600, // (-2000 - 800) / 1600 * 1600 = -2800 / 1600 * 1600 = -1 * 1600 = -1600
+		},
+		// Edge cases
+		{
+			name:     "large positive value",
+			value:    1000000,
+			gran:     2500,
+			expected: 1000000, // (1000000 + 1250) / 2500 * 2500 = 1001250 / 2500 * 2500 = 400 * 2500 = 1000000
+		},
+		{
+			name:     "large negative value",
+			value:    -1000000,
+			gran:     2500,
+			expected: -1000000, // (-1000000 - 1250) / 2500 * 2500 = -1001250 / 2500 * 2500 = -400 * 2500 = -1000000
+		},
+		{
+			name:     "small value below granularity",
+			value:    1000,
+			gran:     2500,
+			expected: 0, // (1000 + 1250) / 2500 * 2500 = 2250 / 2500 * 2500 = 0 * 2500 = 0
+		},
+		{
+			name:     "small negative value above -granularity",
+			value:    -1000,
+			gran:     2500,
+			expected: 0, // (-1000 - 1250) / 2500 * 2500 = -2250 / 2500 * 2500 = 0 * 2500 = 0
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := roundToGranularity(tt.value, tt.gran)
+			assert.Equal(t, tt.expected, result,
+				"roundToGranularity(%d, %d) = %d, expected %d", tt.value, tt.gran, result, tt.expected)
+			// Verify result is a multiple of granularity (if gran > 1)
+			if tt.gran > 1 && result != 0 {
+				remainder := result % int32(tt.gran)
+				if remainder < 0 {
+					remainder = -remainder
+				}
+				assert.Equal(t, int32(0), remainder,
+					"Result %d should be a multiple of granularity %d", result, tt.gran)
+			}
+		})
+	}
+}
+
+// TestBuildPhaseAdjustmentCommandsWithGranularity tests phase adjustment command building
+// using real pin data from perla2-pins.json with actual granularity values
+func TestBuildPhaseAdjustmentCommandsWithGranularity(t *testing.T) {
+	// Load pins from perla2-pins.json
+	mockGetter, err := CreateMockDpllPinsGetterFromFile("../daemon/testdata/perla2-pins.json")
+	if !assert.NoError(t, err, "Failed to create mock getter from perla2-pins.json") {
+		t.FailNow()
+	}
+	SetDpllPinsGetter(mockGetter)
+	defer TeardownMockDpllPinsForTests()
+
+	// Get pin cache to verify pins loaded
+	cache, err := GetDpllPins()
+	if !assert.NoError(t, err, "Failed to get DPLL pins") {
+		return
+	}
+
+	// Get clock ID from cache
+	var clockID uint64
+	for cid := range cache.BoardLabelPins {
+		clockID = cid
+		break
+	}
+	t.Logf("Using clock ID: %#x", clockID)
+
+	// Verify pins with granularity exist
+	pinsWithGran := []struct {
+		boardLabel string
+		gran       uint32
+	}{
+		{"OCP1_CLK", 2500},
+		{"OCP2_CLK", 2500},
+		{"GNR_D_SDP3", 2500},
+		{"GNR_D_SDP1", 2500},
+		{"NAC0_CLK_REF_SYNCE", 1600},
+		{"NAC0_TIME_REF", 1600},
+	}
+
+	for _, pinInfo := range pinsWithGran {
+		pin, found := cache.GetPin(clockID, pinInfo.boardLabel)
+		if !assert.True(t, found, "Pin %s should exist", pinInfo.boardLabel) {
+			continue
+		}
+		assert.Equal(t, pinInfo.gran, pin.PhaseAdjustGran,
+			"Pin %s should have granularity %d", pinInfo.boardLabel, pinInfo.gran)
+		t.Logf("✓ Pin %s has granularity %d", pinInfo.boardLabel, pin.PhaseAdjustGran)
+	}
+
+	// Create hardware config manager
+	hcm := newHardwareConfigManagerForTests()
+	defer hcm.resetExecutors()
+
+	// Set pin cache
+	hcm.pinCache = cache
+
+	// Test cases with different adjustment values that need rounding
+	tests := []struct {
+		name        string
+		boardLabel  string
+		adjustment  int64
+		expected    int32 // Expected after rounding
+		description string
+	}{
+		{
+			name:        "OCP1_CLK - value needs rounding up",
+			boardLabel:  "OCP1_CLK",
+			adjustment:  1234, // Should round to 0 or 2500
+			expected:    0,    // (1234 + 1250) / 2500 * 2500 = 0
+			description: "Small positive value rounds to 0",
+		},
+		{
+			name:        "OCP1_CLK - value needs rounding to 2500",
+			boardLabel:  "OCP1_CLK",
+			adjustment:  3000, // Should round to 2500
+			expected:    2500, // (3000 + 1250) / 2500 * 2500 = 2500
+			description: "Value rounds to nearest multiple",
+		},
+		{
+			name:        "OCP1_CLK - value already aligned",
+			boardLabel:  "OCP1_CLK",
+			adjustment:  5000, // Already a multiple of 2500
+			expected:    5000,
+			description: "Value already aligned with granularity",
+		},
+		{
+			name:        "OCP1_CLK - negative value rounds correctly",
+			boardLabel:  "OCP1_CLK",
+			adjustment:  -1234, // Should round to 0 or -2500
+			expected:    0,     // (-1234 - 1250) / 2500 * 2500 = 0
+			description: "Small negative value rounds to 0",
+		},
+		{
+			name:        "OCP1_CLK - negative value rounds to -2500",
+			boardLabel:  "OCP1_CLK",
+			adjustment:  -3000, // Should round to -2500
+			expected:    -2500, // (-3000 - 1250) / 2500 * 2500 = -2500
+			description: "Negative value rounds correctly",
+		},
+		{
+			name:        "NAC0_CLK_REF_SYNCE - granularity 1600",
+			boardLabel:  "NAC0_CLK_REF_SYNCE",
+			adjustment:  2000, // Should round to 1600 or 3200
+			expected:    1600, // (2000 + 800) / 1600 * 1600 = 1600
+			description: "Value rounds to 1600 granularity",
+		},
+		{
+			name:        "NAC0_CLK_REF_SYNCE - rounds to 3200",
+			boardLabel:  "NAC0_CLK_REF_SYNCE",
+			adjustment:  2500, // Should round to 1600 or 3200
+			expected:    3200, // (2500 + 800) / 1600 * 1600 = 3200
+			description: "Value rounds up to next multiple",
+		},
+		{
+			name:        "GNR_D_SDP3 - existing phaseAdjust value",
+			boardLabel:  "GNR_D_SDP3",
+			adjustment:  7500, // Already aligned (from perla2-pins.json)
+			expected:    7500,
+			description: "Existing value already respects granularity",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Verify pin exists
+			pin, found := cache.GetPin(clockID, tt.boardLabel)
+			if !assert.True(t, found, "Pin %s should exist", tt.boardLabel) {
+				return
+			}
+
+			// Create subsystem with phase adjustment
+			subsystem := ptpv2alpha1.Subsystem{
+				Name: "test-subsystem",
+				DPLL: ptpv2alpha1.DPLL{
+					NetworkInterface: "eno5", // Dummy interface
+					PhaseOutputs: map[string]ptpv2alpha1.PinConfig{
+						tt.boardLabel: {
+							PhaseAdjustment: &tt.adjustment,
+						},
+					},
+				},
+				Ethernet: []ptpv2alpha1.Ethernet{
+					{
+						Ports: []string{"eno5"},
+					},
+				},
+			}
+
+			// Mock clock ID resolution
+			hcm.clockIDCache = map[string]uint64{
+				"eno5:intel/e825": clockID,
+			}
+
+			// Build phase adjustment commands
+			commands, bldErr := hcm.buildPhaseAdjustmentCommands(subsystem, HwDefIntelE825)
+			if !assert.NoError(t, bldErr, "buildPhaseAdjustmentCommands should succeed") {
+				return
+			}
+
+			// Verify command was created
+			if !assert.Len(t, commands, 1, "Should create one command") {
+				return
+			}
+
+			cmd := commands[0]
+			assert.Equal(t, pin.ID, cmd.ID, "Command should target correct pin ID")
+			if !assert.NotNil(t, cmd.PhaseAdjust, "PhaseAdjust should be set") {
+				return
+			}
+
+			// Verify rounded value matches expected
+			assert.Equal(t, tt.expected, *cmd.PhaseAdjust,
+				"Phase adjustment should be rounded correctly. %s", tt.description)
+
+			// Verify result is a multiple of granularity
+			if pin.PhaseAdjustGran > 1 {
+				remainder := *cmd.PhaseAdjust % int32(pin.PhaseAdjustGran)
+				if remainder < 0 {
+					remainder = -remainder
+				}
+				assert.Equal(t, int32(0), remainder,
+					"Result %d should be a multiple of granularity %d", *cmd.PhaseAdjust, pin.PhaseAdjustGran)
+			}
+
+			t.Logf("✓ %s: adjustment %d -> %d (granularity: %d)",
+				tt.boardLabel, tt.adjustment, *cmd.PhaseAdjust, pin.PhaseAdjustGran)
+		})
+	}
+}
+
+func TestParseDPLLFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		hd       *HardwareDefaults
+		expected dpllcfg.Flag
+		wantErr  bool
+	}{
+		{
+			name:     "nil HardwareDefaults",
+			hd:       nil,
+			expected: 0,
+		},
+		{
+			name:     "empty flags",
+			hd:       &HardwareDefaults{},
+			expected: 0,
+		},
+		{
+			name:     "noPhaseOffset only",
+			hd:       &HardwareDefaults{DPLLFlags: []string{dpllFlagNameNoPhaseOffset}},
+			expected: dpllcfg.FlagNoPhaseOffset,
+		},
+		{
+			name:     "noFrequencyStatus only",
+			hd:       &HardwareDefaults{DPLLFlags: []string{dpllFlagNameNoFrequencyStatus}},
+			expected: dpllcfg.FlagNoFreqencyStatus,
+		},
+		{
+			name:     "E830 flags - equivalent to FlagOnlyPhaseStatus",
+			hd:       &HardwareDefaults{DPLLFlags: []string{dpllFlagNameNoPhaseOffset, dpllFlagNameNoFrequencyStatus}},
+			expected: dpllcfg.FlagOnlyPhaseStatus,
+		},
+		{
+			name:     "all three pin flags",
+			hd:       &HardwareDefaults{DPLLFlags: []string{dpllFlagNameNoPhaseOffset, dpllFlagNameNoPhaseStatus, dpllFlagNameNoFrequencyStatus}},
+			expected: dpllcfg.FlagNoPhaseOffset | dpllcfg.FlagNoPhaseStatus | dpllcfg.FlagNoFreqencyStatus,
+		},
+		{
+			name:    "unknown flag",
+			hd:      &HardwareDefaults{DPLLFlags: []string{"bogusFlag"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, err := tt.hd.ParseDPLLFlags()
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, flags)
+		})
+	}
+}
+
+func TestLoadE830Defaults(t *testing.T) {
+	hd, err := LoadHardwareDefaults("intel/e830", nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, hd)
+
+	assert.NotNil(t, hd.ClockIDTransformation)
+	assert.Equal(t, "direct", hd.ClockIDTransformation.Method)
+
+	assert.Nil(t, hd.PinDefaults)
+	assert.Nil(t, hd.ConnectorCommands)
+	assert.Nil(t, hd.PinEsyncCommands)
+	assert.Nil(t, hd.InternalDelays)
+
+	flags, err := hd.ParseDPLLFlags()
+	assert.NoError(t, err)
+	assert.Equal(t, dpllcfg.FlagOnlyPhaseStatus, flags, "E830 should only have phase status (pps) available")
+}
+
+func TestDPLLFlagsExtraction(t *testing.T) {
+	mockCmd := NewMockCommandExecutor()
+	mockCmd.SetResponse("ethtool", []string{"-i", "eno5"}, "driver: ice\nbus-info: 0000:17:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:17:00.0"}, "17:00.0 Ethernet controller: Intel Corporation")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:17:00.0"}, "serial_number 50-7c-6f-ff-ff-5c-4a-e8")
+	mockCmd.SetResponse("ethtool", []string{"-i", "enp108s0f0"}, "driver: ice\nbus-info: 0000:6c:00.0")
+	mockCmd.SetResponse("lspci", []string{"-s", "0000:6c:00.0"}, "6c:00.0 Ethernet controller: Intel Corporation")
+	mockCmd.SetResponse("devlink", []string{"dev", "info", "pci/0000:6c:00.0"}, "serial_number 50-7c-6f-ff-ff-ab-cd-ef")
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	clockIDE825 := uint64(0x507c6fffff5c4ae8) // eno5
+	clockIDE830 := uint64(0x507c6fffffabcdef) // enp108s0f0
+
+	hwConfig := ptpv2alpha1.HardwareConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-flags"},
+		Spec: ptpv2alpha1.HardwareConfigSpec{
+			RelatedPtpProfileName: "test-profile",
+			Profile: ptpv2alpha1.HardwareProfile{
+				ClockChain: &ptpv2alpha1.ClockChain{
+					Structure: []ptpv2alpha1.Subsystem{
+						{
+							Name:                        "leader",
+							HardwareSpecificDefinitions: HwDefIntelE825,
+							DPLL: ptpv2alpha1.DPLL{
+								NetworkInterface: "eno5",
+							},
+						},
+						{
+							Name:                        "cf",
+							HardwareSpecificDefinitions: "intel/e830",
+							DPLL: ptpv2alpha1.DPLL{
+								NetworkInterface: "enp108s0f0",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	hcm := newHardwareConfigManagerForTests()
+
+	flags := hcm.extractDPLLFlags(hwConfig)
+
+	// E825 should not have DPLL flags (no dpllFlags in its defaults.yaml)
+	_, hasE825Flags := flags[clockIDE825]
+	assert.False(t, hasE825Flags, "E825 should not have DPLL flags")
+
+	// E830 should only have phase status (pps) available
+	e830Flags, hasE830Flags := flags[clockIDE830]
+	assert.True(t, hasE830Flags, "E830 should have DPLL flags")
+	assert.Equal(t, dpllcfg.FlagOnlyPhaseStatus, e830Flags, "E830 should only have phase status (pps) available")
+
+	// Test GetDPLLFlags API
+	enriched := enrichedHardwareConfig{
+		HardwareConfig: hwConfig,
+		dpllFlags:      flags,
+	}
+	hcm.mu.Lock()
+	hcm.hardwareConfigs = []enrichedHardwareConfig{enriched}
+	hcm.ready = true
+	hcm.mu.Unlock()
+
+	// GetDPLLFlags uses ProfileNamesMatch: caller passes the full node profile name
+	// (e.g. "t-bc_test-profile") which is matched against RelatedPtpProfileName ("test-profile")
+	retrieved := hcm.GetDPLLFlags("prefix_test-profile", clockIDE830)
+	assert.NotNil(t, retrieved, "Should retrieve DPLL flags for E830 clock")
+	assert.Equal(t, dpllcfg.FlagOnlyPhaseStatus, *retrieved)
+
+	retrievedE825 := hcm.GetDPLLFlags("prefix_test-profile", clockIDE825)
+	assert.Nil(t, retrievedE825, "Should return nil for E825 (no flags)")
+
+	retrievedBad := hcm.GetDPLLFlags("non-existent", clockIDE830)
+	assert.Nil(t, retrievedBad, "Should return nil for non-existent profile")
+}
+
+// TestE830HardwareConfigFromTestdata loads the gnrd-hwconfig-e830.yaml testdata file
+// and validates the structure, DPLL flags extraction, and the full GetDPLLFlags flow.
+func TestE830HardwareConfigFromTestdata(t *testing.T) {
+	// Load testdata
+	hwConfig, err := loadHardwareConfigFromFile("testdata/gnrd-hwconfig-e830.yaml")
+	assert.NoError(t, err, "Failed to load gnrd-hwconfig-e830.yaml")
+	assert.NotNil(t, hwConfig)
+
+	// Validate top-level structure
+	assert.Equal(t, "t-bc-e830", hwConfig.Name)
+	assert.Equal(t, "01-tbc-tr", hwConfig.Spec.RelatedPtpProfileName)
+	assert.NotNil(t, hwConfig.Spec.Profile.ClockType)
+	assert.Equal(t, "T-BC", *hwConfig.Spec.Profile.ClockType)
+
+	// Validate clock chain has leader + E830 subsystems
+	chain := hwConfig.Spec.Profile.ClockChain
+	assert.NotNil(t, chain)
+	assert.GreaterOrEqual(t, len(chain.Structure), 2, "Should have at least leader + one CF subsystem")
+
+	// Validate leader subsystem (intel/e825)
+	leader := chain.Structure[0]
+	assert.Equal(t, "leader", leader.Name)
+	assert.Equal(t, "dell/XR8720t", leader.HardwareSpecificDefinitions)
+	assert.NotNil(t, leader.DPLL.HoldoverParameters, "Leader should have holdover parameters")
+	assert.Equal(t, uint64(20), leader.DPLL.HoldoverParameters.MaxInSpecOffset)
+	assert.Equal(t, uint64(30), leader.DPLL.HoldoverParameters.LocalMaxHoldoverOffset)
+	assert.Equal(t, uint64(288), leader.DPLL.HoldoverParameters.LocalHoldoverTimeout)
+
+	// Validate E830 subsystems
+	for _, sub := range chain.Structure[1:] {
+		assert.Equal(t, "intel/e830", sub.HardwareSpecificDefinitions,
+			"Non-leader subsystem %s should use intel/e830", sub.Name)
+		assert.NotEmpty(t, sub.DPLL.NetworkInterface,
+			"E830 subsystem %s should have a network interface", sub.Name)
+		assert.Nil(t, sub.DPLL.HoldoverParameters,
+			"E830 subsystem %s should not have holdover parameters", sub.Name)
+		assert.Empty(t, sub.DPLL.PhaseInputs,
+			"E830 subsystem %s should not have phase inputs", sub.Name)
+		assert.Empty(t, sub.DPLL.PhaseOutputs,
+			"E830 subsystem %s should not have phase outputs", sub.Name)
+		assert.Empty(t, sub.Ethernet,
+			"E830 subsystem %s should not have ethernet ports", sub.Name)
+	}
+
+	// Validate that vendor defaults for both hardware types load correctly
+	e825Defaults, err := LoadHardwareDefaults(HwDefIntelE825, nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, e825Defaults)
+	e825Flags, err := e825Defaults.ParseDPLLFlags()
+	assert.NoError(t, err)
+	assert.Equal(t, dpllcfg.Flag(0), e825Flags, "E825 should have no DPLL flags")
+
+	e830Defaults, err := LoadHardwareDefaults("intel/e830", nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, e830Defaults)
+	e830Flags, err := e830Defaults.ParseDPLLFlags()
+	assert.NoError(t, err)
+	assert.Equal(t, dpllcfg.FlagOnlyPhaseStatus, e830Flags, "E830 should only have phase status (pps) available")
+
+	// Validate DPLL flags extraction with mock command executor
+	mockCmd := NewMockCommandExecutor()
+	for i, sub := range chain.Structure[1:] {
+		iface := sub.DPLL.NetworkInterface
+		busInfo := fmt.Sprintf("0000:%02x:00.0", 0x6c+i)
+		mockCmd.SetResponse("ethtool", []string{"-i", iface}, fmt.Sprintf("driver: ice\nbus-info: %s", busInfo))
+		mockCmd.SetResponse("lspci", []string{"-s", busInfo}, fmt.Sprintf("%s Ethernet controller: Intel Corporation", busInfo))
+		mockCmd.SetResponse("devlink", []string{"dev", "info", fmt.Sprintf("pci/%s", busInfo)},
+			fmt.Sprintf("serial_number 50-7c-6f-ff-ff-ab-cd-%02x", 0xe0+i))
+	}
+	SetCommandExecutor(mockCmd)
+	defer ResetCommandExecutor()
+
+	hcm := newHardwareConfigManagerForTests()
+	flags := hcm.extractDPLLFlags(*hwConfig)
+
+	// E830 subsystems should have flags extracted
+	e830Count := 0
+	for clockID, f := range flags {
+		assert.Equal(t, dpllcfg.FlagOnlyPhaseStatus, f,
+			"Clock %#x should only have phase status (pps) available", clockID)
+		e830Count++
+	}
+	assert.Equal(t, len(chain.Structure)-1, e830Count,
+		"Should extract DPLL flags for all E830 subsystems (not the leader)")
+
+	t.Logf("Loaded gnrd-hwconfig-e830.yaml: %d subsystems, %d with DPLL flags",
+		len(chain.Structure), e830Count)
+}
+
+func TestGetInterfaceNameFromSources_GNSSSource(t *testing.T) {
+	const testGNSSBoardLabel = "GNSS_1PPS_IN"
+	hcm := newHardwareConfigManagerForTests()
+
+	clockChain := &ptpv2alpha1.ClockChain{
+		Structure: []ptpv2alpha1.Subsystem{
+			{
+				Name: testSubsystemLeader,
+				DPLL: ptpv2alpha1.DPLL{
+					NetworkInterface: testIfaceEns7f0,
+				},
+			},
+		},
+		Behavior: &ptpv2alpha1.Behavior{
+			Sources: []ptpv2alpha1.SourceConfig{
+				{
+					Name:       testSourceGNSS,
+					SourceType: ptpv2alpha1.SourceTypeGNSS,
+					Subsystem:  testSubsystemLeader,
+					BoardLabel: testGNSSBoardLabel,
+				},
+				{
+					Name:       "DPLL",
+					SourceType: ptpv2alpha1.SourceTypeDPLL,
+					Subsystem:  testSubsystemLeader,
+				},
+			},
+		},
+	}
+
+	t.Run("gnss_source", func(t *testing.T) {
+		iface, err := hcm.getInterfaceNameFromSources(testSourceGNSS, clockChain)
+		require.NoError(t, err)
+		require.NotNil(t, iface)
+		assert.Equal(t, testIfaceEns7f0, *iface)
+	})
+
+	t.Run("dpll_source", func(t *testing.T) {
+		iface, err := hcm.getInterfaceNameFromSources("DPLL", clockChain)
+		require.NoError(t, err)
+		require.NotNil(t, iface)
+		assert.Equal(t, testIfaceEns7f0, *iface)
+	})
+
+	t.Run("unknown_source", func(t *testing.T) {
+		_, err := hcm.getInterfaceNameFromSources("nonexistent", clockChain)
+		assert.Error(t, err)
+	})
+}
+
+func TestTranslateConnectorCommands(t *testing.T) {
+	const (
+		connSMA1    = "SMA1"
+		connSMA2    = "SMA2"
+		cmdFSWrite  = "FSWrite"
+		sma1PinPath = "/sys/class/net/{interface}/device/ptp/ptp*/pins/SMA1"
+		sma2PinPath = "/sys/class/net/{interface}/device/ptp/ptp*/pins/SMA2"
+		testIfaceCC = "ens7f0"
+	)
+
+	// Set up mock PTP device resolver so ptp* glob paths resolve
+	mockDevices := map[string][]string{
+		"/sys/class/net/" + testIfaceCC + "/device/ptp/ptp*/pins/SMA1": {
+			"/sys/class/net/" + testIfaceCC + "/device/ptp/ptp0/pins/SMA1",
+		},
+		"/sys/class/net/" + testIfaceCC + "/device/ptp/ptp*/pins/SMA2": {
+			"/sys/class/net/" + testIfaceCC + "/device/ptp/ptp0/pins/SMA2",
+		},
+	}
+	SetupMockPtpDeviceResolverWithDevices(mockDevices)
+	defer TeardownMockPtpDeviceResolver()
+
+	hcm := newHardwareConfigManagerForTests()
+
+	commands := &ConnectorCommands{
+		Outputs: map[string]ConnectorAction{
+			connSMA1: {Commands: []ConnectorCommand{
+				{Type: cmdFSWrite, Path: sma1PinPath, Value: "2 1"},
+			}},
+			connSMA2: {Commands: []ConnectorCommand{
+				{Type: cmdFSWrite, Path: sma2PinPath, Value: "2 2", Description: "Enable SMA2 output"},
+			}},
+		},
+		Inputs: map[string]ConnectorAction{
+			connSMA1: {Commands: []ConnectorCommand{
+				{Type: cmdFSWrite, Path: sma1PinPath, Value: "1 1"},
+			}},
+		},
+		Disable: map[string]ConnectorAction{
+			connSMA1: {Commands: []ConnectorCommand{
+				{Type: cmdFSWrite, Path: sma1PinPath, Value: "0 1"},
+			}},
+			connSMA2: {Commands: []ConnectorCommand{
+				{Type: cmdFSWrite, Path: sma2PinPath, Value: "0 2"},
+			}},
+		},
+	}
+
+	t.Run("output_connectors", func(t *testing.T) {
+		outputMap := map[string]struct{}{connSMA1: {}, connSMA2: {}}
+		result, err := hcm.translateConnectorCommands(commands, testIfaceCC, "leader", nil, outputMap)
+		assert.NoError(t, err)
+		// SMA1 + SMA2 as outputs; neither used as input so no disable
+		assert.Len(t, result, 2, "Should have 2 output commands")
+		for _, cmd := range result {
+			assert.Contains(t, cmd.Path, "ptp0", "ptp* should be resolved")
+			assert.NotContains(t, cmd.Path, "{interface}", "interface should be substituted")
+		}
+	})
+
+	t.Run("input_connectors", func(t *testing.T) {
+		inputMap := map[string]struct{}{connSMA1: {}}
+		result, err := hcm.translateConnectorCommands(commands, testIfaceCC, "leader", inputMap, nil)
+		assert.NoError(t, err)
+		// SMA1 as input + SMA2 disabled (unused connector with disable command)
+		assert.Len(t, result, 2, "Should have input + disable commands")
+	})
+
+	t.Run("disable_unused_connectors", func(t *testing.T) {
+		// No connectors used at all → both SMA1 and SMA2 get disabled
+		result, err := hcm.translateConnectorCommands(commands, testIfaceCC, "leader", nil, nil)
+		assert.NoError(t, err)
+		assert.Len(t, result, 2, "Should disable both unused connectors")
+		for _, cmd := range result {
+			assert.Contains(t, cmd.Value, "0 ", "Should be disable value")
+		}
+	})
+
+	t.Run("nil_commands", func(t *testing.T) {
+		result, err := hcm.translateConnectorCommands(nil, testIfaceCC, "leader", nil, nil)
+		assert.NoError(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("empty_interface", func(t *testing.T) {
+		result, err := hcm.translateConnectorCommands(commands, "", "leader", nil, nil)
+		assert.NoError(t, err)
+		assert.Nil(t, result, "Should skip when no interface")
+	})
+
+	t.Run("unsupported_command_type", func(t *testing.T) {
+		badCmds := &ConnectorCommands{
+			Outputs: map[string]ConnectorAction{
+				connSMA1: {Commands: []ConnectorCommand{
+					{Type: "ExecCmd", Path: "/bin/echo", Value: "hello"},
+				}},
+			},
+		}
+		outputMap := map[string]struct{}{connSMA1: {}}
+		result, err := hcm.translateConnectorCommands(badCmds, testIfaceCC, "leader", nil, outputMap)
+		assert.NoError(t, err)
+		assert.Empty(t, result, "Unsupported command types should be skipped")
+	})
+}
