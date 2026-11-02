@@ -37,7 +37,7 @@ def git(*args):
         fail(f"git {' '.join(args)} failed: {exc.stderr.decode().strip()}")
 
 
-def api(method, path, token, payload=None, allow_404=False):
+def api(method, path, token, payload=None, allow_404=False, allow_missing_ref=False):
     base = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
     url = path if path.startswith("http") else base + path
     data = None
@@ -57,6 +57,8 @@ def api(method, path, token, payload=None, allow_404=False):
     except urllib.error.HTTPError as exc:
         body = exc.read().decode()
         if allow_404 and exc.code == 404:
+            return None
+        if allow_missing_ref and exc.code == 422 and "Reference does not exist" in body:
             return None
         fail(f"{method} {path} returned {exc.code}: {body}")
 
@@ -187,7 +189,14 @@ def main():
         require_verified(args.write_repo, oid, args.token)
 
         branch_path = f"/repos/{args.write_repo}/git/refs/heads/{ref_path(args.branch)}"
-        if api("PATCH", branch_path, args.token, {"sha": oid, "force": True}, allow_404=True) is None:
+        if api(
+            "PATCH",
+            branch_path,
+            args.token,
+            {"sha": oid, "force": True},
+            allow_404=True,
+            allow_missing_ref=True,
+        ) is None:
             api(
                 "POST",
                 f"/repos/{args.write_repo}/git/refs",
