@@ -1,4 +1,4 @@
-name: "Push linuxptp daemon on merge to main"
+name: "linuxptp-daemon: Image Push"
 
 permissions:
   contents: read
@@ -12,11 +12,14 @@ env:
 on:
   push:
     branches:
-      - main
+      - monorepo
 
 jobs:
   build-and-push-image-linuxptp-daemon:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - name: Check out the repo
         uses: actions/checkout@v3
