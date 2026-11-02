@@ -5,6 +5,9 @@ on:
 jobs:
   vendors-ci-triggers-list:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - uses: actions/github-script@v5
         env:

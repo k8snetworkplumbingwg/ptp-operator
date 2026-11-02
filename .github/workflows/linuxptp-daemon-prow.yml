@@ -1,4 +1,4 @@
-name: "Prow github actions"
+name: "linuxptp-daemon: Run Jobs on PR"
 on:
   issue_comment:
     types: [created]
@@ -6,6 +6,9 @@ on:
 jobs:
   execute:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/linuxptp-daemon
     steps:
       - uses: jpmcb/prow-github-actions@v1.1.2
         with:
