@@ -199,7 +199,7 @@ spec:
   - name: Documentation operator
     url: https://github.com/k8snetworkplumbingwg/ptp-operator
   - name: Documentation operand
-    url: https://github.com/k8snetworkplumbingwg/linuxptp-daemon
+    url: https://github.com/k8snetworkplumbingwg/ptp-operator
   maintainers:
   - email: support@redhat.com
     name: Red Hat
