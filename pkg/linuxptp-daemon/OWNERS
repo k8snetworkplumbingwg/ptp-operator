@@ -1,0 +1,10 @@
+approvers:
+  - josephdrichard
+  - jzding
+  - lack
+  - nocturnalastro
+  - sebsoto
+  - vitus133
+
+component: "Networking"
+subcomponent: "ptp"
