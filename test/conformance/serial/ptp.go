@@ -3643,6 +3643,73 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					waitForGMClockState("1")
 				})
 			})
+
+			It("Testing simulated T-GM FREERUN when PHC PPS is missing and recovery", func() {
+				gmPod := getGMPod()
+				iface := simulatedGMTS2PhcInterface(fullConfig)
+				if iface == "" {
+					Skip("simulated T-GM profile has no ts2phc PHC interface")
+				}
+
+				By("Confirming the T-GM is initially locked")
+				waitForWPCGMReady(fullConfig)
+
+				By("Disconnecting external timestamp events from the netdevsim PHC")
+				if err := setNetdevsimPHCPPS(gmPod, iface, false); err != nil {
+					if strings.Contains(err.Error(), "not netdevsim") {
+						Skip(fmt.Sprintf("interface %s is not backed by netdevsim: %v", iface, err))
+					}
+					Expect(err).NotTo(HaveOccurred(), "could not disconnect netdevsim PHC PPS input")
+				}
+				DeferCleanup(func() {
+					if err := setNetdevsimPHCPPS(gmPod, iface, true); err != nil {
+						Fail(fmt.Sprintf("failed to restore netdevsim PHC PPS input for %s: %v", iface, err))
+					}
+				})
+
+				By("Waiting for the T-GM to enter FREERUN after PPS loss")
+				waitForGMClockClass(fullConfig, "248")
+
+				By("Restoring external timestamp events on the netdevsim PHC")
+				Expect(setNetdevsimPHCPPS(gmPod, iface, true)).To(Succeed())
+
+				By("Waiting for the T-GM to re-lock")
+				waitForWPCGMReady(fullConfig)
+			})
+
+			It("Testing simulated T-GM FREERUN when PHC PPS is delayed and recovery", func() {
+				gmPod := getGMPod()
+				iface := simulatedGMTS2PhcInterface(fullConfig)
+				if iface == "" {
+					Skip("simulated T-GM profile has no ts2phc PHC interface")
+				}
+
+				available, err := netdevsimPHCDelayAvailable(gmPod, iface)
+				Expect(err).NotTo(HaveOccurred(), "could not check for netdevsim PHC delay support")
+				if !available {
+					Skip("netdevsim PHC does not expose extts_delay_ms")
+				}
+
+				By("Confirming the T-GM is initially locked")
+				waitForWPCGMReady(fullConfig)
+
+				By("Delaying T-GM PHC PPS events to 400 ms after each TAI second")
+				Expect(setNetdevsimPHCPPSDelay(gmPod, iface, 400)).To(Succeed())
+				DeferCleanup(func() {
+					if err := setNetdevsimPHCPPSDelay(gmPod, iface, 0); err != nil {
+						Fail(fmt.Sprintf("failed to clear netdevsim PHC PPS delay for %s: %v", iface, err))
+					}
+				})
+
+				By("Waiting for the T-GM to enter FREERUN after delayed PPS")
+				waitForGMClockClass(fullConfig, "248")
+
+				By("Removing the PHC PPS delay")
+				Expect(setNetdevsimPHCPPSDelay(gmPod, iface, 0)).To(Succeed())
+
+				By("Waiting for the T-GM to re-lock")
+				waitForWPCGMReady(fullConfig)
+			})
 		})
 
 		Context("Simulated T-GM Events verification (V2)", func() {
@@ -4623,6 +4690,30 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 		})
 	})
 })
+
+func simulatedGMTS2PhcInterface(fullConfig testconfig.TestConfig) string {
+	if fullConfig.DiscoveredGrandMasterPtpConfig == nil {
+		return ""
+	}
+	ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredGrandMasterPtpConfig)
+	for _, profile := range ptpConfig.Spec.Profile {
+		if profile.Ts2PhcConf != nil {
+			if iface := firstTS2PhcInterface(*profile.Ts2PhcConf); iface != "" {
+				return iface
+			}
+		}
+	}
+	return ""
+}
+
+func waitForGMClockClass(fullConfig testconfig.TestConfig, expected string) {
+	gmPod := getGMPod()
+	Eventually(func() bool {
+		buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		return checkPtp4lClockClassInMetrics(buf.String(), expected)
+	}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(BeTrue(),
+		fmt.Sprintf("Expected GM ptp4l clock class to reach %s", expected))
+}
 
 func firstTS2PhcInterface(config string) string {
 	sectionRe := regexp.MustCompile(`(?m)^\s*\[([^\]]+)\]\s*$`)
