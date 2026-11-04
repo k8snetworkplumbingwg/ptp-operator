@@ -322,6 +322,10 @@ Two ptp4l configurations must exist with the phc2sysOPts field set to an empty s
 The names of these ptp4l configurations will be used and listed under the ptpSettings/haProfiles key in the phc2sys-only enabled ptpConfig.
 
 
+### GNSS HardwareConfig validation
+
+For GNSS sources in `HardwareConfig`, omitting `init.constellations` applies the GPS default. An explicitly empty constellation list is rejected. If `match` is provided, exactly one device selector must be configured; nested serial, Ethernet, and USB selectors must include their required identity fields. Omitting `match` enables autodetection.
+
 ## Test Coverage
 
 Run `make coverage-gate` to compare test coverage of your branch against the upstream main branch. The script auto-detects the upstream remote and its tracking branch. Integration tests and the standalone CRD validation tool are excluded from this unit-coverage comparison.

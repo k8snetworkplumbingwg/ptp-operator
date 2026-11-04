@@ -301,10 +301,10 @@ type GNSSSurveyParameters struct {
 // UBLXCommand allows arbitrary addition of ubxtool commands.
 type UBLXCommand struct {
 	// Args are the actual commandline arguments to pass to ubxtool  Note: Protocol '-P' is autodetected
-	Args []string `json:"args"`
+	Args []string `json:"args" yaml:"args"`
 
 	// Record will record the resulting output in the object status when true
-	Record bool `json:"reportOutput,omitempty"`
+	Record bool `json:"reportOutput,omitempty" yaml:"reportOutput,omitempty"`
 }
 
 // Condition defines a condition that evaluates an array of source states with implicit AND logic between them.
@@ -616,6 +616,84 @@ func (pc *PinConfig) Validate() error {
 	return nil
 }
 
+// Validate ensures a GNSSMatcher specifies exactly one device selector.
+func (gm *GNSSMatcher) Validate() error {
+	selectors := 0
+	if gm.TTYDevice != "" {
+		selectors++
+	}
+	if gm.SerialDevice != nil {
+		if gm.SerialDevice.ACPI == nil || gm.SerialDevice.ACPI.HID == "" {
+			return fmt.Errorf("serialDevice must specify an ACPI hardware ID")
+		}
+		selectors++
+	}
+	if gm.EthernetInterface != "" {
+		selectors++
+	}
+	if gm.EthernetDevice != nil {
+		if gm.EthernetDevice.Name == "" && gm.EthernetDevice.PCIAddress == "" &&
+			gm.EthernetDevice.PermanentMACAddress == "" && gm.EthernetDevice.Slot == "" &&
+			gm.EthernetDevice.VendorID == "" && gm.EthernetDevice.DeviceID == "" {
+			return fmt.Errorf("ethernetDevice must specify at least one selection criterion")
+		}
+		selectors++
+	}
+	if gm.USBDevice != nil {
+		if gm.USBDevice.Vendor == "" || gm.USBDevice.Product == "" {
+			return fmt.Errorf("usbDevice must specify both vendor and product IDs")
+		}
+		selectors++
+	}
+	if selectors != 1 {
+		return fmt.Errorf("exactly one of ttyDevice, serialDevice, ethernetInterface, ethernetDevice, or usbDevice must be provided")
+	}
+	return nil
+}
+
+// Validate ensures GNSSConfig contains valid configuration
+func (gc *GNSSConfig) Validate() error {
+	// Validate matcher one-of rule if present
+	if gc.Match != nil {
+		if err := gc.Match.Validate(); err != nil {
+			return fmt.Errorf("invalid match: %w", err)
+		}
+	}
+
+	// Apply the declared GPS default when constellations are omitted. A non-nil
+	// empty slice represents an explicitly empty list and remains invalid.
+	if gc.Init.Constellations == nil {
+		gc.Init.Constellations = []ConstellationID{ConstellationGPS}
+	}
+	if len(gc.Init.Constellations) == 0 {
+		return fmt.Errorf("at least one constellation must be specified")
+	}
+
+	// Validate constellation values
+	validConstellations := map[ConstellationID]bool{
+		ConstellationGPS:     true,
+		ConstellationGalileo: true,
+		ConstellationGLONASS: true,
+		ConstellationBeiDou:  true,
+		ConstellationSBAS:    true,
+	}
+	for _, c := range gc.Init.Constellations {
+		if !validConstellations[c] {
+			return fmt.Errorf("invalid constellation %q", c)
+		}
+	}
+
+	// Validate survey parameters
+	if gc.Init.SurveyIn.ObservationTime < 0 {
+		return fmt.Errorf("survey observationTime must be non-negative")
+	}
+	if gc.Init.SurveyIn.Accuracy < 0 {
+		return fmt.Errorf("survey accuracy must be non-negative")
+	}
+
+	return nil
+}
+
 // Validate ensures proper sub-config sections are specified based on sourceType
 func (sc *SourceConfig) Validate() error {
 	if sc.Subsystem == "" {
@@ -636,6 +714,9 @@ func (sc *SourceConfig) Validate() error {
 	case SourceTypeGNSS:
 		if sc.GNSSConfig == nil {
 			return fmt.Errorf("gnssConfig must be specified when sourceType is gnss")
+		}
+		if err := sc.GNSSConfig.Validate(); err != nil {
+			return fmt.Errorf("invalid gnssConfig: %w", err)
 		}
 	default:
 	}
