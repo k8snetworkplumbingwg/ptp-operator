@@ -85,7 +85,7 @@ metadata:
     categories: Networking
     certified: "false"
     containerImage: quay.io/openshift/origin-ptp-operator:5.1
-    createdAt: "2026-09-15T08:10:09Z"
+    createdAt: "2025-09-10T10:13:05"
     description: This software enables configuration of Precision Time Protocol(PTP)
       on Kubernetes. It detects hardware capable PTP devices on each node, and configures
       linuxptp processes such as ptp4l, phc2sys and timemaster.
@@ -209,73 +209,8 @@ spec:
           - subjectaccessreviews
           verbs:
           - create
-        - apiGroups:
-          - ""
-          resources:
-          - pods
-          verbs:
-          - '*'
-        - apiGroups:
-          - ""
-          resources:
-          - configmaps
-          verbs:
-          - '*'
         serviceAccountName: linuxptp-daemon
       - rules:
-        - apiGroups:
-          - ""
-          resources:
-          - nodes
-          verbs:
-          - get
-          - list
-          - watch
-        - apiGroups:
-          - ""
-          resources:
-          - configmaps
-          - services
-          verbs:
-          - get
-          - create
-          - update
-        - apiGroups:
-          - ""
-          resources:
-          - pods
-          - services
-          - endpoints
-          verbs:
-          - get
-          - list
-          - watch
-        - apiGroups:
-          - apps
-          resources:
-          - daemonsets
-          verbs:
-          - get
-          - create
-          - update
-        - apiGroups:
-          - monitoring.coreos.com
-          resources:
-          - servicemonitors
-          - prometheusrules
-          verbs:
-          - get
-          - create
-          - update
-        - apiGroups:
-          - rbac.authorization.k8s.io
-          resources:
-          - roles
-          - rolebindings
-          verbs:
-          - get
-          - create
-          - update
         - apiGroups:
           - config.openshift.io
           resources:
@@ -284,17 +219,6 @@ spec:
           verbs:
           - get
           - list
-          - watch
-        - apiGroups:
-          - networking.k8s.io
-          resources:
-          - networkpolicies
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - update
           - watch
         - apiGroups:
           - ptp.openshift.io
@@ -320,6 +244,14 @@ spec:
           - ptpoperatorconfigs
           verbs:
           - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - nodes
+          verbs:
           - get
           - list
           - watch
@@ -411,6 +343,18 @@ spec:
           - securitycontextconstraints
           verbs:
           - use
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - '*'
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - '*'
         serviceAccountName: linuxptp-daemon
       - rules:
         - apiGroups:
@@ -454,6 +398,95 @@ spec:
           verbs:
           - create
           - patch
+        - apiGroups:
+          - networking.k8s.io
+          resources:
+          - networkpolicies
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - '*'
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - '*'
+        - apiGroups:
+          - ""
+          resources:
+          - services
+          verbs:
+          - '*'
+        - apiGroups:
+          - ""
+          resources:
+          - serviceaccounts
+          verbs:
+          - '*'
+        - apiGroups:
+          - apps
+          resources:
+          - daemonsets
+          verbs:
+          - '*'
+        - apiGroups:
+          - apps
+          resources:
+          - replicasets
+          verbs:
+          - '*'
+        - apiGroups:
+          - apps
+          resources:
+          - deployments
+          verbs:
+          - '*'
+        - apiGroups:
+          - monitoring.coreos.com
+          resources:
+          - servicemonitors
+          verbs:
+          - '*'
+        - apiGroups:
+          - monitoring.coreos.com
+          resources:
+          - prometheusrules
+          verbs:
+          - '*'
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - roles
+          verbs:
+          - get
+          - create
+          - update
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - rolebindings
+          verbs:
+          - get
+          - create
+          - update
+        - apiGroups:
+          - ""
+          resources:
+          - endpoints
+          verbs:
+          - get
+          - list
+          - watch
         - apiGroups:
           - ""
           resources:
