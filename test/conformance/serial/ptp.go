@@ -3654,24 +3654,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Confirming the T-GM is initially locked")
 				waitForWPCGMReady(fullConfig)
 
-				By("Disconnecting external timestamp events from the netdevsim PHC")
-				if err := setNetdevsimPHCPPS(gmPod, iface, false); err != nil {
-					if strings.Contains(err.Error(), "not netdevsim") {
-						Skip(fmt.Sprintf("interface %s is not backed by netdevsim: %v", iface, err))
-					}
-					Expect(err).NotTo(HaveOccurred(), "could not disconnect netdevsim PHC PPS input")
-				}
+				By("Disconnecting external timestamp events from the T-GM PHC")
+				Expect(setPHCExternalTimestamp(gmPod, iface, false)).To(Succeed(), "could not disconnect PHC PPS input")
 				DeferCleanup(func() {
-					if err := setNetdevsimPHCPPS(gmPod, iface, true); err != nil {
-						Fail(fmt.Sprintf("failed to restore netdevsim PHC PPS input for %s: %v", iface, err))
+					if err := setPHCExternalTimestamp(gmPod, iface, true); err != nil {
+						Fail(fmt.Sprintf("failed to restore PHC PPS input for %s: %v", iface, err))
 					}
 				})
 
 				By("Waiting for the T-GM to enter FREERUN after PPS loss")
 				waitForGMClockClass(fullConfig, "248")
 
-				By("Restoring external timestamp events on the netdevsim PHC")
-				Expect(setNetdevsimPHCPPS(gmPod, iface, true)).To(Succeed())
+				By("Restoring external timestamp events on the T-GM PHC")
+				Expect(setPHCExternalTimestamp(gmPod, iface, true)).To(Succeed())
 
 				By("Waiting for the T-GM to re-lock")
 				waitForWPCGMReady(fullConfig)
@@ -4614,24 +4609,19 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			By("Confirming the T-BC is initially locked")
 			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
 
-			By("Disconnecting external timestamp events from the netdevsim PHC")
-			if err := setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, false); err != nil {
-				if strings.Contains(err.Error(), "not netdevsim") {
-					Skip(fmt.Sprintf("interface %s is not backed by netdevsim: %v", iface, err))
-				}
-				Expect(err).NotTo(HaveOccurred(), "could not disconnect netdevsim PHC PPS input")
-			}
+			By("Disconnecting external timestamp events from the T-BC receiver PHC")
+			Expect(setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, false)).To(Succeed(), "could not disconnect PHC PPS input")
 			DeferCleanup(func() {
-				if err := setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, true); err != nil {
-					Fail(fmt.Sprintf("failed to restore netdevsim PHC PPS input for %s: %v", iface, err))
+				if err := setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, true); err != nil {
+					Fail(fmt.Sprintf("failed to restore PHC PPS input for %s: %v", iface, err))
 				}
 			})
 
 			By("Waiting for ts2phc PPS monitoring to drive the T-BC to FREERUN")
 			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "248", pkg.TimeoutInterval2Seconds)
 
-			By("Restoring external timestamp events on the netdevsim PHC")
-			Expect(setNetdevsimPHCPPS(fullConfig.DiscoveredClockUnderTestPod, iface, true)).To(Succeed())
+			By("Restoring external timestamp events on the T-BC receiver PHC")
+			Expect(setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, true)).To(Succeed())
 
 			By("Waiting for the T-BC to re-lock after PPS is restored")
 			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
@@ -4726,10 +4716,10 @@ func firstTS2PhcInterface(config string) string {
 	return ""
 }
 
-// setNetdevsimPHCPPS toggles the external timestamp stream consumed by ts2phc.
-// The mock PHC exposes this via the PTP sysfs extts_enable attribute. The
-// linuxptp-daemon container shares the host network and exposes host sysfs at /sys.
-func setNetdevsimPHCPPS(pod *v1core.Pod, iface string, enable bool) error {
+// setPHCExternalTimestamp toggles the external timestamp stream consumed by
+// ts2phc through the standard PTP sysfs extts_enable attribute. The interface's
+// device/ptp link resolves to the PHC on both hardware and netdevsim-DPDK.
+func setPHCExternalTimestamp(pod *v1core.Pod, iface string, enable bool) error {
 	action := "0"
 	if enable {
 		action = "1"
@@ -4737,8 +4727,6 @@ func setNetdevsimPHCPPS(pod *v1core.Pod, iface string, enable bool) error {
 	const command = `set -eu
 iface="$1"
 action="$2"
-driver=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver")")
-[ "$driver" = netdevsim ] || { echo "interface $iface is bound to $driver, not netdevsim" >&2; exit 2; }
 for ptp in /sys/class/net/"$iface"/device/ptp/ptp*; do
   [ -e "$ptp" ] || continue
   attr="$(readlink -f "$ptp")/extts_enable"
