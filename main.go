@@ -148,6 +148,10 @@ func main() {
 
 	namespace := os.Getenv("WATCH_NAMESPACE")
 	byObject := map[client.Object]cache.ByObject{
+		&ptpv2alpha1.HardwareConfig{}: {
+			// Keep HardwareConfig watches cluster-wide regardless of WATCH_NAMESPACE.
+			Namespaces: map[string]cache.Config{},
+		},
 		&corev1.Secret{}: {
 			Namespaces: map[string]cache.Config{
 				names.Namespace: {},
@@ -179,14 +183,14 @@ func main() {
 		}
 		setupLog.Info(fmt.Sprintf("Namespaces added to the cache: %s", namespace))
 	} else {
-		// If no WATCH_NAMESPACE is set, restrict cache to openshift-ptp namespace
+		// If no WATCH_NAMESPACE is set, restrict cache to the operator namespace
 		options.Cache = cache.Options{
 			DefaultNamespaces: map[string]cache.Config{
 				names.Namespace: {},
 			},
 			ByObject: byObject,
 		}
-		setupLog.Info("Restricting cache to openshift-ptp namespace")
+		setupLog.Info("Restricting cache to operator namespace", "namespace", names.Namespace)
 	}
 
 	mgr, err := ctrl.NewManager(restConfig, options)

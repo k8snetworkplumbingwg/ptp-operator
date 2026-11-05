@@ -513,13 +513,17 @@ spec:
           resources:
           - roles
           verbs:
-          - '*'
+          - get
+          - create
+          - update
         - apiGroups:
           - rbac.authorization.k8s.io
           resources:
           - rolebindings
           verbs:
-          - '*'
+          - get
+          - create
+          - update
         - apiGroups:
           - ""
           resources:
