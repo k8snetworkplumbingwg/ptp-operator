@@ -324,6 +324,8 @@ The names of these ptp4l configurations will be used and listed under the ptpSet
 
 ## Test Coverage
 
+The serial conformance suite includes T-BC tests that disable PHC external timestamp (PPS) events and verify FREERUN/recovery on real hardware and netdevsim-DPDK. Simulated T-GM and T-BC tests also delay PPS by 400 ms beyond the ts2phc poll window; these delay-injection tests skip when the PHC does not expose `extts_delay_ms`.
+
 Run `make coverage-gate` to compare test coverage of your branch against the upstream main branch. The script auto-detects the upstream remote and its tracking branch. Integration tests and the standalone CRD validation tool are excluded from this unit-coverage comparison.
 
 ```sh

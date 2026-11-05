@@ -3643,6 +3643,68 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					waitForGMClockState("1")
 				})
 			})
+
+			It("Testing simulated T-GM FREERUN when PHC PPS is missing and recovery", func() {
+				gmPod := getGMPod()
+				iface := simulatedGMTS2PhcInterface(fullConfig)
+				if iface == "" {
+					Skip("simulated T-GM profile has no ts2phc PHC interface")
+				}
+
+				By("Confirming the T-GM is initially locked")
+				waitForWPCGMReady(fullConfig)
+
+				By("Disconnecting external timestamp events from the T-GM PHC")
+				Expect(setPHCExternalTimestamp(gmPod, iface, false)).To(Succeed(), "could not disconnect PHC PPS input")
+				DeferCleanup(func() {
+					if err := setPHCExternalTimestamp(gmPod, iface, true); err != nil {
+						Fail(fmt.Sprintf("failed to restore PHC PPS input for %s: %v", iface, err))
+					}
+				})
+
+				By("Waiting for the T-GM to enter FREERUN after PPS loss")
+				waitForGMClockClass(fullConfig, "248")
+
+				By("Restoring external timestamp events on the T-GM PHC")
+				Expect(setPHCExternalTimestamp(gmPod, iface, true)).To(Succeed())
+
+				By("Waiting for the T-GM to re-lock")
+				waitForWPCGMReady(fullConfig)
+			})
+
+			It("Testing simulated T-GM FREERUN when PHC PPS is delayed and recovery", func() {
+				gmPod := getGMPod()
+				iface := simulatedGMTS2PhcInterface(fullConfig)
+				if iface == "" {
+					Skip("simulated T-GM profile has no ts2phc PHC interface")
+				}
+
+				available, err := netdevsimPHCDelayAvailable(gmPod, iface)
+				Expect(err).NotTo(HaveOccurred(), "could not check for netdevsim PHC delay support")
+				if !available {
+					Skip("netdevsim PHC does not expose extts_delay_ms")
+				}
+
+				By("Confirming the T-GM is initially locked")
+				waitForWPCGMReady(fullConfig)
+
+				By("Delaying T-GM PHC PPS events to 400 ms after each TAI second")
+				Expect(setNetdevsimPHCPPSDelay(gmPod, iface, 400)).To(Succeed())
+				DeferCleanup(func() {
+					if err := setNetdevsimPHCPPSDelay(gmPod, iface, 0); err != nil {
+						Fail(fmt.Sprintf("failed to clear netdevsim PHC PPS delay for %s: %v", iface, err))
+					}
+				})
+
+				By("Waiting for the T-GM to enter FREERUN after delayed PPS")
+				waitForGMClockClass(fullConfig, "248")
+
+				By("Removing the PHC PPS delay")
+				Expect(setNetdevsimPHCPPSDelay(gmPod, iface, 0)).To(Succeed())
+
+				By("Waiting for the T-GM to re-lock")
+				waitForWPCGMReady(fullConfig)
+			})
 		})
 
 		Context("Simulated T-GM Events verification (V2)", func() {
@@ -4519,8 +4581,222 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			Expect(actual).To(Equal(expectedTransitions),
 				"Clock class transitions did not match expected order (raw: %v)", clockClassTransitions)
 		})
+
+		It("T-BC goes FREERUN when its PHC PPS input is lost and re-locks when restored", func() {
+			if fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
+				Skip("test valid only for T-BC test config")
+			}
+
+			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+			var ts2phcConf string
+			for _, profile := range ptpConfig.Spec.Profile {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr") && profile.Ts2PhcConf != nil {
+					ts2phcConf = *profile.Ts2PhcConf
+					break
+				}
+			}
+			iface := firstTS2PhcInterface(ts2phcConf)
+			if iface == "" {
+				Skip("T-BC receiver profile has no ts2phc PHC interface")
+			}
+			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			trCfgName, err := ptphelper.GetConfigForProfile(ptpConfig.Name, "tbc-tr", nil, &nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			ttCfgName, err := ptphelper.GetConfigForProfile(ptpConfig.Name, "tbc-tt", nil, &nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			trConfigName := strings.TrimPrefix(trCfgName, "/var/run/")
+
+			By("Confirming the T-BC is initially locked")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
+
+			By("Disconnecting external timestamp events from the T-BC receiver PHC")
+			Expect(setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, false)).To(Succeed(), "could not disconnect PHC PPS input")
+			DeferCleanup(func() {
+				if err := setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, true); err != nil {
+					Fail(fmt.Sprintf("failed to restore PHC PPS input for %s: %v", iface, err))
+				}
+			})
+
+			By("Waiting for ts2phc PPS monitoring to drive the T-BC to FREERUN")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "248", pkg.TimeoutInterval2Seconds)
+
+			By("Restoring external timestamp events on the T-BC receiver PHC")
+			Expect(setPHCExternalTimestamp(fullConfig.DiscoveredClockUnderTestPod, iface, true)).To(Succeed())
+
+			By("Waiting for the T-BC to re-lock after PPS is restored")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
+		})
+
+		It("T-BC goes FREERUN when PHC PPS is delayed past the ts2phc poll window and recovers", func() {
+			if fullConfig.PtpModeDiscovered != testconfig.TelcoBoundaryClock {
+				Skip("test valid only for T-BC test config")
+			}
+
+			ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig)
+			var ts2phcConf string
+			for _, profile := range ptpConfig.Spec.Profile {
+				if profile.Name != nil && ptphelper.QualifyProfileName(ptpConfig.Name, *profile.Name) == ptphelper.QualifyProfileName(ptpConfig.Name, "tbc-tr") && profile.Ts2PhcConf != nil {
+					ts2phcConf = *profile.Ts2PhcConf
+					break
+				}
+			}
+			iface := firstTS2PhcInterface(ts2phcConf)
+			if iface == "" {
+				Skip("T-BC receiver profile has no ts2phc PHC interface")
+			}
+
+			available, err := netdevsimPHCDelayAvailable(fullConfig.DiscoveredClockUnderTestPod, iface)
+			Expect(err).NotTo(HaveOccurred(), "could not check for netdevsim PHC delay support")
+			if !available {
+				Skip("netdevsim PHC does not expose extts_delay_ms")
+			}
+
+			nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+			trCfgName, err := ptphelper.GetConfigForProfile(ptpConfig.Name, "tbc-tr", nil, &nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			ttCfgName, err := ptphelper.GetConfigForProfile(ptpConfig.Name, "tbc-tt", nil, &nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			trConfigName := strings.TrimPrefix(trCfgName, "/var/run/")
+
+			By("Confirming the T-BC is initially locked")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
+
+			By("Delaying receiver PHC PPS events to 400 ms after each TAI second")
+			Expect(setNetdevsimPHCPPSDelay(fullConfig.DiscoveredClockUnderTestPod, iface, 400)).To(Succeed())
+			DeferCleanup(func() {
+				if err := setNetdevsimPHCPPSDelay(fullConfig.DiscoveredClockUnderTestPod, iface, 0); err != nil {
+					Fail(fmt.Sprintf("failed to clear netdevsim PHC PPS delay for %s: %v", iface, err))
+				}
+			})
+
+			By("Waiting for ts2phc poll monitoring to drive the T-BC to FREERUN")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "248", 200*time.Millisecond)
+
+			By("Removing the PHC PPS delay")
+			Expect(setNetdevsimPHCPPSDelay(fullConfig.DiscoveredClockUnderTestPod, iface, 0)).To(Succeed())
+
+			By("Waiting for the T-BC to re-lock after PPS timing is restored")
+			waitForTBCClockClass(fullConfig, trConfigName, ttCfgName, "6", pkg.TimeoutInterval2Seconds)
+		})
 	})
 })
+
+func simulatedGMTS2PhcInterface(fullConfig testconfig.TestConfig) string {
+	if fullConfig.DiscoveredGrandMasterPtpConfig == nil {
+		return ""
+	}
+	ptpConfig := (*ptpv1.PtpConfig)(fullConfig.DiscoveredGrandMasterPtpConfig)
+	for _, profile := range ptpConfig.Spec.Profile {
+		if profile.Ts2PhcConf != nil {
+			if iface := firstTS2PhcInterface(*profile.Ts2PhcConf); iface != "" {
+				return iface
+			}
+		}
+	}
+	return ""
+}
+
+func waitForGMClockClass(fullConfig testconfig.TestConfig, expected string) {
+	gmPod := getGMPod()
+	Eventually(func() bool {
+		buf, _, _ := pods.ExecCommand(client.Client, true, gmPod, pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		return checkPtp4lClockClassInMetrics(buf.String(), expected)
+	}, pkg.TimeoutIn3Minutes, 2*time.Second).Should(BeTrue(),
+		fmt.Sprintf("Expected GM ptp4l clock class to reach %s", expected))
+}
+
+func firstTS2PhcInterface(config string) string {
+	sectionRe := regexp.MustCompile(`(?m)^\s*\[([^\]]+)\]\s*$`)
+	for _, match := range sectionRe.FindAllStringSubmatch(config, -1) {
+		iface := strings.TrimSpace(match[1])
+		if iface != "" && !strings.EqualFold(iface, "global") && !strings.EqualFold(iface, "nmea") {
+			return iface
+		}
+	}
+	return ""
+}
+
+// setPHCExternalTimestamp toggles the external timestamp stream consumed by
+// ts2phc through the standard PTP sysfs extts_enable attribute. The interface's
+// device/ptp link resolves to the PHC on both hardware and netdevsim-DPDK.
+func setPHCExternalTimestamp(pod *v1core.Pod, iface string, enable bool) error {
+	action := "0"
+	if enable {
+		action = "1"
+	}
+	const command = `set -eu
+iface="$1"
+action="$2"
+for ptp in /sys/class/net/"$iface"/device/ptp/ptp*; do
+  [ -e "$ptp" ] || continue
+  attr="$(readlink -f "$ptp")/extts_enable"
+  [ -e "$attr" ] || { echo "missing $attr" >&2; exit 1; }
+  printf '0 %s\n' "$action" > "$attr"
+  exit 0
+done
+echo "no PHC found for interface $iface" >&2
+exit 1`
+	_, stderr, err := pods.ExecCommand(client.Client, true, pod, pkg.PtpContainerName,
+		[]string{"sh", "-c", command, "sh", iface, action})
+	if err != nil {
+		return fmt.Errorf("failed to set PHC external timestamp enable=%t: %w (%s)", enable, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// netdevsimPHCDelayAvailable reports whether the interface's mock PHC exposes
+// the optional extts_delay_ms injection control.
+func netdevsimPHCDelayAvailable(pod *v1core.Pod, iface string) (bool, error) {
+	const command = `set -eu
+iface="$1"
+driver=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver")")
+if [ "$driver" != netdevsim ]; then
+  echo missing
+  exit 0
+fi
+for ptp in /sys/class/net/"$iface"/device/ptp/ptp*; do
+  [ -e "$ptp" ] || continue
+  attr="$(readlink -f "$ptp")/extts_delay_ms"
+  if [ -e "$attr" ]; then
+    echo present
+    exit 0
+  fi
+done
+echo missing`
+	stdout, stderr, err := pods.ExecCommand(client.Client, true, pod, pkg.PtpContainerName,
+		[]string{"sh", "-c", command, "sh", iface})
+	if err != nil {
+		return false, fmt.Errorf("failed to probe PHC delay control: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()) == "present", nil
+}
+
+// setNetdevsimPHCPPSDelay configures the mock PHC's per-device PPS delay.
+func setNetdevsimPHCPPSDelay(pod *v1core.Pod, iface string, delayMS int) error {
+	if delayMS < 0 || delayMS > 900 {
+		return fmt.Errorf("PHC PPS delay %d ms is outside supported range 0..900", delayMS)
+	}
+	const command = `set -eu
+iface="$1"
+delay_ms="$2"
+driver=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver")")
+[ "$driver" = netdevsim ] || { echo "interface $iface is bound to $driver, not netdevsim" >&2; exit 2; }
+for ptp in /sys/class/net/"$iface"/device/ptp/ptp*; do
+  [ -e "$ptp" ] || continue
+  attr="$(readlink -f "$ptp")/extts_delay_ms"
+  [ -e "$attr" ] || { echo "missing $attr" >&2; exit 1; }
+  printf '%s\n' "$delay_ms" > "$attr"
+  exit 0
+done
+echo "no PHC found for interface $iface" >&2
+exit 1`
+	_, stderr, err := pods.ExecCommand(client.Client, true, pod, pkg.PtpContainerName,
+		[]string{"sh", "-c", command, "sh", iface, strconv.Itoa(delayMS)})
+	if err != nil {
+		return fmt.Errorf("failed to set PHC PPS delay to %d ms: %w (%s)", delayMS, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
 
 func checkStabilityOfWPCGMUsingMetrics(fullConfig testconfig.TestConfig) {
 	checkProcessStatus(fullConfig, "1")
@@ -5384,6 +5660,45 @@ func killTs2phcInBackground(stopChan chan struct{}, fullConfig testconfig.TestCo
 			time.Sleep(2 * time.Millisecond) // Keep hammering every 2 ms
 		}
 	}
+}
+
+// waitForTBCClockClass waits for the receiver's clock class. Config-labeled
+// metrics identify the receiver directly; older node-level metrics fall back
+// to querying the T-BC transmitter's propagated clock class via PMC.
+func waitForTBCClockClass(fullConfig testconfig.TestConfig, configName, pmcConfigName, expectedClass string, pollInterval time.Duration) {
+	Eventually(func() bool {
+		buf, _, err := pods.ExecCommand(client.Client, true, fullConfig.DiscoveredClockUnderTestPod,
+			pkg.PtpContainerName, []string{"curl", pkg.MetricsEndPoint})
+		if err != nil {
+			refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+			return false
+		}
+		nodeName := fullConfig.DiscoveredClockUnderTestPod.Spec.NodeName
+		noConfigMetric := false
+		for _, line := range strings.Split(buf.String(), "\n") {
+			matches := clockClassRe.FindStringSubmatch(line)
+			if matches == nil || matches[1] != nodeName || matches[2] != "ptp4l" {
+				continue
+			}
+			if strings.Contains(line, `config="`) {
+				if strings.Contains(line, `config="`+configName+`"`) && matches[3] == expectedClass {
+					return true
+				}
+				continue
+			}
+			noConfigMetric = true
+		}
+		if noConfigMetric {
+			clockClass, err := ptptesthelper.GetClockClassViaPMC(fullConfig, pmcConfigName)
+			if err != nil {
+				fmt.Fprintf(GinkgoWriter, "T-BC PMC clock class check for %s failed: %v\n", pmcConfigName, err)
+				return false
+			}
+			return strconv.Itoa(clockClass) == expectedClass
+		}
+		return false
+	}, pkg.TimeoutIn3Minutes, pollInterval).Should(BeTrue(),
+		fmt.Sprintf("T-BC receiver config %s should report clock class %s (PMC fallback config %s)", configName, expectedClass, pmcConfigName))
 }
 
 func waitForClockClass(fullConfig testconfig.TestConfig, expectedState string) {
