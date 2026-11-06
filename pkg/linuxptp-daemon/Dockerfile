@@ -5,7 +5,6 @@ WORKDIR /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
 
 COPY go.mod go.sum ./
 COPY vendor vendor
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY addons addons
 COPY cmd cmd
