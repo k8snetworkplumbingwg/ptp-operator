@@ -1,0 +1,56 @@
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: t-gm
+  namespace: openshift-ptp
+spec:
+  profile:
+  - name: t-gm_01-tgm
+    ptp4lConf: |
+      [ens7f0]
+      masterOnly 1
+      [global]
+      twoStepFlag 1
+      slaveOnly 0
+      priority1 128
+      priority2 128
+      domainNumber 24
+      clockClass 6
+      clockAccuracy 0x21
+      dataset_comparison G.8275.x
+      G.8275.defaultDS.localPriority 128
+      logAnnounceInterval -3
+      logSyncInterval -4
+      logMinDelayReqInterval -4
+      announceReceiptTimeout 3
+      clock_type OC
+      network_transport L2
+      delay_mechanism E2E
+      time_stamping hardware
+      boundary_clock_jbod 1
+      timeSource 0x20
+    ptp4lOpts: -2 --summary_interval -4
+    ptpSchedulingPolicy: SCHED_FIFO
+    ptpSchedulingPriority: 10
+    ptpSettings:
+      clockType: T-GM
+      logReduce: "false"
+    ts2phcConf: |
+      [global]
+      use_syslog  0
+      verbose 1
+      logging_level 7
+      ts2phc.pulsewidth 500000000
+      leapfile  /usr/share/zoneinfo/leap-seconds.list
+      domainNumber 24
+      [ens7f0]
+      ts2phc.extts_correction 0
+      ts2phc.master 0
+      ts2phc.channel 0
+      ts2phc.pin_index 1
+    ts2phcOpts: -s nmea -a
+  recommend:
+  - match:
+    - nodeLabel: node-role.kubernetes.io/master
+    priority: 4
+    profile: 01-tgm

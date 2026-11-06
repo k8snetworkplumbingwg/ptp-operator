@@ -1,0 +1,176 @@
+# Behavior profiles for Intel E825 hardware
+# These templates define default behavior configurations for different clock types
+# Template variables: {subsystem}, {ptpInputPin}, {interface}
+# Hardware-specific pins (SDP2, SDP0) are hardcoded in the template
+#
+# HPE EL140 Gen12 DPLL pin labels (package  board):
+# REF0P   ETH01_SDP_TIMESYNC_2
+# REF0N   ETH01_SDP_TIMESYNC_0
+# REF1P   CLK_78M125_NAC0_SYNCE0 
+# REF1N   CLK_78M125_NAC0_SYNCE1
+# REF2N   GNSS_10M_IN
+# REF3P   SMA3_1PPS_IN
+# REF3N   SMA1_10MHZ_IN
+# REF4P   GNSS_1PPS_IN
+# REF4N   OCXO
+# OUT0P   SMA4_1PPS_OUT
+# OUT2P   EPPS_AIC_CLK
+# OUT2N   SMA2_10MHZ_OUT
+# OUT8P   ETH01_SDP_TIMESYNC_3
+# OUT8N   ETH01_SDP_TIMESYNC_1
+
+
+behaviorProfiles:
+  t-gm:
+    sources:
+      - name: GNSS
+        sourceType: gnss
+        subsystem: "{subsystem}"
+        boardLabel: REF4P
+        gnssConfig:
+          match:
+            serialDevice:
+              acpi:
+                hid: INTC10EE
+
+    conditions:
+      - name: "Initialize T-GM"
+        triggers:
+          - conditionType: init
+            sourceName: GNSS
+        desiredStates:
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: REF4P
+              eec:
+                state: selectable
+              pps:
+                state: selectable
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: REF2N
+              eec:
+                state: selectable
+              pps:
+                state: selectable
+          - ptpPin:
+              name: SDP2
+              func: Disabled
+              chan: 0
+              sourceName: GNSS
+          - ptpPin:
+              name: SDP0
+              func: Disabled
+              chan: 0
+              sourceName: GNSS
+
+  t-bc:
+    # Pin role mappings - defines which pins serve which roles
+    pinRoles:
+      gnssInputPin: REF4P # DPLL pin used for GNSS input (that should be disabled for T-BC)
+      ptpInputPin: REF0N # DPLL pin used for PTP input
+
+    # Source template - will be instantiated with resolved variables
+    sources:
+      - name: PTP
+        sourceType: ptpTimeReceiver
+        subsystem: "{subsystem}" # Will be resolved to subsystem name
+        boardLabel: "{ptpInputPin}" # Will be resolved from pinRoles
+        # ptpTimeReceivers will be derived from ptpconfig
+
+    # Condition templates - will be instantiated with resolved variables
+    conditions:
+      - name: "Initialize T-BC"
+        triggers:
+          - conditionType: init
+            sourceName: PTP
+        desiredStates:
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: "{gnssInputPin}"
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: "{ptpInputPin}"
+              eec:
+                state: disconnected
+              pps:
+                state: selectable
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: REF2N
+              eec:
+                state: disconnected
+              pps:
+                state: disconnected
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: REF0P
+              eec:
+                state: disconnected
+              pps:
+                state: selectable
+          - ptpPin:
+              name: SDP2
+              func: Disabled
+              chan: 0
+              sourceName: PTP
+          - ptpPin:
+              name: SDP0
+              func: Disabled
+              chan: 0
+              sourceName: PTP
+
+      - name: "PTP Source Locked"
+        triggers:
+          - conditionType: locked
+            sourceName: PTP
+        desiredStates:
+          - ptpPin:
+              name: SDP2
+              func: TX
+              chan: 2
+              sourceName: PTP
+          - ptpPin:
+              name: SDP0
+              func: TX
+              chan: 1
+              sourceName: PTP
+          - ptpPeriod:
+              index: 1
+              period:
+                sec: 1
+                nsec: 0
+              sourceName: PTP
+          - ptpPeriod:
+              index: 2
+              period:
+                sec: 0
+                nsec: 1000000
+              sourceName: PTP
+          - dpll:
+              subsystem: "{subsystem}"
+              boardLabel: "{ptpInputPin}"
+              eec:
+                state: disconnected
+              pps:
+                state: selectable
+
+      - name: "PTP Source Lost - Leader Holdover"
+        triggers:
+          - conditionType: lost
+            sourceName: PTP
+        desiredStates:
+          - ptpPin:
+              name: SDP0
+              func: Disabled
+              chan: 0
+              sourceName: PTP
+          - ptpPin:
+              name: SDP2
+              func: Disabled
+              chan: 0
+              sourceName: PTP

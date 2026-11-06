@@ -1,0 +1,31 @@
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.25-openshift-5.1 AS builder
+WORKDIR /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon
+COPY . .
+RUN make clean && make
+
+FROM registry.ci.openshift.org/ocp/5.1:base-rhel9
+
+RUN yum -y update && yum -y update glibc && yum --setopt=skip_missing_names_on_install=False -y \
+  install \
+  pciutils \
+  linuxptp \
+  ethtool \
+  hwdata \
+  synce4l \
+  iproute \
+  procps-ng \
+  chrony \
+  gpsd-minimal \
+  gpsd-minimal-clients \
+  i2c-tools \
+  && yum clean all
+
+# Create symlinks for executables to match references
+RUN ln -s /usr/bin/gpspipe /usr/local/bin/gpspipe
+RUN ln -s /usr/sbin/gpsd /usr/local/sbin/gpsd
+RUN ln -s /usr/bin/ubxtool /usr/local/bin/ubxtool
+
+COPY --from=builder /go/src/github.com/k8snetworkplumbingwg/linuxptp-daemon/bin/ptp /usr/local/bin/
+COPY ./extra/leap-seconds.list /usr/share/zoneinfo/leap-seconds.list
+
+CMD ["/usr/local/bin/ptp"]
