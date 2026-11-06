@@ -106,7 +106,8 @@ PS1="${PS1:-}" source ~/.bashrc
 # Install ginkgo
 go mod tidy
 go mod vendor
-go install github.com/onsi/ginkgo/v2/ginkgo
+TOOLS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+(cd "${TOOLS_ROOT}/test" && GOFLAGS=-mod=mod go install github.com/onsi/ginkgo/v2/ginkgo)
 
 # Install kind
 curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-${GOARCH}"

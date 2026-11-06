@@ -1,9 +1,9 @@
 name: "Coverage Quality Gate"
 on:
   push:
-    branches: [ main ]
+    branches: [monorepo]
   pull_request:
-    branches: [ main ]
+    branches: [monorepo]
 
 jobs:
   coverage:

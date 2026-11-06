@@ -1,0 +1,217 @@
+name: Upstream PR to downstream main PR
+
+# When an upstream monorepo PR is opened (or updated), apply its commits onto
+# downstream main as one GitHub-signed snapshot commit and open/update a PR
+# from the bot fork. The downstream PR is opened before the upstream PR merges.
+#
+# TEST MODE (BOT_TEST_PULL_REQUEST=1): pull_request is used so a
+# same-repository PR can exercise this workflow with App secrets. Fork PRs
+# receive no secrets. The workflow never checks out or runs PR code; it
+# checks out the base branch and applies the PR commits as patches.
+#
+# For authors whose workflows require approval, the job waits for the upstream
+# pull_request workflow runs to be approved/started before creating the
+# downstream PR.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - monorepo
+  workflow_dispatch:
+    inputs:
+      upstream_pr:
+        description: 'Upstream PR number (topic branch sync/upstream-main-pr-N)'
+        required: false
+        default: ''
+      commit_sha:
+        description: 'Single commit SHA to apply (used when range is empty)'
+        required: false
+        default: ''
+      range:
+        description: 'Commit range FROM..TO to apply (overrides commit_sha)'
+        required: false
+        default: ''
+      pr_title:
+        description: 'Downstream PR title (default: tip commit subject)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Format the patch and print the PR without pushing'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  open-downstream-pr:
+    name: Open downstream main PR
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Wait for upstream workflow approval
+        if: >
+          github.event_name == 'pull_request' &&
+          !contains(fromJson('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'),
+            github.event.pull_request.author_association)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            runs=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&per_page=100")
+            runs=$(printf '%s' "$runs" | jq --arg sha "$HEAD_SHA" \
+              '[.workflow_runs[] | select(.head_sha == $sha)]')
+            count=$(printf '%s' "$runs" | jq 'length')
+            if [ "$count" -eq 0 ]; then
+              if [ "$attempt" -ge 4 ]; then
+                echo "No pull_request workflow runs found; continuing."
+                exit 0
+              fi
+            else
+              started=$(printf '%s' "$runs" | jq \
+                '[.[] | select(
+                  .status == "in_progress" or
+                  (.status == "completed" and
+                   .conclusion != "action_required" and
+                   .conclusion != "cancelled")
+                )] | length')
+              if [ "$started" -gt 0 ]; then
+                echo "Upstream workflow runs have been approved/started."
+                exit 0
+              fi
+            fi
+            echo "Waiting for upstream workflow approval (attempt ${attempt}/60)..."
+            sleep 30
+          done
+          echo "Timed out waiting for upstream workflow approval." >&2
+          exit 1
+
+      - name: Authenticate push-forks App
+        id: push-forks
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PUSH_FORKS_APP_ID }}
+          private-key: ${{ secrets.PUSH_FORKS_APP_PRIVATE_KEY }}
+          owner: ${{ vars.SYNC_BOT_FORK_OWNER || 'ptp-monorepo-sync-bot' }}
+
+      - name: Authenticate push-prs App
+        id: push-prs
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PUSH_PRS_APP_ID }}
+          private-key: ${{ secrets.PUSH_PRS_APP_PRIVATE_KEY }}
+          owner: ${{ vars.PR_TARGET_OWNER || 'openshift' }}
+
+      - name: Checkout upstream base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'monorepo' }}
+          fetch-depth: 0
+
+      - name: Fetch PR commits
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "${{ github.event.pull_request.base.sha }}" \
+            "pull/${{ github.event.pull_request.number }}/head"
+
+      - name: Determine run parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_UPSTREAM_PR: ${{ github.event.inputs.upstream_pr }}
+          INPUT_PR_TITLE: ${{ github.event.inputs.pr_title }}
+          INPUT_RANGE: ${{ github.event.inputs.range }}
+          INPUT_COMMIT: ${{ github.event.inputs.commit_sha }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          FORK_OWNER="${{ vars.SYNC_BOT_FORK_OWNER || secrets.SYNC_BOT_FORK_OWNER || 'ptp-monorepo-sync-bot' }}"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            UPSTREAM_PR="$PR_NUMBER"
+            PR_TITLE_VALUE="$PR_TITLE"
+            RANGE="${BASE_SHA}..${HEAD_SHA}"
+            COMMIT_SHA=""
+            DRY_RUN="false"
+            echo "Mode: pull_request #${UPSTREAM_PR} (${RANGE})"
+          else
+            UPSTREAM_PR="$INPUT_UPSTREAM_PR"
+            PR_TITLE_VALUE="$INPUT_PR_TITLE"
+            RANGE="$INPUT_RANGE"
+            COMMIT_SHA="$INPUT_COMMIT"
+            DRY_RUN="$INPUT_DRY_RUN"
+            echo "Mode: workflow_dispatch (pr=${UPSTREAM_PR} range=${RANGE} commit=${COMMIT_SHA})"
+          fi
+
+          {
+            echo "fork_owner=${FORK_OWNER}"
+            echo "dry_run=${DRY_RUN}"
+            echo "upstream_pr=${UPSTREAM_PR}"
+            echo "range=${RANGE}"
+            echo "commit=${COMMIT_SHA}"
+            echo "pr_title<<EOF"
+            echo "${PR_TITLE_VALUE}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config --global user.name "ptp-monorepo-sync-bot[bot]"
+          git config --global user.email "ptp-monorepo-sync-bot[bot]@users.noreply.github.com"
+
+      - name: Open downstream main PR
+        env:
+          GH_TOKEN: ${{ steps.push-prs.outputs.token }}
+          PUSH_FORKS_TOKEN: ${{ steps.push-forks.outputs.token }}
+          DOWNSTREAM_MONOREPO_REPO: ${{ vars.DOWNSTREAM_MONOREPO_REPO || 'openshift/ptp-network-operator' }}
+          FORK_OWNER: ${{ steps.params.outputs.fork_owner }}
+          DRY_RUN: ${{ steps.params.outputs.dry_run }}
+          UPSTREAM_PR: ${{ steps.params.outputs.upstream_pr }}
+          RANGE: ${{ steps.params.outputs.range }}
+          COMMIT_SHA: ${{ steps.params.outputs.commit }}
+          PR_TITLE_VALUE: ${{ steps.params.outputs.pr_title }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            "--fork-owner" "$FORK_OWNER"
+            "--upstream-repo" "${{ github.repository }}"
+            "--base" "main"
+          )
+
+          if [ -n "$RANGE" ]; then
+            ARGS+=("--range" "$RANGE")
+          else
+            ARGS+=("--commit" "$COMMIT_SHA")
+          fi
+
+          if [ -n "$UPSTREAM_PR" ]; then
+            ARGS+=("--upstream-pr" "$UPSTREAM_PR")
+          fi
+
+          if [ -n "$PR_TITLE_VALUE" ]; then
+            ARGS+=("--pr-title" "$PR_TITLE_VALUE")
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS+=("--dry-run")
+          fi
+
+          ./scripts/create-downstream-main-pr.sh "${ARGS[@]}"
