@@ -363,12 +363,16 @@ jobs:
           done
           DEBUGINFO
 
+      # Upload the parent dir so the artifact root keeps <mode>/... .
+      # Uploading ${{ matrix.mode }}/ alone strips that directory name, which
+      # then breaks single-artifact downloads (download-artifact flattens when
+      # only one artifact matches the pattern).
       - name: Upload stability results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: stability-results-${{ matrix.mode }}
-          path: /tmp/stability-results/${{ matrix.mode }}/
+          path: /tmp/stability-results/
           if-no-files-found: ignore
 
       - name: Cleanup
@@ -395,25 +399,34 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # merge-multiple: true drops each artifact's <mode>/ tree into the same
+      # destination. Combined with uploading /tmp/stability-results/ (which
+      # contains <mode>/), this yields /tmp/stability-merged/<mode>/ for both
+      # single- and multi-artifact runs without a rearrange step.
       - name: Download all stability results
         uses: actions/download-artifact@v7
         with:
           pattern: stability-results-*
-          path: /tmp/stability-results
-          merge-multiple: false
+          path: /tmp/stability-merged
+          merge-multiple: true
 
-      - name: Rearrange artifacts into expected layout
+      - name: Verify downloaded stability layout
+        env:
+          REQUESTED_MODES: ${{ join(fromJson(needs.gate.outputs.modes), ' ') }}
         run: |
-          mkdir -p /tmp/stability-merged
+          set -euo pipefail
           FOUND=0
-          for dir in /tmp/stability-results/stability-results-*/; do
-            [[ -d "$dir" ]] || continue
-            mode=$(basename "$dir" | sed 's/^stability-results-//')
-            cp -a "$dir" "/tmp/stability-merged/${mode}"
-            FOUND=$((FOUND + 1))
+          for mode in ${REQUESTED_MODES}; do
+            if [[ -d "/tmp/stability-merged/${mode}" ]]; then
+              FOUND=$((FOUND + 1))
+            else
+              echo "::warning::Missing results for mode '${mode}'"
+            fi
           done
           if [[ $FOUND -eq 0 ]]; then
             echo "::error::No stability results found to merge"
+            echo "Download tree:"
+            find /tmp/stability-merged -maxdepth 3 2>/dev/null | head -50 || true
             exit 1
           fi
           echo "Merged layout:"
