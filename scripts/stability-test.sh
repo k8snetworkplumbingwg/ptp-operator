@@ -56,6 +56,17 @@ else
   IFS=',' read -r -a MODES <<< "${MODE}"
 fi
 
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  echo "Error: --output-dir must not be empty" >&2
+  exit 1
+fi
+for mode_name in "${MODES[@]}"; do
+  if [[ ! "${mode_name}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "Error: invalid mode '${mode_name}'" >&2
+    exit 1
+  fi
+done
+
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "=============================================="
@@ -70,6 +81,9 @@ echo "=============================================="
 run_suite_for_mode() {
   local mode="$1"
   local mode_dir="${OUTPUT_DIR}/${mode}"
+  # Drop stale run-* dirs from earlier invocations so aggregation matches
+  # this call's --runs (mode was validated above as [A-Za-z0-9_-]+).
+  rm -rf "${mode_dir}"
   mkdir -p "${mode_dir}"
 
   local passed=0
@@ -138,7 +152,8 @@ if command -v python3 &>/dev/null; then
   python3 "${SCRIPT_DIR}/aggregate-stability.py" \
     --results-dir "${OUTPUT_DIR}" \
     --output "${REPORT_FILE}" \
-    --modes "${MODES[*]}"
+    --modes "${MODES[*]}" \
+    --expected-runs "${NUM_RUNS}"
   agg_rc=$?
   if [[ ${agg_rc} -ne 0 ]]; then
     echo "ERROR: report aggregation failed (exit ${agg_rc})." >&2
@@ -151,7 +166,7 @@ if command -v python3 &>/dev/null; then
   cat "${REPORT_FILE}"
 else
   echo "WARNING: python3 not found, skipping report generation."
-  echo "Run manually: python3 ${SCRIPT_DIR}/aggregate-stability.py --results-dir ${OUTPUT_DIR} --output ${REPORT_FILE} --modes '${MODES[*]}'"
+  echo "Run manually: python3 ${SCRIPT_DIR}/aggregate-stability.py --results-dir ${OUTPUT_DIR} --output ${REPORT_FILE} --modes '${MODES[*]}' --expected-runs ${NUM_RUNS}"
 fi
 
 echo ""
