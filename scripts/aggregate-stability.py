@@ -258,11 +258,12 @@ def aggregate_mode(mode, mode_dir):
     }
 
 
-def evaluate_gate(all_mode_results):
+def evaluate_gate(all_mode_results, expected_runs=None):
     """Return (ok, reasons) for CI gating.
 
-    Fails when any mode is missing, any mode has 0 suite passes, or any
-    test is Broken. Flaky/Intermittent do not fail the gate.
+    Fails when any mode is missing, any mode completed fewer than
+    expected_runs (when set), any mode has 0 suite passes, or any test is
+    Broken. Flaky/Intermittent do not fail the gate.
     """
     reasons = []
     for mr in all_mode_results:
@@ -270,6 +271,11 @@ def evaluate_gate(all_mode_results):
             mode = (mr or {}).get("mode", "?")
             reasons.append(f"mode '{mode}' produced no results")
             continue
+        if expected_runs is not None and mr["num_runs"] < expected_runs:
+            reasons.append(
+                f"mode '{mr['mode']}' completed {mr['num_runs']}/"
+                f"{expected_runs} requested runs"
+            )
         if mr["num_runs"] > 0 and mr["run_passes"] == 0:
             reasons.append(
                 f"mode '{mr['mode']}' had 0/{mr['num_runs']} suite passes"
@@ -492,14 +498,31 @@ def main():
         help="Space-separated list of modes to aggregate",
     )
     parser.add_argument(
+        "--expected-runs",
+        type=int,
+        default=None,
+        help=(
+            "When gating, fail modes that completed fewer than this many "
+            "run-* directories (catches timeouts / partial collections)"
+        ),
+    )
+    parser.add_argument(
         "--gate",
         action="store_true",
         help=(
-            "Exit non-zero if any mode is missing, any mode has 0 suite "
-            "passes, or any test is Broken (Flaky/Intermittent do not fail)"
+            "Exit non-zero if any mode is missing, any mode completed fewer "
+            "than --expected-runs (when set), any mode has 0 suite passes, "
+            "or any test is Broken (Flaky/Intermittent do not fail)"
         ),
     )
     args = parser.parse_args()
+
+    if args.expected_runs is not None and args.expected_runs < 1:
+        print(
+            f"ERROR: --expected-runs must be >= 1 (got {args.expected_runs})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     modes = args.modes.split()
     all_results = []
@@ -531,13 +554,18 @@ def main():
     print(f"\nReport written to: {args.output}")
 
     if args.gate:
-        ok, reasons = evaluate_gate(all_results)
+        ok, reasons = evaluate_gate(
+            all_results, expected_runs=args.expected_runs
+        )
         if not ok:
             print("GATE FAILED:", file=sys.stderr)
             for reason in reasons:
                 print(f"  - {reason}", file=sys.stderr)
             sys.exit(1)
-        print("GATE PASSED: no missing modes, no zero-pass suites, no Broken tests")
+        print(
+            "GATE PASSED: no missing modes, complete run counts, "
+            "no zero-pass suites, no Broken tests"
+        )
 
 
 if __name__ == "__main__":

@@ -117,6 +117,28 @@ class TestAggregateAndGate(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("no results" in r for r in reasons))
 
+    def test_gate_fails_on_incomplete_runs(self):
+        partial = {
+            "mode": "oc",
+            "num_runs": 2,
+            "run_passes": 2,
+            "run_failures": 0,
+            "tests": [{
+                "full_name": "t",
+                "category": "Stable",
+                "passes": 2,
+                "failures": 0,
+                "missing": 0,
+                "skips": 0,
+            }],
+        }
+        ok, reasons = agg.evaluate_gate([partial], expected_runs=3)
+        self.assertFalse(ok)
+        self.assertTrue(any("2/3 requested runs" in r for r in reasons))
+
+        ok, _ = agg.evaluate_gate([partial], expected_runs=2)
+        self.assertTrue(ok)
+
     def test_empty_mode_dir_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = agg.aggregate_mode("oc", tmp)

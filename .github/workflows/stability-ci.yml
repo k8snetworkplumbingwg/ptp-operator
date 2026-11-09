@@ -10,8 +10,9 @@
 # The stability-test matrix jobs stay green as long as the harness produces
 # results (so all N runs are collected even when suites fail). The
 # stability-report job is the gate: it fails if any requested mode is
-# missing, any mode has 0 suite passes, or any test is classified Broken.
-# Flaky/Intermittent appear in the report but do not fail the check.
+# missing, any mode completed fewer than the requested N runs, any mode
+# has 0 suite passes, or any test is classified Broken. Flaky/Intermittent
+# appear in the report but do not fail the check.
 #
 # ## Triggers
 #   - Label the PR (uses PR branch):
@@ -57,8 +58,11 @@ permissions:
   contents: read
   actions: write
 
+# Stability labels / dispatch share one group so a new stability run cancels
+# the previous. Unrelated PR labels get a unique group (run_id) so they cannot
+# cancel an in-progress stability run when the workflow wakes and skips.
 concurrency:
-  group: stability-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-stability' || startsWith(github.event.label.name, 'run-stability/')))) && format('stability-{0}', github.event.pull_request.number || github.ref) || format('stability-skip-{0}', github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -116,10 +120,20 @@ jobs:
             exit 1
           fi
 
+          if [[ -z "$RAW" ]]; then
+            echo "::error::stability mode must not be empty (label: ${LABEL:-n/a})"
+            exit 1
+          fi
+
           if [[ "$RAW" == "all" ]]; then
             MODES_JSON='["oc","bc","dualnicbc","dualnicbcha","dualfollower","tgm","tgmoc","tgmbc"]'
           else
             MODES_JSON=$(echo "$RAW" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sed 's/^/"/;s/$/"/' | paste -sd ',' | sed 's/^/[/;s/$/]/')
+          fi
+
+          if [[ -z "$MODES_JSON" || "$MODES_JSON" == "[]" ]]; then
+            echo "::error::no modes resolved from '${RAW}' (label: ${LABEL:-n/a})"
+            exit 1
           fi
 
           echo "modes=${MODES_JSON}" >> "$GITHUB_OUTPUT"
@@ -437,15 +451,18 @@ jobs:
           MODES='${{ join(fromJson(needs.gate.outputs.modes), ' ') }}'
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           REPORT="/tmp/stability-merged/stability-report-${TIMESTAMP}.md"
+          # Export before --gate so if: always() summary can still cat the
+          # report when the gate fails (bash -e stops the step otherwise).
+          echo "REPORT_FILE=${REPORT}" >> "$GITHUB_ENV"
 
-          # --gate: fail if missing modes, 0 suite passes, or Broken tests.
+          # --gate: fail if missing modes, incomplete runs, 0 suite passes,
+          # or Broken tests.
           python3 scripts/aggregate-stability.py \
             --results-dir /tmp/stability-merged \
             --output "$REPORT" \
             --modes "$MODES" \
+            --expected-runs "${{ needs.gate.outputs.runs }}" \
             --gate
-
-          echo "REPORT_FILE=${REPORT}" >> "$GITHUB_ENV"
 
       - name: Post summary
         if: always()
@@ -454,7 +471,8 @@ jobs:
             echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Green on this job means: every requested mode produced results," >> "$GITHUB_STEP_SUMMARY"
-            echo "every mode had ≥1 suite pass, and no test is Broken." >> "$GITHUB_STEP_SUMMARY"
+            echo "every mode completed the requested run count, every mode had" >> "$GITHUB_STEP_SUMMARY"
+            echo "≥1 suite pass, and no test is Broken." >> "$GITHUB_STEP_SUMMARY"
             echo "Flaky/Intermittent are reported below but do not fail the check." >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
