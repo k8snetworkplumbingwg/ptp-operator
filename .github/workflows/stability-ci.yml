@@ -1,0 +1,498 @@
+# Test stability CI for ptp-operator.
+# Runs each selected mode N times and produces a stability report
+# identifying stable, flaky, intermittent, and broken tests.
+#
+# Image build, DKMS, and Kind/netdevsim deploy match netdevsim-ci.yml.
+# Cluster setup uses run-on-vm.sh --cluster so tests can be repeated by
+# stability-test.sh without redeploying.
+#
+# ## What a green check means
+# The stability-test matrix jobs stay green as long as the harness produces
+# results (so all N runs are collected even when suites fail). The
+# stability-report job is the gate: it fails if any requested mode is
+# missing, any mode completed fewer than the requested N runs, any mode
+# has 0 suite passes, or any test is classified Broken. Flaky/Intermittent
+# appear in the report but do not fail the check.
+#
+# ## Triggers
+#   - Label the PR (uses PR branch):
+#       run-stability              → mode=oc, runs=3   (cheap default)
+#       run-stability/<mode>       → that mode, runs=3
+#       run-stability/<mode>/<N>   → that mode, N runs
+#       run-stability/all          → all modes, runs=3
+#       run-stability/all/<N>      → all modes, N runs
+#     Mode may also be a comma list: run-stability/oc,bc/5
+#   - workflow_dispatch (default branch): choose mode + runs in the UI
+#
+# Fork PRs: maintainers must remove the trigger label manually after the
+# run (GITHUB_TOKEN cannot reliably edit labels on fork PRs).
+
+name: Test Stability
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      stability_mode:
+        description: "Test mode"
+        required: true
+        type: choice
+        options:
+          - oc
+          - bc
+          - dualnicbc
+          - dualnicbcha
+          - dualfollower
+          - tgm
+          - tgmoc
+          - tgmbc
+          - all
+        default: all
+      stability_runs:
+        description: "Number of runs per mode (default: 5)"
+        required: false
+        type: number
+
+permissions:
+  contents: read
+  actions: write
+
+# Stability labels / dispatch share one group so a new stability run cancels
+# the previous. Unrelated PR labels get a unique group (run_id) so they cannot
+# cancel an in-progress stability run when the workflow wakes and skips.
+concurrency:
+  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-stability' || startsWith(github.event.label.name, 'run-stability/')))) && format('stability-{0}', github.event.pull_request.number || github.ref) || format('stability-skip-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+env:
+  DKMS_PKG: netdevsim
+  DKMS_VER: "6.9.5"
+  DKMS_REPO: https://github.com/redhat-cne/netdevsim-dkms.git
+  DKMS_BRANCH: main
+
+jobs:
+  # ------------------------------------------------------------------
+  # Gate + resolve mode/runs from label encoding or dispatch inputs
+  # ------------------------------------------------------------------
+  gate:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       (github.event.label.name == 'run-stability' ||
+        startsWith(github.event.label.name, 'run-stability/')))
+    outputs:
+      modes: ${{ steps.set.outputs.modes }}
+      runs: ${{ steps.set.outputs.runs }}
+    steps:
+      - name: Resolve mode list and run count
+        id: set
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW="${{ github.event.inputs.stability_mode }}"
+            RUNS="${{ github.event.inputs.stability_runs || '5' }}"
+          else
+            LABEL="${{ github.event.label.name }}"
+            # run-stability                → oc / 3
+            # run-stability/<mode>         → mode / 3
+            # run-stability/<mode>/<runs>  → mode / runs
+            if [[ "$LABEL" == "run-stability" ]]; then
+              RAW="oc"
+              RUNS="3"
+            else
+              REST="${LABEL#run-stability/}"
+              # Last slash-separated field is runs if purely numeric.
+              if [[ "$REST" =~ ^(.+)/([0-9]+)$ ]]; then
+                RAW="${BASH_REMATCH[1]}"
+                RUNS="${BASH_REMATCH[2]}"
+              else
+                RAW="$REST"
+                RUNS="3"
+              fi
+            fi
+          fi
+
+          if [[ -z "$RUNS" || "$RUNS" -lt 1 ]]; then
+            echo "::error::stability runs must be >= 1 (got: ${RUNS:-empty})"
+            exit 1
+          fi
+
+          if [[ -z "$RAW" ]]; then
+            echo "::error::stability mode must not be empty (label: ${LABEL:-n/a})"
+            exit 1
+          fi
+
+          if [[ "$RAW" == "all" ]]; then
+            MODES_JSON='["oc","bc","dualnicbc","dualnicbcha","dualfollower","tgm","tgmoc","tgmbc"]'
+          else
+            MODES_JSON=$(echo "$RAW" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sed 's/^/"/;s/$/"/' | paste -sd ',' | sed 's/^/[/;s/$/]/')
+          fi
+
+          if [[ -z "$MODES_JSON" || "$MODES_JSON" == "[]" ]]; then
+            echo "::error::no modes resolved from '${RAW}' (label: ${LABEL:-n/a})"
+            exit 1
+          fi
+
+          echo "modes=${MODES_JSON}" >> "$GITHUB_OUTPUT"
+          echo "runs=${RUNS}" >> "$GITHUB_OUTPUT"
+          echo "Resolved modes=${MODES_JSON} runs=${RUNS}"
+
+  # ------------------------------------------------------------------
+  # Build images (mirrors netdevsim-ci ptp-images job)
+  # ------------------------------------------------------------------
+  ptp-images:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Runner info
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+          echo "Kernel: $(uname -r)"
+
+      - uses: actions/checkout@v5
+
+      - name: Install podman 5.x
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
+            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
+            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+          # The kubic repo may not carry a crun newer than the distro's
+          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
+          # Install crun >= 1.14.3 from upstream GitHub releases.
+          CRUN_VER=1.19.1
+          sudo curl -fsSL -o /usr/bin/crun \
+            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
+          sudo chmod +x /usr/bin/crun
+          crun --version | head -1
+          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
+          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+
+      - name: Copy checkout to /root/ptp-operator
+        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+
+      - name: Build images and export tarball
+        run: |
+          sudo bash -l <<'BUILD'
+          set -euo pipefail
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          cd /root/ptp-operator/scripts
+          ./run-on-vm.sh --dkms --images "${VM_IP}"
+
+          rm -rf /tmp/go-build* /root/.cache/go-build
+          BUILD
+
+      - name: Upload image tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: ptp-images-stability
+          path: /tmp/ptp-images.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # One parallel runner per mode — deploy cluster, run N times
+  # ------------------------------------------------------------------
+  stability-test:
+    needs: [ptp-images, gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    name: "stability (${{ matrix.mode }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ${{ fromJson(needs.gate.outputs.modes) }}
+    steps:
+      - name: "Runner info (${{ matrix.mode }})"
+        run: |
+          echo "CPUs: $(nproc)"
+          echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+          echo "Kernel: $(uname -r)"
+          echo "Mode: ${{ matrix.mode }}"
+          echo "Runs: ${{ needs.gate.outputs.runs }}"
+
+      - uses: actions/checkout@v5
+
+      - name: Install podman 5.x
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
+            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
+            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
+            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+          CRUN_VER=1.19.1
+          sudo curl -fsSL -o /usr/bin/crun \
+            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
+          sudo chmod +x /usr/bin/crun
+          crun --version | head -1
+          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+
+      - name: Install OpenShift CLI (oc)
+        run: |
+          if ! command -v oc &>/dev/null; then
+            curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+            sudo tar xzf openshift-client-linux.tar.gz -C /usr/local/bin oc kubectl
+            rm -f openshift-client-linux.tar.gz
+          fi
+          oc version --client
+
+      - name: Install DKMS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dkms gcc make ethtool linuxptp \
+            linux-headers-$(uname -r)
+          # Best-effort: linux-modules-extra is not published for every ABI.
+          if apt-cache show linux-modules-extra-$(uname -r) >/dev/null 2>&1; then
+            sudo apt-get install -y linux-modules-extra-$(uname -r)
+          else
+            echo "::warning::linux-modules-extra-$(uname -r) not available — continuing without it"
+          fi
+
+      - name: Clone and install DKMS modules
+        run: |
+          git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
+          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
+          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
+            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
+            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
+            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
+            /usr/src/${DKMS_PKG}-${DKMS_VER}/
+          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms build ${DKMS_PKG}/${DKMS_VER}
+          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
+          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
+          sudo udevadm control --reload-rules
+
+      - name: Copy checkout to /root/ptp-operator
+        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+
+      - name: Download image tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: ptp-images-stability
+          path: /tmp
+
+      - name: Load images into local registry
+        run: |
+          sudo bash -l <<'LOAD'
+          set -euo pipefail
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          cd /root/ptp-operator/scripts
+          ./run-on-vm.sh --dkms --load /tmp/ptp-images.tar "${VM_IP}"
+          LOAD
+
+      - name: Free disk space before tests
+        run: |
+          sudo bash -l <<'CLEANUP'
+          set -euo pipefail
+          rm -rf /tmp/ptp-images.tar /tmp/ptp-images-load
+          rm -rf /tmp/go-build* /var/cache/apt /root/.cache
+          df -h
+          CLEANUP
+
+      - name: Deploy Kind cluster
+        run: |
+          sudo bash -l <<'SETUP'
+          set -euo pipefail
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          cd /root/ptp-operator/scripts
+          ./run-on-vm.sh --dkms --cluster "${VM_IP}" "${VM_IP}"
+          SETUP
+
+      - name: "Run stability tests: ${{ matrix.mode }} x${{ needs.gate.outputs.runs }}"
+        run: |
+          sudo bash -l <<'TEST'
+          set -uo pipefail
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export KIND_EXPERIMENTAL_PROVIDER=podman
+          export DKMS_MODE=true
+          export ENABLE_CEPV2=true
+
+          VM_IP=$(hostname -I | awk '{print $1}')
+          export IMG_PREFIX="${VM_IP}/test"
+
+          cd /root/ptp-operator/scripts
+
+          # Collect all N runs even when suites fail; stability-report gates.
+          ./stability-test.sh \
+            --mode "${{ matrix.mode }}" \
+            --runs "${{ needs.gate.outputs.runs }}" \
+            --output-dir /tmp/stability-results \
+            --linuxptp-daemon-image "$IMG_PREFIX:lptpd" \
+            --must-gather-image "$IMG_PREFIX:ptpmg" \
+            --debug-image "$IMG_PREFIX:debug" \
+            || true
+
+          if [[ ! -d /tmp/stability-results/${{ matrix.mode }} ]]; then
+            echo "::error::stability-test.sh produced no results for ${{ matrix.mode }} (infrastructure failure)"
+            exit 1
+          fi
+          TEST
+
+      - name: Collect Kubernetes debug info
+        if: always()
+        run: |
+          sudo bash -l <<'DEBUGINFO'
+          set -x
+          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          mkdir -p /tmp/stability-results/${{ matrix.mode }}/k8s-debug
+          kubectl get pods -n openshift-ptp -o wide \
+            > /tmp/stability-results/${{ matrix.mode }}/k8s-debug/pods.txt 2>&1 || true
+          kubectl get events -n openshift-ptp \
+            --sort-by=.metadata.creationTimestamp \
+            > /tmp/stability-results/${{ matrix.mode }}/k8s-debug/events.txt 2>&1 || true
+          kubectl describe pods -n openshift-ptp -l app=linuxptp-daemon \
+            > /tmp/stability-results/${{ matrix.mode }}/k8s-debug/linuxptp-daemon-describe.txt 2>&1 || true
+          for pod in $(kubectl get pods -n openshift-ptp -l app=linuxptp-daemon \
+              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            kubectl logs -n openshift-ptp "$pod" -c cloud-event-proxy --previous \
+              > "/tmp/stability-results/${{ matrix.mode }}/k8s-debug/${pod}-cep-previous.txt" 2>&1 || true
+          done
+          DEBUGINFO
+
+      # Upload the parent dir so the artifact root keeps <mode>/... .
+      # Uploading ${{ matrix.mode }}/ alone strips that directory name, which
+      # then breaks single-artifact downloads (download-artifact flattens when
+      # only one artifact matches the pattern).
+      - name: Upload stability results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stability-results-${{ matrix.mode }}
+          path: /tmp/stability-results/
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: |
+          for id in $(ls /sys/bus/netdevsim/devices/ 2>/dev/null | sed 's/netdevsim//'); do
+            echo "$id" | sudo tee /sys/bus/netdevsim/del_device 2>/dev/null || true
+          done
+          sudo rmmod netdevsim nsim_dpll nsim_ptp_mock nsim_ptp 2>/dev/null || true
+          sudo dkms remove ${DKMS_PKG}/${DKMS_VER} --all 2>/dev/null || true
+
+  # ------------------------------------------------------------------
+  # Aggregate per-mode results into a single stability report (the gate)
+  # ------------------------------------------------------------------
+  stability-report:
+    needs: [gate, stability-test]
+    if: >-
+      always() &&
+      needs.gate.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # merge-multiple: true drops each artifact's <mode>/ tree into the same
+      # destination. Combined with uploading /tmp/stability-results/ (which
+      # contains <mode>/), this yields /tmp/stability-merged/<mode>/ for both
+      # single- and multi-artifact runs without a rearrange step.
+      - name: Download all stability results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: stability-results-*
+          path: /tmp/stability-merged
+          merge-multiple: true
+
+      - name: Verify downloaded stability layout
+        env:
+          REQUESTED_MODES: ${{ join(fromJson(needs.gate.outputs.modes), ' ') }}
+        run: |
+          set -euo pipefail
+          FOUND=0
+          for mode in ${REQUESTED_MODES}; do
+            if [[ -d "/tmp/stability-merged/${mode}" ]]; then
+              FOUND=$((FOUND + 1))
+            else
+              echo "::warning::Missing results for mode '${mode}'"
+            fi
+          done
+          if [[ $FOUND -eq 0 ]]; then
+            echo "::error::No stability results found to merge"
+            echo "Download tree:"
+            find /tmp/stability-merged -maxdepth 3 2>/dev/null | head -50 || true
+            exit 1
+          fi
+          echo "Merged layout:"
+          find /tmp/stability-merged -maxdepth 2 -type d | head -30
+
+      - name: Generate stability report
+        run: |
+          MODES='${{ join(fromJson(needs.gate.outputs.modes), ' ') }}'
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          REPORT="/tmp/stability-merged/stability-report-${TIMESTAMP}.md"
+          # Export before --gate so if: always() summary can still cat the
+          # report when the gate fails (bash -e stops the step otherwise).
+          echo "REPORT_FILE=${REPORT}" >> "$GITHUB_ENV"
+
+          # --gate: fail if missing modes, incomplete runs, 0 suite passes,
+          # or Broken tests.
+          python3 scripts/aggregate-stability.py \
+            --results-dir /tmp/stability-merged \
+            --output "$REPORT" \
+            --modes "$MODES" \
+            --expected-runs "${{ needs.gate.outputs.runs }}" \
+            --gate
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [[ -n "${REPORT_FILE:-}" && -f "${REPORT_FILE}" ]]; then
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Green on this job means: every requested mode produced results," >> "$GITHUB_STEP_SUMMARY"
+            echo "every mode completed the requested run count, every mode had" >> "$GITHUB_STEP_SUMMARY"
+            echo "≥1 suite pass, and no test is Broken." >> "$GITHUB_STEP_SUMMARY"
+            echo "Flaky/Intermittent are reported below but do not fail the check." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Test Stability Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "No report generated. Check the stability-results artifacts for raw data." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload combined report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stability-report-combined
+          path: /tmp/stability-merged/stability-report-*.md
+          if-no-files-found: ignore
+
+      - name: Reminder — remove trigger label on fork PRs
+        if: >-
+          always() &&
+          github.event_name == 'pull_request'
+        run: |
+          echo "::notice::Maintainers: remove the '${{ github.event.label.name }}' label manually after this run."
+          echo "Fork PRs cannot reliably clear labels with GITHUB_TOKEN; do not rely on automation here."
