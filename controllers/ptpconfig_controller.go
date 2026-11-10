@@ -56,10 +56,10 @@ type PtpConfigReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs,verbs=get;list;watch
-//+kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs/status,verbs=update
-//+kubebuilder:rbac:groups=ptp.openshift.io,resources=nodeptpdevices,verbs=get;list;watch;create
-//+kubebuilder:rbac:groups=ptp.openshift.io,resources=hardwareconfigs,verbs=get;list;watch
+//+kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs,verbs=get;list;watch,namespace=openshift-ptp
+//+kubebuilder:rbac:groups=ptp.openshift.io,resources=ptpconfigs/status,verbs=update,namespace=openshift-ptp
+//+kubebuilder:rbac:groups=ptp.openshift.io,resources=nodeptpdevices,verbs=get;list;watch;create,namespace=openshift-ptp
+//+kubebuilder:rbac:groups=ptp.openshift.io,resources=hardwareconfigs,verbs=get;list;watch,namespace=openshift-ptp
 //+kubebuilder:rbac:groups=config.openshift.io,resources=infrastructures,verbs=get;list;watch
 
 func (r *PtpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {

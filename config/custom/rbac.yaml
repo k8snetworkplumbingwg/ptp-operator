@@ -8,19 +8,35 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: ptp-operator
-  namespace: openshift-ptp
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs: ["*"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ptp-operator
+roleRef:
+  kind: ClusterRole
+  name: ptp-operator
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: ptp-operator
+  namespace: openshift-ptp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ptp-operator
+  namespace: openshift-ptp
+rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["*"]
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["*"]
-- apiGroups: [""]
-  resources: ["namespaces"]
   verbs: ["*"]
 - apiGroups: [""]
   resources: ["services"]
@@ -37,9 +53,6 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["*"]
-- apiGroups: ["ptp.openshift.io"]
-  resources: ["*"]
-  verbs: ["*"]
 - apiGroups: ["monitoring.coreos.com"]
   resources: ["servicemonitors"]
   verbs: ["*"]
@@ -48,10 +61,36 @@ rules:
   verbs: ["*"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles"]
-  verbs: ["*"]
+  verbs: ["get", "create", "update"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["rolebindings"]
-  verbs: ["*"]
+  verbs: ["get", "create", "update"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["ptp.openshift.io"]
+  resources: ["hardwareconfigs", "ptpconfigs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["ptp.openshift.io"]
+  resources: ["hardwareconfigs/status", "ptpconfigs/status", "ptpoperatorconfigs/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["ptp.openshift.io"]
+  resources: ["nodeptpdevices", "ptpoperatorconfigs"]
+  verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ptp-operator
+  namespace: openshift-ptp
+roleRef:
+  kind: Role
+  name: ptp-operator
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: ptp-operator
+  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -67,32 +106,11 @@ rules:
 - apiGroups: ["authorization.k8s.io"]
   resources: ["subjectaccessreviews"]
   verbs: ["create"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["*"]
-- apiGroups: [ "" ]
-  resources: [ "configmaps" ]
-  verbs: [ "*" ]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: ptp-operator
-  namespace: openshift-ptp
-roleRef:
-  kind: ClusterRole
-  name: ptp-operator
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-- kind: ServiceAccount
-  name: ptp-operator
-  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: linuxptp-daemon
-  namespace: openshift-ptp
 roleRef:
   kind: ClusterRole
   name: linuxptp-daemon
@@ -116,6 +134,12 @@ rules:
       - securitycontextconstraints
     verbs:
       - use
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["*"]
 ---
 kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
