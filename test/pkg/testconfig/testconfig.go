@@ -1526,8 +1526,8 @@ func CreatePtpConfigTelcoBoundaryClock(configName, nodeName, ifSlaveName string,
 	tbcBase = strings.Replace(tbcBase, "verbose 1", "verbose 0", 1)
 	tbcBase = strings.Replace(tbcBase, "summary_interval -4", "summary_interval 0", 1)
 	tbcBase = strings.Replace(tbcBase, "clock_class_threshold 7", "clock_class_threshold 135", 1)
-	tbcBase = strings.Replace(tbcBase, "pi_proportional_const 0.0", "pi_proportional_const 0.60", 1)
-	tbcBase = strings.Replace(tbcBase, "pi_integral_const 0.0", "pi_integral_const 0.0003", 1)
+	// Leave pi_*_const at 0.0 so linuxptp scales kp/ki to logSyncInterval -4.
+	// Fixed 0.60/0.0003 disables that scaling; at 16 Hz the integral is ~300x too small to hold the offset under 10 ns.
 	tbcBase = strings.Replace(tbcBase, "neighborPropDelayThresh 20000000", "neighborPropDelayThresh 20000000\nmasterOnly 0", 1)
 
 	// T-BC receiver profile (tbc-tr)
@@ -1560,23 +1560,15 @@ uds_address /var/run/ptp4l.0.socket
 [%s]
 ts2phc.extts_polarity rising
 ts2phc.extts_correction -10
-ts2phc.master 0`, firstNicInterface)
+ts2phc.master 0
+ts2phc.pin_index 1`, firstNicInterface)
 
-	// Get E810 plugin settings from environment variables (following existing pattern)
-	// MAX_OFFSET_IN_NS = LocalMaxHoldoverOffset, MIN_OFFSET_IN_NS = -LocalMaxHoldoverOffset
-	// HOLDOVER_TIMEOUT_S = LocalHoldoverTimeout (keep from YAML for now)
-	// MAX_IN_SPEC_OFFSET_NS = MaxInSpecOffset
-	_, err = ptptestconfig.GetPtpTestConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get test config: %v", err)
-	}
-
-	localMaxHoldoverOffset := metrics.MaxOffsetNs
-	// Use the suite's normal holdover threshold for the T-BC/BC. The long
-	// 600s value is only needed for the WPC GM/TGM path; setting 0 here
-	// prevents the BC from recovering to clock class 6.
-	localHoldoverTimeout := defaultHoldOverTimeout
-	maxInSpecOffset := metrics.MaxInSpecOffsetNs
+	// Match telco-reference PtpConfigTBCWpc.yaml. These are DPLL phase gates,
+	// not the suite's PTP offset threshold (MAX_OFFSET_IN_NS, default 100 ns).
+	// A 0 s holdover timeout prevents the T-BC from returning to clock class 6.
+	localMaxHoldoverOffset := 1500
+	localHoldoverTimeout := 14400
+	maxInSpecOffset := 100
 
 	// E810 plugin configuration for T-BC
 	var plugins map[string]*apiextensions.JSON
@@ -1598,7 +1590,7 @@ ts2phc.master 0`, firstNicInterface)
       "$iface_master":
          "U.FL2": "0 2"
          "U.FL1": "0 1"
-         "SMA2": "2 2"
+         "SMA2": "0 2"
          "SMA1": "0 1"
 `, localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset)
 
@@ -1634,6 +1626,7 @@ ts2phc.master 0`, firstNicInterface)
 	if err := createTelcoBCConfig(configName,
 		receiverConfig,
 		transmitterConfig,
+		ifSlaveName,
 		&ptp4lsysOpts,
 		&phc2sysOpts,
 		pkg.PtpClockUnderTestNodeLabel,
@@ -2601,7 +2594,7 @@ func AddAuthSettings(ptpConfig string) string {
 
 // createTelcoBCConfig creates a multi-profile PTP config for Telco Boundary Clock
 // with separate receiver (tbc-tr) and transmitter (tbc-tt) profiles
-func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig string, ptp4lOpts, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcConfig string, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
+func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig, leadingIface string, ptp4lOpts, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcConfig string, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
 	// Create receiver profile (tbc-tr)
 	receiverProfileName := "tbc-tr"
 	receiverProfile := ptpv1.PtpProfile{
@@ -2614,6 +2607,13 @@ func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig st
 		Ts2PhcOpts:            ts2phcOpts,
 		Plugins:               plugins,
 		PtpSettings: map[string]string{
+			// Without an explicit clockType the daemon falls back to the
+			// ptp4l clock_type option, treating this profile as an OC/BC.
+			// T-BC mode is required for the clock class state machine and
+			// HardwareConfig integration (holdover, phase adjustment).
+			"clockType":                "T-BC",
+			"leadingInterface":         leadingIface,
+			"upstreamPort":             leadingIface,
 			"inSyncConditionThreshold": "10",
 			"inSyncConditionTimes":     "12",
 			"logReduce":                "false",

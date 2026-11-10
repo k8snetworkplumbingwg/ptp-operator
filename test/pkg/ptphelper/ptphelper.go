@@ -1026,10 +1026,23 @@ func ProfileNameMatchPattern(ptpConfigName, profileName string) string {
 	return fmt.Sprintf("(?:%s_)?%s", regexp.QuoteMeta(ptpConfigName), regexp.QuoteMeta(profileName))
 }
 
-// ProfileNameLogPattern is a daemon log regex for "Profile Name:" lines.
-// It includes (?m) because GetPodLogsRegex appends \s*^ when isLiteralText is false.
+// ProfileNameLogPattern is a daemon log regex for profile identification.
+// It accepts both the legacy "Profile Name:" line and the upstream daemon's
+// "Processing profile:" / HardwareConfig reconciliation lines. It includes
+// (?m) because GetPodLogsRegex appends \s*^ when isLiteralText is false.
 func ProfileNameLogPattern(ptpConfigName, profileName string) string {
-	return `(?m)Profile Name: ` + ProfileNameMatchPattern(ptpConfigName, profileName)
+	return ProfileNameLogPatternAny(ptpConfigName, profileName)
+}
+
+// ProfileNameLogPatternAny matches any of the supplied profile names in either
+// the legacy or the upstream daemon log format.
+func ProfileNameLogPatternAny(ptpConfigName string, profileNames ...string) string {
+	patterns := make([]string, 0, len(profileNames))
+	for _, profileName := range profileNames {
+		patterns = append(patterns, ProfileNameMatchPattern(ptpConfigName, profileName))
+	}
+	return `(?m)(?:Profile Name: |Processing profile: |Applying [0-9]+ hardware configurations for PTP profile )(?:` +
+		strings.Join(patterns, "|") + `)`
 }
 
 // GetProfileName returns the profile name from a PtpConfig, matching against

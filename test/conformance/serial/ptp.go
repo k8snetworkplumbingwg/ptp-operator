@@ -1181,7 +1181,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 							tbcPattern := "(?:" +
 								ptphelper.ProfileNameMatchPattern(policyName, "tbc-tr") + "|" +
 								ptphelper.ProfileNameMatchPattern(policyName, "tbc-tt") + ")"
-							profileLogPattern = `(?m)Profile Name: ` + tbcPattern
+							profileLogPattern = ptphelper.ProfileNameLogPatternAny(policyName, "tbc-tr", "tbc-tt")
 							profileFilePattern = tbcPattern
 						}
 						_, err := pods.GetPodLogsRegex(testPtpPod.Namespace,

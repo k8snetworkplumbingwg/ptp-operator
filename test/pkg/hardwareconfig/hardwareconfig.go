@@ -3,6 +3,8 @@ package hardwareconfig
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -40,13 +42,17 @@ spec:
       behavior:
         conditions:
         - desiredStates:
-          - sysfs:
-              path: /sys/class/net/{interface}/device/ptp/ptp*/pins/SMA2
-              value: "2 2"
+          # SDP22 is the PHC pin that feeds the DPLL. The v2 API ignores a raw sysfs entry.
+          - ptpPin:
+              name: SDP22
+              func: TX
+              chan: 2
               sourceName: PTP
-          - sysfs:
-              path: /sys/class/net/{interface}/device/ptp/ptp*/period
-              value: "2 0 0 1 0"
+          - ptpPeriod:
+              index: 2
+              period:
+                sec: 1
+                nsec: 0
               sourceName: PTP
           - dpll:
               subsystem: leader
@@ -133,9 +139,10 @@ spec:
             localMaxHoldoverOffset: %d
             localHoldoverTimeout: %d
           phaseInputs:
-            CVL_SDP22:
+            CVL-SDP22:
               description: PTP time receiver input
               frequency: 1
+              phaseAdjustment: %d
           phaseOutputs:
             REF-SMA1:
               connector: SMA1
@@ -177,6 +184,7 @@ spec:
 // releases whose PTP operator consumes the v2alpha1 HardwareConfig API instead
 // of the legacy e810 plugin settings in the PtpConfig.
 func CreateTBC(configName, relatedProfile, leaderIface, ptpReceiverIface string, ports []string, maxInSpecOffset, localMaxHoldoverOffset, localHoldoverTimeout int) error {
+	phaseAdjustment := sdp22PhaseAdjustment()
 	portsYAML := formatPorts(ports)
 	data := fmt.Sprintf(tbcTemplate,
 		configName+"-hwconfig",
@@ -187,9 +195,28 @@ func CreateTBC(configName, relatedProfile, leaderIface, ptpReceiverIface string,
 		maxInSpecOffset,
 		localMaxHoldoverOffset,
 		localHoldoverTimeout,
+		phaseAdjustment,
 		portsYAML,
 	)
 	return apply(configName+"-hwconfig", data)
+}
+
+// sdp22PhaseAdjustment returns the user phase adjustment for the SDP22/PHC
+// 1PPS input in picoseconds. The static SDP22 path bias is not covered by the
+// hardware delay model, so it is exposed as an environment override.
+func sdp22PhaseAdjustment() int64 {
+	const env = "PTP_SDP22_PHASE_ADJUSTMENT_PS"
+	raw := strings.TrimSpace(os.Getenv(env))
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		logrus.Warnf("Ignoring invalid %s=%q: %v", env, raw, err)
+		return 0
+	}
+	logrus.Infof("Using SDP22 phase adjustment %d ps from %s", value, env)
+	return value
 }
 
 // CreateTGM creates the HardwareConfig for a WPC T-GM profile.
