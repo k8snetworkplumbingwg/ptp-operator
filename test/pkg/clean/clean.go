@@ -6,6 +6,7 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -44,9 +45,16 @@ func Labels() error {
 
 // All removes any configuration applied by ptp tests.
 func All() error {
+	HardwareConfigs()
 	Configs()
 	Secrets()
 	return Labels()
+}
+
+// HardwareConfigs removes HardwareConfig objects created by the test suite on
+// operators that support the v2alpha1 API.
+func HardwareConfigs() {
+	hardwareconfig.DeleteTestConfigs()
 }
 
 func Configs() {

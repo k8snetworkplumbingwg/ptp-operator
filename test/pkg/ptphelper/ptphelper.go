@@ -35,6 +35,7 @@ import (
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/pods"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -402,6 +403,20 @@ func ApplyE810PluginMutation(
 	l2Config l2exports.L2Info,
 	localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset int,
 ) (cleanup func(), err error) {
+	if SupportsHardwareConfig() {
+		cleanupHW, hwErr := hardwareconfig.MutateHoldover(profileName, maxInSpecOffset, localMaxHoldoverOffset, localHoldoverTimeout)
+		if hwErr == nil {
+			newPod, err := ReplaceTestPod(pod, 5*time.Minute)
+			if err != nil {
+				cleanupHW()
+				return nil, fmt.Errorf("restarting daemon pod: %w", err)
+			}
+			*pod = newPod
+			return cleanupHW, nil
+		}
+		logrus.Infof("HardwareConfig mutation for profile %s failed, falling back to e810 plugin: %v", profileName, hwErr)
+	}
+
 	originalSpec := ptpConfig.Spec.DeepCopy()
 
 	latest, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
@@ -1308,6 +1323,17 @@ func GetOCPVersion() (ocpVersion string, err error) {
 		}
 	}
 	return ocpVersion, err
+}
+
+// hardwareConfigMinOperatorVersion is the first PTP operator release whose
+// clock manager consumes v2alpha1 HardwareConfig objects for the WPC card.
+const hardwareConfigMinOperatorVersion = "5.1"
+
+// SupportsHardwareConfig reports whether the operator under test supports the
+// HardwareConfig API. Older releases use the legacy e810 plugin settings
+// embedded in the PtpConfig.
+func SupportsHardwareConfig() bool {
+	return IsPTPOperatorVersionAtLeast(hardwareConfigMinOperatorVersion)
 }
 
 // IsPTPOperatorVersionAtLeast checks if the PTP Operator version is >= the specified minimum version

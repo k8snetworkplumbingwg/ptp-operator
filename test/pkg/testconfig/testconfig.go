@@ -15,6 +15,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/clean"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/k8sutil"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/nodes"
@@ -770,6 +771,7 @@ func createPtpConfigurations(ctx context.Context) error {
 			// mode changed (or discovery failed) and labels left by the previous
 			// mode must not make the new PtpConfig match the wrong node.
 			clean.Configs()
+			clean.HardwareConfigs()
 			if err := clean.Labels(); err != nil {
 				logrus.Errorf("Error deleting node role labels, err=%s", err)
 			}
@@ -1479,7 +1481,12 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 		logrus.Fatalf("error: %v", err)
 	}
 	plugins = result
-	return createConfigWithTs2PhcAndPlugins(policyName,
+
+	if ptphelper.SupportsHardwareConfig() {
+		plugins = nil
+	}
+
+	if err := createConfigWithTs2PhcAndPlugins(policyName,
 		nil,
 		&ptp4lsysOpts,
 		ptp4lConfig,
@@ -1490,7 +1497,19 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 		ptpSchedulingPolicy,
 		ptr.To(int64(defaultSchedulingPriority)),
 		&ts2phcOpts,
-		plugins)
+		plugins); err != nil {
+		return err
+	}
+	if !ptphelper.SupportsHardwareConfig() {
+		return nil
+	}
+
+	testParameters, err := ptptestconfig.GetPtpTestConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get test config: %v", err)
+	}
+	return hardwareconfig.CreateTGM(policyName, policyName, ifList[0], ifList,
+		metrics.MaxInSpecOffsetNs, metrics.MaxOffsetNs, int(testParameters.GlobalConfig.HoldOverTimeout))
 }
 
 func CreatePtpConfigTelcoBoundaryClock(configName, nodeName, ifSlaveName string, ifMasterNames []string, firstNicInterface string, deviceID string) error {
@@ -1606,8 +1625,13 @@ ts2phc.master 0`, firstNicInterface)
 	}
 	plugins = result
 
-	// Create multi-profile PTP config for T-BC
-	return createTelcoBCConfig(configName,
+	if ptphelper.SupportsHardwareConfig() {
+		// The v2alpha1 HardwareConfig owns the WPC hardware settings on newer
+		// operators; the legacy e810 plugin settings must not be duplicated.
+		plugins = nil
+	}
+
+	if err := createTelcoBCConfig(configName,
 		receiverConfig,
 		transmitterConfig,
 		&ptp4lsysOpts,
@@ -1618,7 +1642,23 @@ ts2phc.master 0`, firstNicInterface)
 		ptr.To(int64(10)),
 		ts2phcConfig,
 		&ts2phcOpts,
-		plugins)
+		plugins); err != nil {
+		return err
+	}
+	if !ptphelper.SupportsHardwareConfig() {
+		return nil
+	}
+
+	ports := []string{firstNicInterface}
+	seen := map[string]bool{firstNicInterface: true}
+	for _, iface := range ifMasterNames {
+		if iface != "" && !seen[iface] {
+			ports = append(ports, iface)
+			seen[iface] = true
+		}
+	}
+	return hardwareconfig.CreateTBC(configName, "tbc-tr", firstNicInterface, ifSlaveName,
+		ports, maxInSpecOffset, localMaxHoldoverOffset, localHoldoverTimeout)
 }
 
 func CreatePtpConfigBC(policyName, nodeName, ifMasterName, ifSlaveName string, phc2sys bool) (err error) {
