@@ -688,9 +688,15 @@ func PushInitialEvents(eventTypes []string, timeout time.Duration) (missing []st
 	logrus.Infof("PushInitialEvents: pod status is %s, phase: %s, ready: %v",
 		podName, pod.Status.Phase, pod.Status.Conditions)
 
-	count := int64(0)
-	podLogOptions := corev1.PodLogOptions{Container: containerName, Follow: true, TailLines: &count}
-	logrus.Infof("PushInitialEvents: opening log stream for %s/%s container %s", namespace, podName, containerName)
+	// Replay the tail of the consumer log instead of only following new lines.
+	// The consumer emits "Got CurrentState" while it initializes, which happens
+	// before this stream is opened. With TailLines=0 those lines are missed and
+	// the function can only succeed if the consumer re-queries CurrentState
+	// within the timeout, which it usually does not.
+	initialReplayLines := int64(200)
+	podLogOptions := corev1.PodLogOptions{Container: containerName, Follow: true, TailLines: &initialReplayLines}
+	logrus.Infof("PushInitialEvents: opening log stream for %s/%s container %s (last %d lines, then follow)",
+		namespace, podName, containerName, initialReplayLines)
 	podLogRequest := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &podLogOptions)
 	stream, err := podLogRequest.Stream(ctx)
 	if err != nil {

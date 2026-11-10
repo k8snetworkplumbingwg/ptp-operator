@@ -50,6 +50,7 @@ const (
 	PtpLinuxDaemonNamespace      = "openshift-ptp"
 	defaultSchedulingPriority    = 65
 	defaultPriority              = 5
+	defaultHoldOverTimeout       = 5
 	// OrdinaryClockString matches the OC clock mode in Environement
 	OrdinaryClockString = "OC"
 	// DualFollowerClocktring matches the DualFollower clock mode in Environement
@@ -741,11 +742,37 @@ func createPtpConfigurations(ctx context.Context) error {
 		return err
 	}
 
+	if GlobalConfig.PtpModeDesired != Discovery && strings.EqualFold(os.Getenv("KEEP_PTPCONFIG"), "true") {
+		// Force a fresh discovery here. The cached success can survive after
+		// tests that delete all PtpConfigs (e.g. the event suite), which then
+		// makes the next BeforeEach skip recreation and fail discovery.
+		existing := GetFullDiscoveredConfig(pkg.PtpLinuxDaemonNamespace, true)
+		if existing.Status == DiscoverySuccessStatus && existing.PtpModeDiscovered == GlobalConfig.PtpModeDesired {
+			logrus.Infof("KEEP_PTPCONFIG=true: using existing %s configuration", GlobalConfig.PtpModeDesired)
+			return nil
+		}
+	}
+
 	if GlobalConfig.PtpModeDesired != Discovery {
-		// for external grand master, clean previous configuration so that it is not detected as a external grandmaster
-		err := clean.All()
-		if err != nil {
-			logrus.Errorf("Error deleting labels and configuration, err=%s", err)
+		// KEEP_PTPCONFIG=true reuses a configuration whose discovered mode
+		// already matches (handled above). Reaching this point means the mode
+		// changed or discovery failed, so stale configs and role labels must be
+		// dropped even when the configuration is otherwise kept.
+		if !strings.EqualFold(os.Getenv("KEEP_PTPCONFIG"), "true") {
+			// for external grand master, clean previous configuration so that it is not detected as a external grandmaster
+			err := clean.All()
+			if err != nil {
+				logrus.Errorf("Error deleting labels and configuration, err=%s", err)
+			}
+		} else {
+			// Drop stale PtpConfigs and node role labels. A matching mode is
+			// reused above and returns early, so reaching this branch means the
+			// mode changed (or discovery failed) and labels left by the previous
+			// mode must not make the new PtpConfig match the wrong node.
+			clean.Configs()
+			if err := clean.Labels(); err != nil {
+				logrus.Errorf("Error deleting node role labels, err=%s", err)
+			}
 		}
 		ptphelper.RestartPTPDaemon()
 		ptphelper.WaitForPtpDaemonToExist()
@@ -1335,11 +1362,11 @@ func CreatePtpConfigWPCGrandMaster(policyName string, nodeName string, ifList []
 
 	ts2phcConfig := BaseTs2PhcConfig + fmt.Sprintf("\nts2phc.nmea_serialport  %s\n", gnssSerialPort(deviceID))
 	ts2phcConfig = fmt.Sprintf("%s\n[%s]\nts2phc.extts_polarity rising\nts2phc.extts_correction 0\n", ts2phcConfig, ifList[0])
-	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\n"
+	ptp4lConfig := GetPtp4lConfigWithAuth(BasePtp4lConfig) + "boundary_clock_jbod 1\npriority1 0\npriority2 0\nclockClass 6\n"
 	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[0], 1))
 	ptp4lConfig = AddAuthSettings(AddInterface(ptp4lConfig, ifList[1], 1))
 	ptp4lsysOpts := ptp4lEthernet
-	ts2phcOpts := " "
+	ts2phcOpts := "--ts2phc.holdover 600"
 	ph2sysOpts := fmt.Sprintf("-r -u 0 -m -N 8 -R 16 -s %s -n 24", ifList[0])
 
 	// Hardware T-GM: restore E810 holdover thresholds from main. Simulation leaves
@@ -1520,13 +1547,16 @@ ts2phc.master 0`, firstNicInterface)
 	// MAX_OFFSET_IN_NS = LocalMaxHoldoverOffset, MIN_OFFSET_IN_NS = -LocalMaxHoldoverOffset
 	// HOLDOVER_TIMEOUT_S = LocalHoldoverTimeout (keep from YAML for now)
 	// MAX_IN_SPEC_OFFSET_NS = MaxInSpecOffset
-	testParameters, err := ptptestconfig.GetPtpTestConfig()
+	_, err = ptptestconfig.GetPtpTestConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get test config: %v", err)
 	}
 
 	localMaxHoldoverOffset := metrics.MaxOffsetNs
-	localHoldoverTimeout := testParameters.GlobalConfig.HoldOverTimeout // Keep this from YAML for now
+	// Use the suite's normal holdover threshold for the T-BC/BC. The long
+	// 600s value is only needed for the WPC GM/TGM path; setting 0 here
+	// prevents the BC from recovering to clock class 6.
+	localHoldoverTimeout := defaultHoldOverTimeout
 	maxInSpecOffset := metrics.MaxInSpecOffsetNs
 
 	// E810 plugin configuration for T-BC
@@ -2255,6 +2285,20 @@ func PtpConfigTelcoGM(isExtGM bool) error {
 		gm0 := (*data.testClockRolesAlgoMapping[BestSolution])[Grandmaster]
 		gm1 := (*data.testClockRolesAlgoMapping[BestSolution])[GrandmasterSibling]
 
+		// The solver can find multiple valid WPC/GNSS nodes (e.g. lab GM and
+		// BC). Allow the caller to pin the physical T-GM node so the test
+		// exercises the intended clock and not another WPC-capable node.
+		if preferredNode := os.Getenv("PTP_GM_NODE"); preferredNode != "" {
+			ptpIfList := GlobalConfig.L2Config.GetPtpIfList()
+			for _, candidate := range *data.solutions[BestSolution] {
+				if ptpIfList[candidate[gm0]].NodeName == preferredNode {
+					solution = candidate
+					logrus.Infof("PtpConfigTelcoGM: using GM solution on %s", preferredNode)
+					break
+				}
+			}
+		}
+
 		gmIf0 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm0]]
 		gmIf1 := GlobalConfig.L2Config.GetPtpIfList()[solution[gm1]]
 
@@ -2612,7 +2656,7 @@ func createConfig(profileName string, ifaceName, ptp4lOpts *string, ptp4lConfig 
 	}
 	thresholds.MaxOffsetThreshold = int64(testParameters.GlobalConfig.MaxOffset)
 	thresholds.MinOffsetThreshold = int64(testParameters.GlobalConfig.MinOffset)
-	thresholds.HoldOverTimeout = int64(testParameters.GlobalConfig.HoldOverTimeout)
+	thresholds.HoldOverTimeout = defaultHoldOverTimeout
 
 	if testParameters.GlobalConfig.DisableAllSlaveRTUpdate && nodeLabel != pkg.PtpGrandmasterNodeLabel && phc2sysOpts != nil {
 		noRT := stripPhc2sysRealtimeOpts(*phc2sysOpts)
