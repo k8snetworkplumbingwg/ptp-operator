@@ -97,9 +97,6 @@ kind: ClusterRole
 metadata:
   name: linuxptp-daemon
 rules:
-- apiGroups: ["ptp.openshift.io"]
-  resources: ["*"]
-  verbs: ["*"]
 - apiGroups: ["authentication.k8s.io"]
   resources: ["tokenreviews"]
   verbs: ["create"]
@@ -139,6 +136,9 @@ rules:
     verbs: ["get", "patch"]
   - apiGroups: [""]
     resources: ["configmaps"]
+    verbs: ["*"]
+  - apiGroups: ["ptp.openshift.io"]
+    resources: ["*"]
     verbs: ["*"]
 ---
 kind: RoleBinding

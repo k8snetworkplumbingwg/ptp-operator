@@ -192,12 +192,6 @@ spec:
       clusterPermissions:
       - rules:
         - apiGroups:
-          - ptp.openshift.io
-          resources:
-          - '*'
-          verbs:
-          - '*'
-        - apiGroups:
           - authentication.k8s.io
           resources:
           - tokenreviews
@@ -327,6 +321,12 @@ spec:
           - ""
           resources:
           - configmaps
+          verbs:
+          - '*'
+        - apiGroups:
+          - ptp.openshift.io
+          resources:
+          - '*'
           verbs:
           - '*'
         serviceAccountName: linuxptp-daemon
