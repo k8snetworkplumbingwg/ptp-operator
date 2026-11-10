@@ -49,8 +49,10 @@ import (
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	kscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -549,9 +551,12 @@ func (r *PtpOperatorConfigReconciler) setTLSTemplateData(data *render.RenderData
 }
 
 func (r *PtpOperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	inNamespace := predicate.NewPredicateFuncs(func(object client.Object) bool {
+		return object.GetNamespace() == names.Namespace
+	})
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&ptpv1.PtpOperatorConfig{}).
-		Owns(&appsv1.DaemonSet{}).
+		For(&ptpv1.PtpOperatorConfig{}, builder.WithPredicates(inNamespace)).
+		Owns(&appsv1.DaemonSet{}, builder.WithPredicates(inNamespace)).
 		Complete(r)
 }
 
