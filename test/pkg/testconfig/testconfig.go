@@ -2928,6 +2928,63 @@ func GetPodsRunningPTP4l(fullConfig *TestConfig) (podList []*v1core.Pod, err err
 	return podList, nil
 }
 
+// GetPodsRunningProfile returns the linuxptp-daemon pods on the nodes to which
+// the named PtpConfig profile is recommended. Looking at every daemon pod is
+// expensive: log-regex waits against pods that do not run the profile only
+// burn their full timeout.
+func GetPodsRunningProfile(configName, profileName string) ([]v1core.Pod, error) {
+	ctx := context.Background()
+	config, err := client.Client.PtpV1Interface.PtpConfigs(PtpLinuxDaemonNamespace).Get(ctx, configName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("could not get ptpconfig %s: %v", configName, err)
+	}
+
+	nodeNames := map[string]bool{}
+	for _, recommend := range config.Spec.Recommend {
+		if recommend.Profile == nil || *recommend.Profile != profileName {
+			continue
+		}
+		for _, match := range recommend.Match {
+			if match.NodeName != nil && *match.NodeName != "" {
+				nodeNames[*match.NodeName] = true
+				continue
+			}
+			if match.NodeLabel == nil || *match.NodeLabel == "" {
+				continue
+			}
+			nodes, err := client.Client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("%s=", *match.NodeLabel),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("could not list nodes with label %s: %v", *match.NodeLabel, err)
+			}
+			for _, node := range nodes.Items {
+				nodeNames[node.Name] = true
+			}
+		}
+	}
+	if len(nodeNames) == 0 {
+		return nil, fmt.Errorf("no recommended nodes found for profile %s/%s", configName, profileName)
+	}
+
+	pods, err := client.Client.CoreV1().Pods(PtpLinuxDaemonNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=linuxptp-daemon",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("could not list linuxptp-daemon pods: %v", err)
+	}
+	result := []v1core.Pod{}
+	for _, pod := range pods.Items {
+		if nodeNames[pod.Spec.NodeName] {
+			result = append(result, pod)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no linuxptp-daemon pod found on recommended nodes for profile %s/%s", configName, profileName)
+	}
+	return result, nil
+}
+
 // CreateTestSecretForVolumeMountTest creates a test secret for volume mount cleanup testing
 func CreateTestSecretForVolumeMountTest(namespace string) *v1core.Secret {
 	return &v1core.Secret{

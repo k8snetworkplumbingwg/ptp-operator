@@ -2263,17 +2263,23 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					fp := fifoPriorities[i]
 					ptp4lLog := fmt.Sprintf("/bin/chrt -f %d /usr/sbin/ptp4l", fp.priority)
 					matched := false
-					for podIndex := range ptpPods.Items {
+					profilePods, podErr := testconfig.GetPodsRunningProfile(fp.configName, fp.profileName)
+					if podErr != nil {
+						logrus.Errorf("could not find pods running profile=%s/%s, err=%s", fp.configName, fp.profileName, podErr)
+						i++
+						continue
+					}
+					for podIndex := range profilePods {
 						profileLog := ptphelper.ProfileNameLogPattern(fp.configName, fp.profileName)
-						_, err := pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
-							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+						_, err := pods.GetPodLogsRegex(profilePods[podIndex].Namespace,
+							profilePods[podIndex].Name, pkg.PtpContainerName,
 							profileLog, false, pkg.TimeoutIn3Minutes)
 						if err != nil {
 							logrus.Errorf("error getting profile=%s/%s, err=%s ", fp.configName, fp.profileName, err)
 							continue
 						}
-						_, err = pods.GetPodLogsRegex(ptpPods.Items[podIndex].Namespace,
-							ptpPods.Items[podIndex].Name, pkg.PtpContainerName,
+						_, err = pods.GetPodLogsRegex(profilePods[podIndex].Namespace,
+							profilePods[podIndex].Name, pkg.PtpContainerName,
 							ptp4lLog, true, pkg.TimeoutIn3Minutes)
 						if err != nil {
 							logrus.Errorf("error getting ptp4l chrt line=%s, err=%s ", ptp4lLog, err)
