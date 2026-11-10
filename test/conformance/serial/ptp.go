@@ -2784,12 +2784,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			It("degraded state: all slave port roles are FAULTY via metrics", func() {
 				Eventually(func() error {
 					return metrics.CheckClockRole(faultyRoles, slaveIf, &slavePodNodeName)
-				}, 5*time.Minute, 10*time.Second).Should(BeNil())
+				}, 2*time.Minute, 10*time.Second).Should(BeNil())
 			})
 			It("degraded state: clock class leaves Locked (6) via metrics", func() {
 				Eventually(func() bool {
 					return !checkClockClassStateReturnBool(fullConfig, lockedStr)
-				}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+				}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
 					"expected clock class to degrade from Locked (6) after upstream link loss")
 			})
 
@@ -2808,7 +2808,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 			It("recovered state: all slave port roles are SLAVE via metrics", func() {
 				Eventually(func() error {
 					return metrics.CheckClockRole(slaveRoles, slaveIf, &slavePodNodeName)
-				}, 5*time.Minute, 10*time.Second).Should(BeNil())
+				}, 2*time.Minute, 10*time.Second).Should(BeNil())
 			})
 			It("recovered state: clock class recovers to Locked (6) via metrics", func() {
 				waitForClockClass(fullConfig, lockedStr)
