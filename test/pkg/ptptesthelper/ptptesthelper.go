@@ -685,6 +685,14 @@ func WaitForConfigContent(fullConfig testconfig.TestConfig, configFile, expected
 		fmt.Sprintf("ptp4l config %s should contain %q", configFile, expected))
 }
 
+// WaitForConfigReload waits for the daemon to process a PtpConfig change made after since.
+func WaitForConfigReload(pod *corev1.Pod, since time.Time) {
+	Expect(pod).NotTo(BeNil(), "WaitForConfigReload requires a linuxptp-daemon pod")
+	_, err := pods.GetPodLogsRegexSince(pod.Namespace, pod.Name, pkg.PtpContainerName,
+		"updating NodePTPProfiles to:", true, pkg.TimeoutIn3Minutes, since)
+	Expect(err).NotTo(HaveOccurred(), "linuxptp-daemon did not reload its config on node %s", pod.Spec.NodeName)
+}
+
 // DiscoverPtp4lConfigByProfile uses GetProfileLogID to find the config file
 // name (e.g. "ptp4l.0.config") for a PtpConfig, then returns the full path.
 func DiscoverPtp4lConfigByProfile(ptpConfigName string, profileName string, nodeName string) (string, error) {
