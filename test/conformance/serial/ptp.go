@@ -59,6 +59,7 @@ const (
 
 const (
 	DPLL_LOCKED_HO_ACQ = 3
+	DPLL_HOLDOVER      = 4
 )
 const (
 	ClockClassFreerun = 248
@@ -3216,8 +3217,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// Also verify ClockState 2 (Holdover)
 					checkClockStateForProcess(fullConfig, "GM", "2")
 
-					// Also verify ClockState (Holdover) for DPLL
-					checkClockStateForProcess(fullConfig, "dpll", "2")
+					// The daemon exposes DPLL state through frequency/phase
+					// status; openshift_ptp_clock_state{process="dpll"} is not exported.
+					checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_HOLDOVER))
+					checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_HOLDOVER))
 
 					// Once holdover detected, enable GNSS
 					enableGNSSViaSignalRequirements(fullConfig)
@@ -3229,8 +3232,8 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 					// Give DPLL/GM time update
 					time.Sleep(pkg.Timeout10Seconds)
-					// Also verify ClockState (Holdover) for DPLL
-					checkClockStateForProcess(fullConfig, "dpll", "1")
+					checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
+					checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 
 					// Also verify ClockState 1 (Locked)
 					checkClockStateForProcess(fullConfig, "GM", "1")
