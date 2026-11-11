@@ -1578,67 +1578,40 @@ func MarkGnssSimNmeaActive() {
 	gnssSimNmeaActive.Store(true)
 }
 
-// gnssRecoveryScript restores a hardware GNSS receiver to the state the T-GM
-// tests expect. Two things can leave the receiver unusable for l2discovery:
-//   - an aborted GNSS signal-loss test leaves CFG-NAVSPG-INFIL_NCNOTHRS=50 in RAM,
-//     so the receiver tracks satellites but never computes a fix and GNRMC reports V;
-//   - a plain gpsd start disables NMEA on the DDC/I2C port, so no GNRMC is emitted
-//     at all (the linuxptp-daemon's ublox init is what re-enables it).
+// gnssRecoveryScript undoes the state the WPC GM signal-loss test leaves on
+// the receiver when a run is interrupted. That test writes
+// CFG-NAVSPG-INFIL_NCNOTHRS=50, which makes the receiver track satellites but
+// never compute a fix, so GNRMC reports V and l2discovery returns an empty
+// IfPTPCaps.GnssDevice, preventing T-GM discovery from finding a solution.
 //
-// l2discovery reports IfPTPCaps.GnssDevice only when it can read a GNRMC sentence
-// with a valid ("A") fix, so both conditions make T-GM discovery fail.
+// The writes go through gpsd, so a gpsd started here would disable NMEA on the
+// DDC/I2C port; -e NMEA restores it. No wait for a new fix is done here: the
+// receiver recovers on its own and l2discovery retries discovery.
 const gnssRecoveryScript = `
 set -u
 if [ ! -e /dev/gnss0 ]; then
   echo NO_GNSS
   exit 0
 fi
-BUSES="I2C UART1 UART2 USB SPI"
 UBX="ubxtool -P 29.25 -w 1 -v 3"
 GPSD_PID=""
 if ! pgrep -x gpsd >/dev/null 2>&1; then
   gpsd -N -n /dev/gnss0 >/tmp/gnss-recovery-gpsd.log 2>&1 &
   GPSD_PID=$!
-  sleep 3
+  sleep 2
 fi
 $UBX -z CFG-NAVSPG-INFIL_NCNOTHRS,0,1 >/dev/null 2>&1
-$UBX -d BINARY >/dev/null 2>&1
-NAV_ARGS=""
-for m in CLOCK STATUS; do
-  for b in $BUSES; do NAV_ARGS="$NAV_ARGS -z CFG-MSGOUT-UBX_NAV_${m}_${b},1"; done
-done
-for b in $BUSES; do NAV_ARGS="$NAV_ARGS -z CFG-MSGOUT-UBX_NAV_TIMELS_${b},60"; done
-$UBX $NAV_ARGS >/dev/null 2>&1
 $UBX -e NMEA >/dev/null 2>&1
-DROP_ARGS=""
-for m in VTG GST ZDA GBS GSA GSV; do
-  for b in $BUSES; do DROP_ARGS="$DROP_ARGS -z CFG-MSGOUT-NMEA_ID_${m}_${b},0"; done
-done
-$UBX $DROP_ARGS >/dev/null 2>&1
-sleep 2
 if [ -n "$GPSD_PID" ]; then
   kill "$GPSD_PID" >/dev/null 2>&1
-  sleep 1
 fi
-for i in $(seq 1 20); do
-  RMC=$(timeout 4 cat /dev/gnss0 2>/dev/null | tr -d '\r' | grep -a -m1 'GNRMC')
-  if [ -n "$RMC" ]; then
-    echo "RMC=$RMC"
-    case "$RMC" in
-      *GNRMC*,A,*) echo GNSS_FIX_OK; exit 0 ;;
-    esac
-  fi
-  sleep 3
-done
-echo GNSS_NO_FIX
+echo GNSS_ENABLED
 exit 0
 `
 
-// EnsureGnssDevicesReady re-enables hardware GNSS receivers on every worker node
-// that exposes /dev/gnss0. It uses the same ubxtool writes as the T-GM signal
-// restoration and the linuxptp-daemon ublox initialization, and waits for a
-// valid GNRMC fix so l2discovery can report GnssDevice before T-GM discovery.
-// It is a no-op when GNSS simulation is configured.
+// EnsureGnssDevicesReady resets the GNSS signal-loss state on every worker node
+// that exposes /dev/gnss0, mirroring the test's own GNSS enable helper. It is a
+// no-op when GNSS simulation is configured.
 func EnsureGnssDevicesReady() {
 	if UseGnssSimulation() || IsGnssSimConfigured() {
 		logrus.Info("GNSS recovery: simulation in use, skipping hardware GNSS recovery")
@@ -1649,7 +1622,6 @@ func EnsureGnssDevicesReady() {
 		logrus.Errorf("GNSS recovery: could not list linuxptp-daemon pods: %v", err)
 		return
 	}
-	enabled := 0
 	for i := range ptpPods.Items {
 		pod := &ptpPods.Items[i]
 		if pod.Status.Phase != corev1.PodRunning {
@@ -1665,14 +1637,12 @@ func EnsureGnssDevicesReady() {
 			logrus.Infof("GNSS recovery: node %s has no GNSS device, skipping", pod.Spec.NodeName)
 			continue
 		}
-		if strings.Contains(out, "GNSS_FIX_OK") {
-			enabled++
-			logrus.Infof("GNSS recovery: GNSS receiver enabled on node %s", pod.Spec.NodeName)
+		if strings.Contains(out, "GNSS_ENABLED") {
+			logrus.Infof("GNSS recovery: reset signal-loss state on node %s", pod.Spec.NodeName)
 			continue
 		}
-		logrus.Warnf("GNSS recovery: node %s did not report a GNSS fix after re-enabling: %s", pod.Spec.NodeName, strings.TrimSpace(out))
+		logrus.Warnf("GNSS recovery: node %s did not confirm GNSS recovery: %s", pod.Spec.NodeName, strings.TrimSpace(out))
 	}
-	logrus.Infof("GNSS recovery: %d node(s) report a valid GNSS fix", enabled)
 }
 
 // L2ConfigReportsIntelWPC returns true if L2 discovery reports an Intel WPC subsystem (E810-XXV-4T).
