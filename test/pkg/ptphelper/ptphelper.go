@@ -1374,15 +1374,28 @@ func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 }
 
 // GetLocalClockID calculates the PTP clock identity for a node by finding the
-// leading interface (the one with PTP pins) from the named profile's e810 plugin
-// config, looking up its MAC address in L2 discovery data, and performing the
-// standard EUI-48 → EUI-64 conversion (inserting fffe in the middle of the MAC).
+// leading interface (the one with PTP pins) from the named profile's
+// ptpSettings (HardwareConfig path) or e810 plugin config (legacy path),
+// looking up its MAC address in L2 discovery data, and performing the standard
+// EUI-48 → EUI-64 conversion (inserting fffe in the middle of the MAC).
 // This mirrors how the linuxptp-daemon's getPTPClockID() derives the identity.
 func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2exports.L2Info, nodeName string) (string, error) {
-	// Find the leading interface from the profile's e810 plugin "pins" key
+	// Find the leading interface. Newer operators using HardwareConfig expose
+	// it through ptpSettings["leadingInterface"]; older ones only have the
+	// legacy e810 plugin "pins" key.
 	var leadingIface string
 	for _, profile := range ptpConfig.Spec.Profile {
-		if profile.Name != nil && QualifyProfileName(ptpConfig.Name, *profile.Name) == QualifyProfileName(ptpConfig.Name, profileName) && profile.Plugins != nil {
+		if profile.Name == nil ||
+			QualifyProfileName(ptpConfig.Name, *profile.Name) != QualifyProfileName(ptpConfig.Name, profileName) {
+			continue
+		}
+		if profile.PtpSettings != nil {
+			leadingIface = profile.PtpSettings["leadingInterface"]
+		}
+		if leadingIface != "" {
+			break
+		}
+		if profile.Plugins != nil {
 			if e810JSON, ok := profile.Plugins["e810"]; ok && e810JSON != nil {
 				var e810Config map[string]interface{}
 				if err := json.Unmarshal(e810JSON.Raw, &e810Config); err != nil {
@@ -1395,11 +1408,11 @@ func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2
 					}
 				}
 			}
-			break
 		}
+		break
 	}
 	if leadingIface == "" {
-		return "", fmt.Errorf("could not find leading interface from profile %s e810 plugin config", profileName)
+		return "", fmt.Errorf("could not find leading interface from profile %s (ptpSettings or e810 plugin config)", profileName)
 	}
 
 	// Look up the interface MAC in L2 discovery data

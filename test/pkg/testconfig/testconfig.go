@@ -2592,6 +2592,21 @@ func AddAuthSettings(ptpConfig string) string {
 	return ptpConfig
 }
 
+// envIntDefault returns the integer value of the named environment variable,
+// or def when it is unset or invalid.
+func envIntDefault(name string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		logrus.Warnf("Ignoring invalid %s=%q: %v", name, raw, err)
+		return def
+	}
+	return value
+}
+
 // createTelcoBCConfig creates a multi-profile PTP config for Telco Boundary Clock
 // with separate receiver (tbc-tr) and transmitter (tbc-tt) profiles
 func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig, leadingIface string, ptp4lOpts, phc2sysOpts *string, nodeLabel string, priority *int64, ptpSchedulingPolicy string, ptpSchedulingPriority *int64, ts2phcConfig string, ts2phcOpts *string, plugins map[string]*apiextensions.JSON) error {
@@ -2614,8 +2629,8 @@ func createTelcoBCConfig(configName string, receiverConfig, transmitterConfig, l
 			"clockType":                "T-BC",
 			"leadingInterface":         leadingIface,
 			"upstreamPort":             leadingIface,
-			"inSyncConditionThreshold": "10",
-			"inSyncConditionTimes":     "12",
+			"inSyncConditionThreshold": strconv.Itoa(envIntDefault("PTP_TBC_IN_SYNC_CONDITION_THRESHOLD_NS", 10)),
+			"inSyncConditionTimes":     strconv.Itoa(envIntDefault("PTP_TBC_IN_SYNC_CONDITION_TIMES", 12)),
 			"logReduce":                "false",
 		},
 	}
