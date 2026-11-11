@@ -5467,7 +5467,7 @@ func watchProcessFlipOneZeroOne(fullConfig testconfig.TestConfig, process string
 }
 
 func checkPTPNMEAStatus(fullConfig testconfig.TestConfig, expectedState string) {
-	nmeaStatusPattern := `openshift_ptp_nmea_status\{iface="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
+	nmeaStatusPattern := `openshift_ptp_nmea_status\{[^}]*iface="([^"]+)",node="([^"]+)",process="([^"]+)"\} (\d+)`
 	nmeaStatusRe := regexp.MustCompile(nmeaStatusPattern)
 
 	Eventually(func() bool {
