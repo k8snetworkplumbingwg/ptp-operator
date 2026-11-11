@@ -195,8 +195,7 @@ spec:
                 observationTime: 0
                 accuracy: 0
             match:
-              ethernetDevice:
-                name: %s
+              ttyDevice: %s
 `
 
 // CreateTBC creates the HardwareConfig for a WPC T-BC profile. It is used on
@@ -238,6 +237,15 @@ func sdp22PhaseAdjustment() int64 {
 	return value
 }
 
+// gnssTTYDevice returns the GNSS character device used by the T-GM. The E810
+// exposes it as /dev/gnss0 on the lab nodes; allow an override for other hosts.
+func gnssTTYDevice() string {
+	if device := strings.TrimSpace(os.Getenv("GNSS_TTY_DEVICE")); device != "" {
+		return device
+	}
+	return "/dev/gnss0"
+}
+
 // CreateTGM creates the HardwareConfig for a WPC T-GM profile.
 func CreateTGM(configName, relatedProfile, leaderIface string, ports []string, maxInSpecOffset, localMaxHoldoverOffset, localHoldoverTimeout int) error {
 	portsYAML := formatPorts(ports)
@@ -250,7 +258,7 @@ func CreateTGM(configName, relatedProfile, leaderIface string, ports []string, m
 		localMaxHoldoverOffset,
 		localHoldoverTimeout,
 		portsYAML,
-		leaderIface,
+		gnssTTYDevice(),
 	)
 	return apply(configName+"-hwconfig", data)
 }
