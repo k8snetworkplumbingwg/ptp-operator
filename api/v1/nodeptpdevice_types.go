@@ -45,6 +45,10 @@ type PtpDevice struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
+	// Alias is the name assigned to this port by linuxptp-daemon.
+	// +optional
+	Alias string `json:"alias,omitempty"`
+
 	// Profile is the PTP profile associated with the device.
 	// This profile defines the PTP configuration settings for the device.
 	// +optional
