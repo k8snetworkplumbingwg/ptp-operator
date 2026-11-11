@@ -2892,11 +2892,11 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("checking GM clock state locked", func() {
 
 					/*
-						I0917 19:22:15.000310 2843504 event.go:430] dpll State s2, gnss State s2, tsphc state s2, gm state s2
+						I0917 19:22:15.000310 2843504 event.go:430] dpll State s2, gnss State s2, ts2phc state s2, gm state s2
 						phc2sys[2355322.441]: [ptp4l.0.config:6] CLOCK_REALTIME phc offset       137 s2 freq   -7709 delay    514
 					*/
 
-					gmClockStatePattern := `(?m).*?dpll State s2, gnss State s2, tsphc state s2, gm state s2,`
+					gmClockStatePattern := `(?m).*?dpll State s2, gnss State s2, ts2phc state s2, gm state s2,`
 					gmClockStateRe := regexp.MustCompile(gmClockStatePattern)
 					logMatches, err := pods.GetPodLogsRegex(openshiftPtpNamespace, fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName, gmClockStateRe.String(), false, pkg.TimeoutIn1Minute)
 					Expect(err).To(BeNil(), "Error encountered looking for dpll, gnss,ts2phc and GM clock state")
