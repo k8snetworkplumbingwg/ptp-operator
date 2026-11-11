@@ -13,7 +13,6 @@ import (
 	testclient "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
-	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -48,14 +47,6 @@ var _ = BeforeSuite(func() {
 	logrus.Info("Executed from serial suite")
 	testclient.Client = testclient.New("")
 	Expect(testclient.Client).NotTo(BeNil())
-
-	// A previous run interrupted during a GNSS signal-loss test can leave a
-	// receiver without a fix (CFG-NAVSPG-INFIL_NCNOTHRS=50) or without NMEA
-	// output, which makes l2discovery report an empty GnssDevice and prevents
-	// T-GM discovery from finding a solution. Restore hardware GNSS first.
-	if !ptphelper.UseGnssSimulation() {
-		ptphelper.EnsureGnssDevicesReady()
-	}
 
 	// Initialize the pub/sub system for event handling
 	event.InitPubSub()
