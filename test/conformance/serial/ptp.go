@@ -1383,12 +1383,16 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				nic1 = ptptesthelper.DiscoverNICInfo(*(*ptpv1.PtpConfig)(fullConfig.DiscoveredClockUnderTestPtpConfig), nodeName, "NIC-1")
 
 				By("Updating BC config in-place: gmCapable 0 -> gmCapable 1 + clockClass 248")
+				reloadStart := time.Now()
 				originalConf := ptptesthelper.EnableGMCapableInPlace(nic1.PtpConfigName)
 				DeferCleanup(func() {
+					restoreStart := time.Now()
 					ptptesthelper.RestorePtp4lConf(nic1.PtpConfigName, originalConf)
+					ptptesthelper.WaitForConfigReload(fullConfig.DiscoveredClockUnderTestPod, restoreStart)
 				})
 				By("Waiting for PTP daemon to apply gmCapable=1 config")
 				ptptesthelper.WaitForConfigContent(fullConfig, nic1.ConfigPath(), "gmCapable 1")
+				ptptesthelper.WaitForConfigReload(fullConfig.DiscoveredClockUnderTestPod, reloadStart)
 
 				evCtx = setupBCClockClassEvents(nodeName)
 			})
@@ -1480,16 +1484,20 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				nic2 = ptptesthelper.DiscoverNICInfo(*secondaryPtpConfig, nodeName, "NIC-2")
 
 				By("Updating BC configs in-place: gmCapable 0 -> gmCapable 1 + clockClass 248")
+				reloadStart := time.Now()
 				originalNic1Conf := ptptesthelper.EnableGMCapableInPlace(nic1.PtpConfigName)
 				originalNic2Conf := ptptesthelper.EnableGMCapableInPlace(nic2.PtpConfigName)
 				DeferCleanup(func() {
 					logrus.Info("Restoring original BC configs")
+					restoreStart := time.Now()
 					ptptesthelper.RestorePtp4lConf(nic1.PtpConfigName, originalNic1Conf)
 					ptptesthelper.RestorePtp4lConf(nic2.PtpConfigName, originalNic2Conf)
+					ptptesthelper.WaitForConfigReload(fullConfig.DiscoveredClockUnderTestPod, restoreStart)
 				})
 				By("Waiting for PTP daemon to apply gmCapable=1 config")
 				ptptesthelper.WaitForConfigContent(fullConfig, nic1.ConfigPath(), "gmCapable 1")
 				ptptesthelper.WaitForConfigContent(fullConfig, nic2.ConfigPath(), "gmCapable 1")
+				ptptesthelper.WaitForConfigReload(fullConfig.DiscoveredClockUnderTestPod, reloadStart)
 
 				evCtx = setupBCClockClassEvents(nodeName)
 			})
