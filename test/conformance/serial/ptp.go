@@ -3050,6 +3050,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(),
 					"DiscoveredGrandMasterPtpConfig must not be nil")
 				gmConfigName := testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name
+				savedGMConfig, getErr := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), gmConfigName, metav1.GetOptions{})
+				Expect(getErr).NotTo(HaveOccurred())
 
 				By(fmt.Sprintf("Deleting GM PtpConfig %s", gmConfigName))
 				err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Delete(
@@ -3064,7 +3067,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				DeferCleanup(func() {
 					By("Recreating GM PtpConfig after test")
-					ensureGMPtpConfigRestored()
+					restorePtpConfig(savedGMConfig)
 				})
 
 				// The daemon stops ts2phc and removes its process_status entry, but
@@ -3089,6 +3092,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				Expect(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig).NotTo(BeNil(),
 					"DiscoveredGrandMasterPtpConfig must not be nil")
 				gmConfigName := testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig.Name
+				savedGMConfig, getErr := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
+					context.Background(), gmConfigName, metav1.GetOptions{})
+				Expect(getErr).NotTo(HaveOccurred())
 
 				By("Ensuring ts2phc is running and recording its config file name and restart count")
 				var initialConfigName string
@@ -3119,7 +3125,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 
 				DeferCleanup(func() {
 					By("Ensuring GM PtpConfig is restored after test")
-					ensureGMPtpConfigRestored()
+					restorePtpConfig(savedGMConfig)
 				})
 
 				By("Waiting for ts2phc process to stop after deletion")
@@ -3137,8 +3143,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					"ts2phc process did not stop after GM PtpConfig deletion")
 
 				By("Re-applying the same GM PtpConfig")
-				tempPtpConfig := (*ptpv1.PtpConfig)(testconfig.GlobalConfig.DiscoveredGrandMasterPtpConfig)
+				tempPtpConfig := savedGMConfig.DeepCopy()
 				tempPtpConfig.SetResourceVersion("")
+				tempPtpConfig.SetUID("")
+				tempPtpConfig.SetDeletionTimestamp(nil)
 				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
 					context.Background(), tempPtpConfig, metav1.CreateOptions{})
 				Expect(err).NotTo(HaveOccurred())
@@ -5304,6 +5312,25 @@ func ensureGMPtpConfigRestored() {
 		context.Background(), tempPtpConfig, metav1.CreateOptions{})
 	if err != nil && !kerrors.IsAlreadyExists(err) {
 		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// restorePtpConfig recreates a saved PtpConfig, clearing fields that are
+// server-assigned or set by deletion so Create succeeds. It must not depend on
+// testconfig.GlobalConfig, which a forced rediscovery can reset to nil.
+func restorePtpConfig(cfg *ptpv1.PtpConfig) {
+	if cfg == nil {
+		logrus.Warn("restorePtpConfig: saved PtpConfig is nil")
+		return
+	}
+	restored := cfg.DeepCopy()
+	restored.SetResourceVersion("")
+	restored.SetUID("")
+	restored.SetDeletionTimestamp(nil)
+	_, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
+		context.Background(), restored, metav1.CreateOptions{})
+	if err != nil && !kerrors.IsAlreadyExists(err) {
+		logrus.Errorf("restorePtpConfig: failed to restore %s: %v", restored.Name, err)
 	}
 }
 
