@@ -181,6 +181,7 @@ spec:
 %s
         hardwareSpecificDefinitions: intel/e810
         name: leader
+      behavior:
         sources:
         - name: GNSS
           subsystem: leader
