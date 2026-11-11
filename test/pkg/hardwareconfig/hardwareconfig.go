@@ -6,8 +6,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sirupsen/logrus"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -372,6 +374,32 @@ func findByRelatedProfile(ctx context.Context, relatedProfile string) (*unstruct
 		}
 	}
 	return nil, fmt.Errorf("no HardwareConfig found for related PTP profile %s", relatedProfile)
+}
+
+// DeleteForProfile removes the HardwareConfig related to the given PTP profile
+// and returns a function that recreates it. The daemon keeps a profile's
+// processes alive while its HardwareConfig still exists, so tests that delete
+// a PtpConfig to observe process teardown must remove the HardwareConfig too.
+func DeleteForProfile(relatedProfile string) (func(), error) {
+	ctx := context.Background()
+	hw, err := findByRelatedProfile(ctx, relatedProfile)
+	if err != nil {
+		return nil, err
+	}
+	saved := hw.DeepCopy()
+	if err := client.Client.Client.Delete(ctx, hw); err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			saved.SetResourceVersion("")
+			if err := client.Client.Client.Create(context.Background(), saved); err != nil && !apierrors.IsAlreadyExists(err) {
+				logrus.Warnf("hardwareconfig: failed to restore %s: %v", saved.GetName(), err)
+			}
+		})
+	}
+	return restore, nil
 }
 
 // DeleteTestConfigs removes HardwareConfigs created by the test suite. It is a

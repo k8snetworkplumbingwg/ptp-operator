@@ -24,6 +24,7 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/metrics"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/namespaces"
@@ -3054,6 +3055,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					context.Background(), gmConfigName, metav1.DeleteOptions{})
 				Expect(err).NotTo(HaveOccurred())
 
+				if restoreHW, hwErr := hardwareconfig.DeleteForProfile(gmConfigName); hwErr == nil {
+					DeferCleanup(restoreHW)
+				} else {
+					logrus.Warnf("Could not delete HardwareConfig related to %s: %v", gmConfigName, hwErr)
+				}
+
 				DeferCleanup(func() {
 					By("Recreating GM PtpConfig after test")
 					ensureGMPtpConfigRestored()
@@ -3098,6 +3105,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					context.Background(), gmConfigName, metav1.DeleteOptions{})
 				Expect(err).NotTo(HaveOccurred())
 
+				restoreHW, hwErr := hardwareconfig.DeleteForProfile(gmConfigName)
+				if hwErr != nil {
+					logrus.Warnf("Could not delete HardwareConfig related to %s: %v", gmConfigName, hwErr)
+					restoreHW = nil
+				} else {
+					DeferCleanup(restoreHW)
+				}
+
 				DeferCleanup(func() {
 					By("Ensuring GM PtpConfig is restored after test")
 					ensureGMPtpConfigRestored()
@@ -3123,6 +3138,9 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				_, err = client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Create(
 					context.Background(), tempPtpConfig, metav1.CreateOptions{})
 				Expect(err).NotTo(HaveOccurred())
+				if restoreHW != nil {
+					restoreHW()
+				}
 
 				By("Waiting for ts2phc to come back up after re-apply")
 				var newConfigName string
