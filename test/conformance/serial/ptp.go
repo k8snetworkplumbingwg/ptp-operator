@@ -5044,11 +5044,6 @@ func checkProcessStatus(fullConfig testconfig.TestConfig, state string) {
 		if !ptphelper.IsGnssSimConfigured() {
 			required = append([]string{"phc2sys"}, required...)
 		}
-		for _, process := range required {
-			if st, found := getProcessStatusByProcess(buf.String(), process); found && !isProcessDelayed(fullConfig, process) {
-				failOnBadValue(st, state, "0", "process "+process+" status")
-			}
-		}
 		var failing []string
 		for _, process := range required {
 			if !status[process] {
