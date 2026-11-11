@@ -5884,16 +5884,23 @@ func eventValueMatchesFloat(v interface{}, want float64) bool {
 // (e.g. HOLDOVER followed by FREERUN), so we scan all of them.
 // ValueByDataType matches legacy "notification" keys and v2 ".../notification"
 // resource-path keys without accepting unrelated data types.
+// The GNSS sync state is reported as LOCKED by newer daemons while older ones
+// use SYNCHRONIZED for the same state, so both spellings are accepted.
 func verifyEvent(allEvents []exports.StoredEventValues, expectedState ptpEvent.SyncState) {
-	want := string(expectedState)
+	want := []string{string(expectedState)}
+	if expectedState == ptpEvent.SYNCHRONIZED {
+		want = append(want, string(ptpEvent.LOCKED))
+	}
 	for _, ev := range allEvents {
 		if stateVal, ok := event.ValueByDataType(ev, "notification"); ok {
-			if eventValueMatchesString(stateVal, want) {
-				return
+			for _, accepted := range want {
+				if eventValueMatchesString(stateVal, accepted) {
+					return
+				}
 			}
 		}
 	}
-	Fail(fmt.Sprintf("expected state %q not found in %d events: %+v", expectedState, len(allEvents), allEvents))
+	Fail(fmt.Sprintf("expected state %q not found in %d events: %+v", strings.Join(want, " or "), len(allEvents), allEvents))
 }
 
 // verifyMetric checks that at least one collected event carries the expected
