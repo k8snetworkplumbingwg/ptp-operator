@@ -2915,10 +2915,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					/*
 						# ts2phc[1726600506]:[ts2phc.0.config] ens7f0 nmea_status 1 offset 0 s2
 					*/
-					nmeaStatusPattern := `ts2phc(?m).*?:\[(.*?)\] (.*?) nmea_status 1 offset (.*?) (.*?)`
+					nmeaStatusPattern := `ts2phc(?m).*?:\[(.*?)\] (.*?) nmea_status (?:1|true) offset (.*?) (.*?)`
 					nmeaStatusRe := regexp.MustCompile(nmeaStatusPattern)
 					logMatches, err := pods.GetPodLogsRegex(openshiftPtpNamespace, fullConfig.DiscoveredClockUnderTestPod.Name, pkg.PtpContainerName, nmeaStatusRe.String(), false, pkg.TimeoutIn1Minute)
-					Expect(err).To(BeNil(), "Error encountered looking for phc2sys clock state")
+					Expect(err).To(BeNil(), "Error encountered looking for ts2phc NMEA status")
 					Expect(logMatches).NotTo(BeEmpty(), "Expected ts2phc nmea state to be available for GM")
 					//TODO 2 Card Add loop to check ifaces
 				})
