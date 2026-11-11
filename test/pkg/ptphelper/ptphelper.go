@@ -1585,10 +1585,8 @@ func MarkGnssSimNmeaActive() {
 // IfPTPCaps.GnssDevice, preventing T-GM discovery from finding a solution.
 //
 // The writes go through gpsd, so a gpsd started here would disable NMEA on the
-// DDC/I2C port; -e NMEA restores it. The current threshold is read first and
-// only written back when it is the signal-loss value, so a healthy receiver is
-// not forced to reacquire its fix. l2discovery handles the short reacquisition
-// window with its own retries.
+// DDC/I2C port; -e NMEA restores it. No wait for a new fix is done here: the
+// receiver recovers on its own and l2discovery retries discovery.
 const gnssRecoveryScript = `
 set -u
 if [ ! -e /dev/gnss0 ]; then
@@ -1602,16 +1600,12 @@ if ! pgrep -x gpsd >/dev/null 2>&1; then
   GPSD_PID=$!
   sleep 2
 fi
-VALUE=$($UBX -g CFG-NAVSPG-INFIL_NCNOTHRS,0 2>/dev/null | awk '/NCNOTHRS/ {val=$NF} END {print val}')
-if [ "$VALUE" = "50" ]; then
-  $UBX -z CFG-NAVSPG-INFIL_NCNOTHRS,0,1 >/dev/null 2>&1
-fi
+$UBX -z CFG-NAVSPG-INFIL_NCNOTHRS,0,1 >/dev/null 2>&1
 $UBX -e NMEA >/dev/null 2>&1
-sleep 1
 if [ -n "$GPSD_PID" ]; then
   kill "$GPSD_PID" >/dev/null 2>&1
 fi
-echo "GNSS_ENABLED value_before=${VALUE:-unset}"
+echo GNSS_ENABLED
 exit 0
 `
 
