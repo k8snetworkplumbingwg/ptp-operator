@@ -3431,8 +3431,14 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 				By("Waiting for GNSS recovery to LOCKED state via clock class metrics")
 				waitForClockClass(fullConfig, strconv.Itoa(int(fbprotocol.ClockClass6)))
 
-				// Phase 2: collect again after GNSS recovery
-				events = getGMEvents(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, 10*time.Second)
+				// Phase 2: collect until the recovery events arrive. The PTP
+				// LOCKED transition can be published after the clock class
+				// metric, so a single fixed window can miss it.
+				events = getGMEventsUntil(subs.GNSS, subs.CLOCKCLASS, subs.LOCKSTATE, pkg.TimeoutIn3Minutes, func(evs map[ptpEvent.EventType][]exports.StoredEventValues) bool {
+					return matchEventState(evs[ptpEvent.GnssStateChange], ptpEvent.SYNCHRONIZED) &&
+						matchEventMetric(evs[ptpEvent.PtpClockClassChange], float64(fbprotocol.ClockClass6)) &&
+						matchEventState(evs[ptpEvent.PtpStateChange], ptpEvent.LOCKED)
+				})
 				fmt.Fprintf(GinkgoWriter, "Event recieved  %v, ", events)
 
 				// Verify conditions have returned to LOCKED
@@ -5842,6 +5848,37 @@ func getGMEvents(
 	}
 }
 
+// getGMEventsUntil collects GM events in short windows until done reports the
+// expected set was received or timeout expires, merging all collected events.
+// Recovery transitions can be published later than the clock-class metric, so a
+// single fixed window can close before the PTP LOCKED event arrives.
+func getGMEventsUntil(
+	gnssEventChan <-chan exports.StoredEvent,
+	ccEventChan <-chan exports.StoredEvent,
+	lsEventChan <-chan exports.StoredEvent,
+	timeout time.Duration,
+	done func(map[ptpEvent.EventType][]exports.StoredEventValues) bool,
+) map[ptpEvent.EventType][]exports.StoredEventValues {
+	deadline := time.Now().Add(timeout)
+	results := make(map[ptpEvent.EventType][]exports.StoredEventValues)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return results
+		}
+		window := 10 * time.Second
+		if remaining < window {
+			window = remaining
+		}
+		for eventType, values := range getGMEvents(gnssEventChan, ccEventChan, lsEventChan, window) {
+			results[eventType] = append(results[eventType], values...)
+		}
+		if done(results) {
+			return results
+		}
+	}
+}
+
 // eventValueMatchesString reports whether v equals want. v2 event storage
 // keys values by resource path, so callers must scan all map entries.
 func eventValueMatchesString(v interface{}, want string) bool {
@@ -5874,14 +5911,12 @@ func eventValueMatchesFloat(v interface{}, want float64) bool {
 	}
 }
 
-// verifyEvent checks that at least one collected event carries the expected
-// notification state. Multiple events may arrive during the collection window
-// (e.g. HOLDOVER followed by FREERUN), so we scan all of them.
-// ValueByDataType matches legacy "notification" keys and v2 ".../notification"
-// resource-path keys without accepting unrelated data types.
-// The GNSS sync state is reported as LOCKED by newer daemons while older ones
-// use SYNCHRONIZED for the same state, so both spellings are accepted.
-func verifyEvent(allEvents []exports.StoredEventValues, expectedState ptpEvent.SyncState) {
+// matchEventState reports whether at least one collected event carries the
+// expected notification state. ValueByDataType matches legacy "notification"
+// keys and v2 ".../notification" resource-path keys without accepting unrelated
+// data types. The GNSS sync state is reported as LOCKED by newer daemons while
+// older ones use SYNCHRONIZED for the same state, so both spellings are accepted.
+func matchEventState(allEvents []exports.StoredEventValues, expectedState ptpEvent.SyncState) bool {
 	want := []string{string(expectedState)}
 	if expectedState == ptpEvent.SYNCHRONIZED {
 		want = append(want, string(ptpEvent.LOCKED))
@@ -5890,24 +5925,47 @@ func verifyEvent(allEvents []exports.StoredEventValues, expectedState ptpEvent.S
 		if stateVal, ok := event.ValueByDataType(ev, "notification"); ok {
 			for _, accepted := range want {
 				if eventValueMatchesString(stateVal, accepted) {
-					return
+					return true
 				}
 			}
 		}
 	}
+	return false
+}
+
+// verifyEvent checks that at least one collected event carries the expected
+// notification state. Multiple events may arrive during the collection window
+// (e.g. HOLDOVER followed by FREERUN), so we scan all of them.
+func verifyEvent(allEvents []exports.StoredEventValues, expectedState ptpEvent.SyncState) {
+	if matchEventState(allEvents, expectedState) {
+		return
+	}
+	want := []string{string(expectedState)}
+	if expectedState == ptpEvent.SYNCHRONIZED {
+		want = append(want, string(ptpEvent.LOCKED))
+	}
 	Fail(fmt.Sprintf("expected state %q not found in %d events: %+v", strings.Join(want, " or "), len(allEvents), allEvents))
+}
+
+// matchEventMetric reports whether at least one collected event carries the
+// expected metric value. ValueByDataType matches legacy "metric" keys and v2
+// ".../metric" resource-path keys.
+func matchEventMetric(allEvents []exports.StoredEventValues, value float64) bool {
+	for _, ev := range allEvents {
+		if metricVal, ok := event.ValueByDataType(ev, "metric"); ok {
+			if eventValueMatchesFloat(metricVal, value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // verifyMetric checks that at least one collected event carries the expected
 // metric value. Scans all events since rapid transitions may produce multiple values.
-// ValueByDataType matches legacy "metric" keys and v2 ".../metric" resource-path keys.
 func verifyMetric(allEvents []exports.StoredEventValues, value float64) {
-	for _, ev := range allEvents {
-		if metricVal, ok := event.ValueByDataType(ev, "metric"); ok {
-			if eventValueMatchesFloat(metricVal, value) {
-				return
-			}
-		}
+	if matchEventMetric(allEvents, value) {
+		return
 	}
 	Fail(fmt.Sprintf("expected metric [%f] not found in %d events: %+v", value, len(allEvents), allEvents))
 }
