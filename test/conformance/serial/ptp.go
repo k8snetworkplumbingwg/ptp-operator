@@ -3066,7 +3066,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					ensureGMPtpConfigRestored()
 				})
 
-				By("Waiting for ts2phc clock state metric to be removed")
+				// The daemon stops ts2phc and removes its process_status entry, but
+				// leaves stale clock_state/delay gauges registered. Wait on the
+				// process_status/config removal, which is the real teardown signal.
+				By("Waiting for ts2phc process to stop after GM PtpConfig deletion")
 				Eventually(func() bool {
 					buf, _, _ := pods.ExecCommand(client.Client, true,
 						fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
@@ -3075,10 +3078,10 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					if !strings.Contains(metricsOutput, "# HELP") {
 						return false
 					}
-					_, found := getClockStateByProcess(metricsOutput, "ts2phc")
-					return !found
+					configName, _, _ := getProcessConfigAndRestartCount(metricsOutput, "ts2phc")
+					return configName == ""
 				}, pkg.TimeoutIn5Minutes, pkg.Timeout10Seconds).Should(BeTrue(),
-					"Expected ts2phc clock state metric to be removed after GM PtpConfig deletion")
+					"Expected ts2phc process to stop after GM PtpConfig deletion")
 			})
 
 			It("Verify ts2phc metrics are cleaned up after GM PtpConfig delete and re-apply", func() {
