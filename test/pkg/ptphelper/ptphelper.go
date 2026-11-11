@@ -772,7 +772,7 @@ func WaitForPtpDaemonToBeReady(podList []*v1core.Pod) int {
 			}
 		}
 		return nil
-	}, 3*time.Minute, 2*time.Second).Should(Not(HaveOccurred())) // CEP :9043 then ReadyServer :8081 after replace
+	}, 5*time.Minute, 2*time.Second).Should(Not(HaveOccurred())) // CEP :9043 then ReadyServer :8081; T-GM GNSS startup can exceed 3m
 
 	return 0
 }

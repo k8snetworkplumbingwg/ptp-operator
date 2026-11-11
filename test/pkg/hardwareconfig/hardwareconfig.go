@@ -181,6 +181,21 @@ spec:
 %s
         hardwareSpecificDefinitions: intel/e810
         name: leader
+        sources:
+        - name: GNSS
+          subsystem: leader
+          sourceType: gnss
+          gnssConfig:
+            init:
+              antennaVoltage: true
+              constellations:
+              - GPS
+              survey:
+                observationTime: 0
+                accuracy: 0
+            match:
+              ethernetDevice:
+                name: %s
 `
 
 // CreateTBC creates the HardwareConfig for a WPC T-BC profile. It is used on
@@ -234,6 +249,7 @@ func CreateTGM(configName, relatedProfile, leaderIface string, ports []string, m
 		localMaxHoldoverOffset,
 		localHoldoverTimeout,
 		portsYAML,
+		leaderIface,
 	)
 	return apply(configName+"-hwconfig", data)
 }
