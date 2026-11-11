@@ -3217,10 +3217,12 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					// Also verify ClockState 2 (Holdover)
 					checkClockStateForProcess(fullConfig, "GM", "2")
 
-					// The daemon exposes DPLL state through frequency/phase
-					// status; openshift_ptp_clock_state{process="dpll"} is not exported.
+					// Prefer the DPLL frequency/phase status metrics; some releases
+					// also export openshift_ptp_clock_state{process="dpll"}, so
+					// verify it too when present.
 					checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_HOLDOVER))
 					checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_HOLDOVER))
+					checkClockStateForProcessIfExported(fullConfig, "dpll", "2")
 
 					// Once holdover detected, enable GNSS
 					enableGNSSViaSignalRequirements(fullConfig)
@@ -3234,6 +3236,7 @@ var _ = Describe("["+strings.ToLower(DesiredMode.String())+"-serial]", Serial, f
 					time.Sleep(pkg.Timeout10Seconds)
 					checkDPLLFrequencyState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
 					checkDPLLPhaseState(fullConfig, fmt.Sprint(DPLL_LOCKED_HO_ACQ))
+					checkClockStateForProcessIfExported(fullConfig, "dpll", "1")
 
 					// Also verify ClockState 1 (Locked)
 					checkClockStateForProcess(fullConfig, "GM", "1")
@@ -5205,6 +5208,25 @@ func checkClockState(fullConfig testconfig.TestConfig, state string) {
 		return value, nil
 	}, pkg.TimeoutIn5Minutes, pkg.TimeoutInterval2Seconds).Should(Equal(state),
 		fmt.Sprintf("Expected GM clock state to be %s for GM", state))
+}
+
+// checkClockStateForProcessIfExported verifies openshift_ptp_clock_state for a
+// process when the daemon exports that metric. Newer daemons expose DPLL state
+// through frequency/phase status only, while older releases also export
+// clock_state for the dpll process.
+func checkClockStateForProcessIfExported(fullConfig testconfig.TestConfig, process string, state string) {
+	buf, _, err := pods.ExecCommand(client.Client, true,
+		fullConfig.DiscoveredClockUnderTestPod, pkg.PtpContainerName,
+		[]string{"curl", pkg.MetricsEndPoint})
+	if err != nil {
+		refreshPodOnNotFound(fullConfig.DiscoveredClockUnderTestPod, err)
+		return
+	}
+	if _, found := getClockStateByProcess(buf.String(), process); !found {
+		logrus.Infof("clock_state metric for process %s is not exported by this daemon; skipping", process)
+		return
+	}
+	checkClockStateForProcess(fullConfig, process, state)
 }
 
 func checkClockStateForProcess(fullConfig testconfig.TestConfig, process string, state string) {
