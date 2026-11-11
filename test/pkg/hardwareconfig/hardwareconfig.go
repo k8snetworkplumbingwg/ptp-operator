@@ -104,8 +104,11 @@ spec:
               boardLabel: CVL-SDP22
               eec:
                 priority: 255
+              # Keep the local 1PPS phase input connected during upstream loss.
+              # Disconnecting it (priority 255) drops the PPS DPLL to "unlocked",
+              # so the T-BC reports FREERUN/248 instead of HOLDOVER/135+165.
               pps:
-                priority: 255
+                priority: 0
           - dpll:
               subsystem: leader
               boardLabel: CVL-SDP23
