@@ -77,7 +77,7 @@ const (
 	phc2sysDualNicBCHA = "-a -r -m -l 7 -n 24 "
 	SCHED_OTHER        = "SCHED_OTHER"
 	SCHED_FIFO         = "SCHED_FIFO"
-	L2_DISCOVERY_IMAGE = "quay.io/redhat-cne/l2discovery:v17"
+	L2_DISCOVERY_IMAGE = "quay.io/redhat-cne/l2discovery:v18"
 )
 
 // Mirrors graphsolver step constants.
