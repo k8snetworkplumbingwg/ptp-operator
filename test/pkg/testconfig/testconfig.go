@@ -1547,14 +1547,7 @@ func CreatePtpConfigTelcoBoundaryClock(configName, nodeName, ifSlaveName string,
 	ptp4lsysOpts := ptp4lEthernet
 	phc2sysOpts := fmt.Sprintf("-r -n 24 -N 8 -R 16 -u 0 -m -s %s", ifSlaveName)
 	supportsHardwareConfig := ptphelper.SupportsHardwareConfig()
-	// The v2alpha1 HardwareConfig drives the PHC 1PPS to SDP22, which is EXTTS
-	// channel 2. The legacy e810 plugin path uses the SMA/U.FL routing on
-	// channel 1.
-	ts2phcPinIndex := 1
-	if supportsHardwareConfig {
-		ts2phcPinIndex = 2
-	}
-	ts2phcOpts := fmt.Sprintf("-s generic -a --ts2phc.rh_external_pps %d", ts2phcPinIndex)
+	ts2phcOpts := "-s generic -a --ts2phc.rh_external_pps 1"
 
 	// T-BC ts2phc configuration - use first port of the NIC
 	ts2phcConfig := fmt.Sprintf(`[global]
@@ -1569,7 +1562,7 @@ uds_address /var/run/ptp4l.0.socket
 ts2phc.extts_polarity rising
 ts2phc.extts_correction -10
 ts2phc.master 0
-ts2phc.pin_index %d`, firstNicInterface, ts2phcPinIndex)
+ts2phc.pin_index 1`, firstNicInterface)
 
 	// Match telco-reference PtpConfigTBCWpc.yaml. These are DPLL phase gates,
 	// not the suite's PTP offset threshold (MAX_OFFSET_IN_NS, default 100 ns).

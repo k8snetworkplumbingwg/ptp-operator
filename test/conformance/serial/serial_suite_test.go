@@ -13,7 +13,6 @@ import (
 	testclient "github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/event"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/logging"
-	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/ptphelper"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/testconfig"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -48,16 +47,6 @@ var _ = BeforeSuite(func() {
 	logrus.Info("Executed from serial suite")
 	testclient.Client = testclient.New("")
 	Expect(testclient.Client).NotTo(BeNil())
-
-	// T-GM discovery needs l2discovery to read a GNRMC sentence from /dev/gnss0,
-	// but a freshly booted E810 GNSS port emits UBX binary first. Switch the
-	// receiver to NMEA-only output before discovery runs.
-	if !ptphelper.UseGnssSimulation() {
-		switch testconfig.GetDesiredConfig(true).PtpModeDesired {
-		case testconfig.TelcoGrandMasterClock, testconfig.TelcoGMOC, testconfig.TelcoGMBC:
-			ptphelper.ConfigureGnssForDiscovery()
-		}
-	}
 
 	// Initialize the pub/sub system for event handling
 	event.InitPubSub()
