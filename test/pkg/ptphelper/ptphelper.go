@@ -29,6 +29,7 @@ import (
 	v1core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
 
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
@@ -1338,15 +1339,35 @@ func GetOCPVersion() (ocpVersion string, err error) {
 	return ocpVersion, err
 }
 
-// hardwareConfigMinOperatorVersion is the first PTP operator release whose
-// clock manager consumes v2alpha1 HardwareConfig objects for the WPC card.
-const hardwareConfigMinOperatorVersion = "5.1"
+// hardwareConfigCRDName is the CRD that exposes the v2alpha1 HardwareConfig API
+// consumed by the clock manager for the WPC card settings.
+const hardwareConfigCRDName = "hardwareconfigs.ptp.openshift.io"
 
-// SupportsHardwareConfig reports whether the operator under test supports the
-// HardwareConfig API. Older releases use the legacy e810 plugin settings
-// embedded in the PtpConfig.
+// hardwareConfigAPIVersion is the HardwareConfig version used by the clock manager.
+const hardwareConfigAPIVersion = "v2alpha1"
+
+// SupportsHardwareConfig reports whether the cluster serves the v2alpha1
+// HardwareConfig API. It checks the CRD instead of the operator
+// RELEASE_VERSION so upstream/main builds that keep an older version string
+// still exercise the HardwareConfig path. Older releases use the legacy e810
+// plugin settings embedded in the PtpConfig.
 func SupportsHardwareConfig() bool {
-	return IsPTPOperatorVersionAtLeast(hardwareConfigMinOperatorVersion)
+	crd := &apiextensions.CustomResourceDefinition{}
+	err := client.Client.Get(context.Background(), types.NamespacedName{Name: hardwareConfigCRDName}, crd)
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	if err != nil {
+		logrus.Infof("Could not read %s, assuming HardwareConfig is supported: %v", hardwareConfigCRDName, err)
+		return true
+	}
+	for _, version := range crd.Spec.Versions {
+		if version.Name == hardwareConfigAPIVersion && version.Served {
+			return true
+		}
+	}
+	logrus.Infof("%s does not serve %s; using legacy e810 plugin settings", hardwareConfigCRDName, hardwareConfigAPIVersion)
+	return false
 }
 
 // IsPTPOperatorVersionAtLeast checks if the PTP Operator version is >= the specified minimum version
