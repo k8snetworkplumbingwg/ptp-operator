@@ -1545,7 +1545,7 @@ func CreatePtpConfigTelcoBoundaryClock(configName, nodeName, ifSlaveName string,
 	}
 
 	ptp4lsysOpts := ptp4lEthernet
-	phc2sysOpts := fmt.Sprintf("-r -n 24 -N 8 -R 16 -m -s %s", ifSlaveName)
+	phc2sysOpts := fmt.Sprintf("-r -n 24 -N 8 -R 16 -u 0 -m -s %s", ifSlaveName)
 	ts2phcOpts := "-s generic -a --ts2phc.rh_external_pps 1"
 
 	// T-BC ts2phc configuration - use first port of the NIC
