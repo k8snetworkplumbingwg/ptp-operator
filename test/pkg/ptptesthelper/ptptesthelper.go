@@ -59,7 +59,11 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 		logrus.Debugf("could not get nodeName because of err: %s", err)
 	}
 	var slaveMaster string
-	if errProfile == nil {
+	// HOLDOVER is a transient state bounded by ptpClockThreshold.holdOverTimeout
+	// (5s by default). Looking up the foreign master from the pod logs takes
+	// longer than that window, so skip it for holdover checks and poll the
+	// metrics quickly below.
+	if expectedClockState != metrics.MetricClockStateHoldOver && errProfile == nil {
 		if fullConfig.PtpModeDesired == testconfig.Discovery {
 			slaveMaster, err = ptphelper.GetClockIDForeign(ptpConfig.Name, profileName, label, nodeName)
 		} else {
@@ -97,13 +101,21 @@ func BasicClockSyncCheck(fullConfig testconfig.TestConfig, ptpConfig *ptpv1.PtpC
 		}
 	}
 
+	timeout := pkg.TimeoutIn10Minutes
+	pollInterval := pkg.Timeout10Seconds
+	if expectedClockState == metrics.MetricClockStateHoldOver {
+		// Poll fast enough to observe the holdover window before the daemon
+		// transitions the clock state to FREERUN.
+		timeout = pkg.TimeoutIn1Minute
+		pollInterval = 500 * time.Millisecond
+	}
 	Eventually(func() error {
 		err = metrics.CheckClockRoleAndOffset(ptpConfig, label, nodeName, expectedClockState, expectedClockRole, isCheckOffset)
 		if err != nil {
 			logrus.Infof("CheckClockRoleAndOffset Failed because of err: %s", err)
 		}
 		return err
-	}, pkg.TimeoutIn10Minutes, pkg.Timeout10Seconds).Should(BeNil(), fmt.Sprintf("Timeout to detect metrics for ptpconfig %s", ptpConfig.Name))
+	}, timeout, pollInterval).Should(BeNil(), fmt.Sprintf("Timeout to detect metrics for ptpconfig %s", ptpConfig.Name))
 	logrus.Info("Clock In Sync")
 	return nil
 }
@@ -818,10 +830,13 @@ func VerifyNICClockClass(fullConfig testconfig.TestConfig, nic NICInfo, expected
 func (p *PortEngine) TurnOffAndWaitFaulty(iface, nodeName string) {
 	err := p.TurnPortDown(iface)
 	Expect(err).NotTo(HaveOccurred())
+	// Poll quickly: the HOLDOVER window starts when the port goes FAULTY and is
+	// short (holdOverTimeout, 5s by default), so callers that verify holdover
+	// after this returns must not lose most of it to the role-detection poll.
 	Eventually(func() error {
 		return metrics.CheckClockRole([]metrics.MetricRole{metrics.MetricRoleFaulty},
 			[]string{iface}, &nodeName)
-	}, pkg.TimeoutIn3Minutes, 5*time.Second).Should(BeNil(),
+	}, pkg.TimeoutIn3Minutes, pkg.Timeout1Seconds).Should(BeNil(),
 		iface+" should be FAULTY")
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -26,29 +27,34 @@ func DeleteLabel(label string) error {
 	return nil
 }
 
+// Labels removes the node role labels applied by ptp tests.
+func Labels() error {
+	labels := []string{
+		pkg.PtpGrandmasterNodeLabel,
+		pkg.PtpClockUnderTestNodeLabel,
+		pkg.PtpSlave1NodeLabel,
+		pkg.PtpSlave2NodeLabel,
+	}
+	for _, label := range labels {
+		if err := DeleteLabel(label); err != nil {
+			return fmt.Errorf("clean.Labels: fail to delete label: %s, err: %s", label, err)
+		}
+	}
+	return nil
+}
+
 // All removes any configuration applied by ptp tests.
 func All() error {
+	HardwareConfigs()
 	Configs()
 	Secrets()
+	return Labels()
+}
 
-	err := DeleteLabel(pkg.PtpGrandmasterNodeLabel)
-	if err != nil {
-		return fmt.Errorf("clean.All: fail to delete label: %s, err: %s", pkg.PtpGrandmasterNodeLabel, err)
-	}
-	err = DeleteLabel(pkg.PtpClockUnderTestNodeLabel)
-	if err != nil {
-		return fmt.Errorf("clean.All: fail to delete label: %s, err: %s", pkg.PtpClockUnderTestNodeLabel, err)
-	}
-	err = DeleteLabel(pkg.PtpSlave1NodeLabel)
-	if err != nil {
-		return fmt.Errorf("clean.All: fail to delete label: %s, err: %s", pkg.PtpSlave1NodeLabel, err)
-	}
-	err = DeleteLabel(pkg.PtpSlave2NodeLabel)
-	if err != nil {
-		return fmt.Errorf("clean.All: fail to delete label: %s, err: %s", pkg.PtpSlave2NodeLabel, err)
-	}
-
-	return nil
+// HardwareConfigs removes HardwareConfig objects created by the test suite on
+// operators that support the v2alpha1 API.
+func HardwareConfigs() {
+	hardwareconfig.DeleteTestConfigs()
 }
 
 func Configs() {

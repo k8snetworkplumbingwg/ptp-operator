@@ -273,12 +273,15 @@ func GetPodLogsRegex(namespace string, podName string, containerName, regex stri
 
 	r := regexp.MustCompile(regex)
 
-	// Pass 1: read all existing log content without following.
-	// Use io.ReadAll to drain the entire log before matching, so that
-	// FindAllStringSubmatch returns ALL matches (not just the first chunk's).
+	// Pass 1: read a bounded recent snapshot without following. The PTP
+	// daemon logs are high-volume (phc2sys at 16 Hz), so reading the whole
+	// log can exceed the caller's timeout before any match is found; a large
+	// tail still covers startup state changes and current-state lines.
+	logTailLines := int64(20000)
 	noFollowOpts := corev1.PodLogOptions{
 		Container: containerName,
 		Follow:    false,
+		TailLines: &logTailLines,
 	}
 	noFollowReq := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &noFollowOpts)
 	snapStream, err := noFollowReq.Stream(ctx)
@@ -299,6 +302,7 @@ func GetPodLogsRegex(namespace string, podName string, containerName, regex stri
 	followOpts := corev1.PodLogOptions{
 		Container: containerName,
 		Follow:    true,
+		TailLines: &logTailLines,
 	}
 	followReq := testclient.Client.CoreV1().Pods(namespace).GetLogs(podName, &followOpts)
 	stream, err := followReq.Stream(ctx)

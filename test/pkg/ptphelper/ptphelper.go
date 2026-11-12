@@ -29,12 +29,14 @@ import (
 	v1core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
 
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/client"
+	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/hardwareconfig"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg/pods"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -402,6 +404,20 @@ func ApplyE810PluginMutation(
 	l2Config l2exports.L2Info,
 	localMaxHoldoverOffset, localHoldoverTimeout, maxInSpecOffset int,
 ) (cleanup func(), err error) {
+	if SupportsHardwareConfig() {
+		cleanupHW, hwErr := hardwareconfig.MutateHoldover(profileName, maxInSpecOffset, localMaxHoldoverOffset, localHoldoverTimeout)
+		if hwErr == nil {
+			newPod, err := ReplaceTestPod(pod, 5*time.Minute)
+			if err != nil {
+				cleanupHW()
+				return nil, fmt.Errorf("restarting daemon pod: %w", err)
+			}
+			*pod = newPod
+			return cleanupHW, nil
+		}
+		logrus.Infof("HardwareConfig mutation for profile %s failed, falling back to e810 plugin: %v", profileName, hwErr)
+	}
+
 	originalSpec := ptpConfig.Spec.DeepCopy()
 
 	latest, err := client.Client.PtpV1Interface.PtpConfigs(pkg.PtpLinuxDaemonNamespace).Get(
@@ -757,7 +773,7 @@ func WaitForPtpDaemonToBeReady(podList []*v1core.Pod) int {
 			}
 		}
 		return nil
-	}, 3*time.Minute, 2*time.Second).Should(Not(HaveOccurred())) // CEP :9043 then ReadyServer :8081 after replace
+	}, 5*time.Minute, 2*time.Second).Should(Not(HaveOccurred())) // CEP :9043 then ReadyServer :8081; T-GM GNSS startup can exceed 3m
 
 	return 0
 }
@@ -1011,10 +1027,23 @@ func ProfileNameMatchPattern(ptpConfigName, profileName string) string {
 	return fmt.Sprintf("(?:%s_)?%s", regexp.QuoteMeta(ptpConfigName), regexp.QuoteMeta(profileName))
 }
 
-// ProfileNameLogPattern is a daemon log regex for "Profile Name:" lines.
-// It includes (?m) because GetPodLogsRegex appends \s*^ when isLiteralText is false.
+// ProfileNameLogPattern is a daemon log regex for profile identification.
+// It accepts both the legacy "Profile Name:" line and the upstream daemon's
+// "Processing profile:" / HardwareConfig reconciliation lines. It includes
+// (?m) because GetPodLogsRegex appends \s*^ when isLiteralText is false.
 func ProfileNameLogPattern(ptpConfigName, profileName string) string {
-	return `(?m)Profile Name: ` + ProfileNameMatchPattern(ptpConfigName, profileName)
+	return ProfileNameLogPatternAny(ptpConfigName, profileName)
+}
+
+// ProfileNameLogPatternAny matches any of the supplied profile names in either
+// the legacy or the upstream daemon log format.
+func ProfileNameLogPatternAny(ptpConfigName string, profileNames ...string) string {
+	patterns := make([]string, 0, len(profileNames))
+	for _, profileName := range profileNames {
+		patterns = append(patterns, ProfileNameMatchPattern(ptpConfigName, profileName))
+	}
+	return `(?m)(?:Profile Name: |Processing profile: |Applying [0-9]+ hardware configurations for PTP profile )(?:` +
+		strings.Join(patterns, "|") + `)`
 }
 
 // GetProfileName returns the profile name from a PtpConfig, matching against
@@ -1310,6 +1339,37 @@ func GetOCPVersion() (ocpVersion string, err error) {
 	return ocpVersion, err
 }
 
+// hardwareConfigCRDName is the CRD that exposes the v2alpha1 HardwareConfig API
+// consumed by the clock manager for the WPC card settings.
+const hardwareConfigCRDName = "hardwareconfigs.ptp.openshift.io"
+
+// hardwareConfigAPIVersion is the HardwareConfig version used by the clock manager.
+const hardwareConfigAPIVersion = "v2alpha1"
+
+// SupportsHardwareConfig reports whether the cluster serves the v2alpha1
+// HardwareConfig API. It checks the CRD instead of the operator
+// RELEASE_VERSION so upstream/main builds that keep an older version string
+// still exercise the HardwareConfig path. Older releases use the legacy e810
+// plugin settings embedded in the PtpConfig.
+func SupportsHardwareConfig() bool {
+	crd := &apiextensions.CustomResourceDefinition{}
+	err := client.Client.Get(context.Background(), types.NamespacedName{Name: hardwareConfigCRDName}, crd)
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	if err != nil {
+		logrus.Infof("Could not read %s, assuming HardwareConfig is supported: %v", hardwareConfigCRDName, err)
+		return true
+	}
+	for _, version := range crd.Spec.Versions {
+		if version.Name == hardwareConfigAPIVersion && version.Served {
+			return true
+		}
+	}
+	logrus.Infof("%s does not serve %s; using legacy e810 plugin settings", hardwareConfigCRDName, hardwareConfigAPIVersion)
+	return false
+}
+
 // IsPTPOperatorVersionAtLeast checks if the PTP Operator version is >= the specified minimum version
 // Returns true if version cannot be determined (to allow tests to run)
 func IsPTPOperatorVersionAtLeast(minVersion string) bool {
@@ -1335,15 +1395,28 @@ func IsPTPOperatorVersionAtLeast(minVersion string) bool {
 }
 
 // GetLocalClockID calculates the PTP clock identity for a node by finding the
-// leading interface (the one with PTP pins) from the named profile's e810 plugin
-// config, looking up its MAC address in L2 discovery data, and performing the
-// standard EUI-48 → EUI-64 conversion (inserting fffe in the middle of the MAC).
+// leading interface (the one with PTP pins) from the named profile's
+// ptpSettings (HardwareConfig path) or e810 plugin config (legacy path),
+// looking up its MAC address in L2 discovery data, and performing the standard
+// EUI-48 → EUI-64 conversion (inserting fffe in the middle of the MAC).
 // This mirrors how the linuxptp-daemon's getPTPClockID() derives the identity.
 func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2exports.L2Info, nodeName string) (string, error) {
-	// Find the leading interface from the profile's e810 plugin "pins" key
+	// Find the leading interface. Newer operators using HardwareConfig expose
+	// it through ptpSettings["leadingInterface"]; older ones only have the
+	// legacy e810 plugin "pins" key.
 	var leadingIface string
 	for _, profile := range ptpConfig.Spec.Profile {
-		if profile.Name != nil && QualifyProfileName(ptpConfig.Name, *profile.Name) == QualifyProfileName(ptpConfig.Name, profileName) && profile.Plugins != nil {
+		if profile.Name == nil ||
+			QualifyProfileName(ptpConfig.Name, *profile.Name) != QualifyProfileName(ptpConfig.Name, profileName) {
+			continue
+		}
+		if profile.PtpSettings != nil {
+			leadingIface = profile.PtpSettings["leadingInterface"]
+		}
+		if leadingIface != "" {
+			break
+		}
+		if profile.Plugins != nil {
 			if e810JSON, ok := profile.Plugins["e810"]; ok && e810JSON != nil {
 				var e810Config map[string]interface{}
 				if err := json.Unmarshal(e810JSON.Raw, &e810Config); err != nil {
@@ -1356,11 +1429,11 @@ func GetLocalClockID(ptpConfig *ptpv1.PtpConfig, profileName string, l2Config l2
 					}
 				}
 			}
-			break
 		}
+		break
 	}
 	if leadingIface == "" {
-		return "", fmt.Errorf("could not find leading interface from profile %s e810 plugin config", profileName)
+		return "", fmt.Errorf("could not find leading interface from profile %s (ptpSettings or e810 plugin config)", profileName)
 	}
 
 	// Look up the interface MAC in L2 discovery data
