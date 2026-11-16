@@ -6,6 +6,14 @@ configurations:
 - kustomizeconfig.yaml
 
 patches:
+- path: patches/event_serving_secret.yaml
+- target:
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+  patch: |-
+    - op: replace
+      path: /metadata/name
+      value: ptp-event-mutating-webhook-configuration
 - path: patches/patch_webhook_configuration.yaml
   target:
     version: v1

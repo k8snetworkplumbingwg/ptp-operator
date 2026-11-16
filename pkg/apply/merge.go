@@ -6,6 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -44,6 +45,10 @@ func MergeObjectForUpdate(ctx context.Context, current, updated *uns.Unstructure
 	}
 
 	if err := MergeServiceAccountForUpdate(current, updated); err != nil {
+		return err
+	}
+
+	if err := MergeConfigMapForUpdate(current, updated); err != nil {
 		return err
 	}
 
@@ -509,6 +514,46 @@ func MergeServiceForUpdate(current, updated *uns.Unstructured) error {
 		}
 	}
 
+	return nil
+}
+
+// MergeConfigMapForUpdate preserves the injected Service CA input and the
+// separately reconciled derived trust bundle. Both templates intentionally omit
+// data, so applying them must not erase the certificates on every reconcile.
+// Other ConfigMaps whose data the operator owns remain unaffected.
+func MergeConfigMapForUpdate(current, updated *uns.Unstructured) error {
+	gvk := updated.GroupVersionKind()
+	if gvk.Group != "" || gvk.Kind != "ConfigMap" {
+		return nil
+	}
+	if updated.GetName() != names.EventPublisherCABundleConfigMapName &&
+		updated.GetName() != names.EventPublisherServiceCAConfigMapName {
+		return nil
+	}
+	for _, field := range []string{"data", "binaryData"} {
+		curData, found, err := uns.NestedMap(current.Object, field)
+		if err != nil {
+			return err
+		}
+		if !found || len(curData) == 0 {
+			continue
+		}
+		updData, _, err := uns.NestedMap(updated.Object, field)
+		if err != nil {
+			return err
+		}
+		if updData == nil {
+			updData = map[string]interface{}{}
+		}
+		for k, v := range curData {
+			if _, ok := updData[k]; !ok {
+				updData[k] = v
+			}
+		}
+		if err := uns.SetNestedMap(updated.Object, updData, field); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

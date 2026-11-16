@@ -21,6 +21,9 @@ spec:
       labels:
         app: linuxptp-daemon
         role: ptp
+        {{- if .EnableEventAuth }}
+        ptp.openshift.io/event-auth: "true"
+        {{- end }}
     spec:
       hostNetwork: true
       hostPID: true
@@ -39,12 +42,34 @@ spec:
           args:
             - "--logtostderr"
             - "--api-port=9043"
+            {{- if .EnableEventAuth }}
+            - "--api-host=ptp-event-publisher-service-NODE_NAME.{{ .Namespace }}.svc.cluster.local"
+            - "--auth-config=/etc/cloud-event-proxy/auth/config.json"
+            {{- else }}
             - "--api-host={{ .EventTransportHost }}"
+            {{- end }}
           volumeMounts:
             - name: config-volume
               mountPath: /etc/linuxptp
             - name: socket-dir
               mountPath: /var/run
+            {{- if .EnableEventAuth }}
+            - name: server-certs
+              mountPath: /etc/cloud-event-proxy/server-certs
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /etc/cloud-event-proxy/ca-bundle
+              readOnly: true
+            - name: client-certs
+              mountPath: /etc/cloud-event-proxy/client-certs
+              readOnly: true
+            - name: auth-config
+              mountPath: /etc/cloud-event-proxy/auth
+              readOnly: true
+            - name: event-api-token
+              mountPath: /var/run/event-api-token
+              readOnly: true
+            {{- end }}
           ports:
             - name: api-port
               containerPort: 9043
@@ -101,7 +126,11 @@ spec:
           command: [ "/bin/bash", "-c", "--" ]
           args:
           {{ $cmd := printf "/usr/local/bin/ptp --alsologtostderr -v %s" .Verbosity }}
+          {{- if .EnableEventAuth }}
+            - "until [ $(curl -s -k -w '%{http_code}' 'https://localhost:9043/api/ocloudNotifications/v2/health' -o /dev/null) -eq 200 ]; do echo 'waiting for cloud event proxy to start'; sleep 10s; done; {{ $cmd }}"
+          {{- else }}
             - "until [ $(curl -s -w '%{http_code}' 'http://localhost:9043/api/ocloudNotifications/v2/health' -o /dev/null) -eq 200 ]; do echo 'waiting for cloud event proxy to start'; sleep 10s; done; {{ $cmd }}"
+          {{- end }}
           resources:
             requests:
               cpu: 20m
@@ -140,6 +169,33 @@ spec:
           hostPath:
             path: /var/run/ptp
             type: DirectoryOrCreate
+        {{- if .EnableEventAuth }}
+        - name: server-certs
+          # Admission replaces this empty placeholder with this node's Secret.
+          # Without mutation the proxy cannot load a serving key or start TLS.
+          emptyDir:
+            medium: Memory
+        - name: ca-bundle
+          configMap:
+            name: ptp-event-publisher-ca-bundle
+        # clientAuth cert the publisher presents on the outbound push leg. The
+        # Service CA cannot mint clientAuth certs, so this secret is supplied
+        # out-of-band. Secured mode waits for this required client credential.
+        - name: client-certs
+          secret:
+            secretName: ptp-event-publisher-client-tls
+            optional: false
+        - name: auth-config
+          configMap:
+            name: ptp-event-publisher-auth
+        - name: event-api-token
+          projected:
+            sources:
+            - serviceAccountToken:
+                path: token
+                audience: https://kubernetes.default.svc
+                expirationSeconds: 3600
+        {{- end }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
