@@ -1,0 +1,16 @@
+name: Install OpenShift CLI
+description: Install oc/kubectl from the OpenShift stable client tarball when missing.
+
+runs:
+  using: composite
+  steps:
+    - name: Install OpenShift CLI (oc)
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v oc &>/dev/null; then
+          curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          sudo tar xzf openshift-client-linux.tar.gz -C /usr/local/bin oc kubectl
+          rm -f openshift-client-linux.tar.gz
+        fi
+        oc version --client

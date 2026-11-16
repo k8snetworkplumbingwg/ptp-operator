@@ -156,30 +156,11 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+      - name: Setup podman
+        uses: ./.github/actions/setup-podman
 
       - name: Copy checkout to /root/ptp-operator
-        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+        uses: ./.github/actions/copy-checkout
 
       - name: "Build images and export tarball"
         run: |
@@ -229,66 +210,17 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+      - name: Setup podman
+        uses: ./.github/actions/setup-podman
 
-      - name: Install OpenShift CLI (oc)
-        run: |
-          if ! command -v oc &>/dev/null; then
-            curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
-            sudo tar xzf openshift-client-linux.tar.gz -C /usr/local/bin oc kubectl
-            rm -f openshift-client-linux.tar.gz
-          fi
-          oc version --client
+      - name: Install OpenShift CLI
+        uses: ./.github/actions/install-oc
 
-      - name: Install DKMS dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dkms gcc make ethtool linuxptp \
-            linux-headers-$(uname -r)
-          # Best-effort: linux-modules-extra is not published for every ABI.
-          if apt-cache show linux-modules-extra-$(uname -r) >/dev/null 2>&1; then
-            sudo apt-get install -y linux-modules-extra-$(uname -r)
-          else
-            echo "::warning::linux-modules-extra-$(uname -r) not available — continuing without it"
-          fi
-
-      - name: Clone and install DKMS modules
-        run: |
-          git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
-          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
-          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
-            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
-            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
-            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
-            /usr/src/${DKMS_PKG}-${DKMS_VER}/
-          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
-          sudo dkms build ${DKMS_PKG}/${DKMS_VER}
-          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
-          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
-          sudo udevadm control --reload-rules
+      - name: Install netdevsim DKMS
+        uses: ./.github/actions/install-dkms
 
       - name: Copy checkout to /root/ptp-operator
-        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+        uses: ./.github/actions/copy-checkout
 
       - name: Download image tarball
         uses: actions/download-artifact@v7
