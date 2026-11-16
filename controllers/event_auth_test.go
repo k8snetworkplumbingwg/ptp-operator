@@ -388,6 +388,10 @@ func TestEventAuthEnabled(t *testing.T) {
 	assert.Equal(t, "/etc/cloud-event-proxy/client-certs/tls.crt", cfg["clientCertPath"])
 	assert.Equal(t, "/etc/cloud-event-proxy/client-certs/tls.key", cfg["clientKeyPath"])
 	assert.Equal(t, "/var/run/event-api-token/token", cfg["serviceAccountToken"])
+	assert.Equal(t, []interface{}{
+		"consumer-events-subscription-service.cloud-events.svc.cluster.local",
+		"consumer-events-subscription-service.cloud-events.svc",
+	}, cfg["allowedCallbackHosts"])
 
 	// The daemonset must mount the required clientAuth cert before starting.
 	vol := daemonVolume(t, objs, "client-certs")

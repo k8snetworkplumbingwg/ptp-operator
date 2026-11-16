@@ -248,7 +248,7 @@ func main() {
 	}
 
 	mgr.GetWebhookServer().Register(eventauth.WebhookPath, &admission.Webhook{
-		Handler: &eventauth.PodWebhook{Namespace: names.Namespace},
+		Handler: &eventauth.PodWebhook{Namespace: names.Namespace, Client: mgr.GetClient()},
 	})
 	if err = (&ptpv1.PtpConfig{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "PtpConfig")

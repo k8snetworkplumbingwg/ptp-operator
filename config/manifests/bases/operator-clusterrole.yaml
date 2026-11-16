@@ -9,6 +9,10 @@ rules:
 - apiGroups: [""]
   resources: ["configmaps", "services"]
   verbs: ["get", "create", "update"]
+- apiGroups: [""]
+  resources: ["services"]
+  resourceNames: ["ptp-event-publisher-server"]
+  verbs: ["delete"]
 # Creating the rendered prometheus-k8s Role requires owning its read permissions.
 - apiGroups: [""]
   resources: ["pods", "services", "endpoints"]

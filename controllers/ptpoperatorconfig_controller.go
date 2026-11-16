@@ -99,6 +99,7 @@ const (
 // +kubebuilder:rbac:groups=config.openshift.io,resources=apiservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups="",resources=services,resourceNames=ptp-event-publisher-server,verbs=delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=linuxptp-daemon-auth-delegator,verbs=get;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
@@ -261,10 +262,6 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	objs := []*uns.Unstructured{}
 
 	data := render.MakeRenderData()
-	certNodes, err := eventCertificateNodes(nodeList)
-	if err != nil {
-		return err
-	}
 	data.Data["Image"] = os.Getenv("LINUXPTP_DAEMON_IMAGE")
 	data.Data["ImagePullPolicy"] = "IfNotPresent"
 	if overridePolicy, ok := os.LookupEnv("IMAGE_PULL_POLICY"); ok {
@@ -352,6 +349,14 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	// Authentication resources are shared by the always-deployed event proxy
 	// and are rendered once rather than once per node.
 	authEnabled := data.Data["EnableEventAuth"] == true
+	selector := map[string]string(nil)
+	if authEnabled {
+		selector = defaultCfg.Spec.DaemonNodeSelector
+	}
+	certNodes, err := eventCertificateNodes(nodeList, selector, authEnabled)
+	if err != nil {
+		return err
+	}
 	if err = r.syncEventAuth(ctx, &data, authEnabled); err != nil {
 		return err
 	}

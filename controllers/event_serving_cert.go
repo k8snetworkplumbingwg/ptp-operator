@@ -20,15 +20,19 @@ type eventCertNode struct {
 	ShortName string
 }
 
-// Use stable ordering when reconciling node Services.
-// Services retain their established short-node names. Reject ambiguity rather
-// than silently routing two node identities through the same Service.
-func eventCertificateNodes(nodes *corev1.NodeList) ([]eventCertNode, error) {
+// Use stable ordering when reconciling node Services. Secured Services retain
+// their established short-node names and reject ambiguity within the daemon's
+// selected node set. Unsecured compatibility reconciliation does not require a
+// serving Secret and therefore preserves the pre-authentication behavior.
+func eventCertificateNodes(nodes *corev1.NodeList, selector map[string]string, rejectCollisions bool) ([]eventCertNode, error) {
 	result := make([]eventCertNode, 0, len(nodes.Items))
 	seen := make(map[string]string)
 	for _, node := range nodes.Items {
+		if !labelsMatch(node.Labels, selector) {
+			continue
+		}
 		short := strings.Split(node.Name, ".")[0]
-		if previous, exists := seen[short]; exists {
+		if previous, exists := seen[short]; rejectCollisions && exists {
 			return nil, fmt.Errorf("event Service name collision for nodes %q and %q", previous, node.Name)
 		}
 		seen[short] = node.Name
@@ -36,6 +40,15 @@ func eventCertificateNodes(nodes *corev1.NodeList) ([]eventCertNode, error) {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
+}
+
+func labelsMatch(labels, selector map[string]string) bool {
+	for key, value := range selector {
+		if labels[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func isEventDaemonPod(obj client.Object) bool {

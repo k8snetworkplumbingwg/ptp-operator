@@ -242,6 +242,14 @@ spec:
           - update
         - apiGroups:
           - ""
+          resourceNames:
+          - ptp-event-publisher-server
+          resources:
+          - services
+          verbs:
+          - delete
+        - apiGroups:
+          - ""
           resources:
           - pods
           - services
@@ -285,6 +293,14 @@ spec:
           - list
           - patch
           - watch
+        - apiGroups:
+          - ""
+          resourceNames:
+          - ptp-event-publisher-server
+          resources:
+          - services
+          verbs:
+          - delete
         - apiGroups:
           - config.openshift.io
           resources:
