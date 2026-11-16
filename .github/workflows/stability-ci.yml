@@ -2,9 +2,8 @@
 # Runs each selected mode N times and produces a stability report
 # identifying stable, flaky, intermittent, and broken tests.
 #
-# Image build, DKMS, and Kind/netdevsim deploy match netdevsim-ci.yml.
-# Cluster setup uses run-on-vm.sh --cluster so tests can be repeated by
-# stability-test.sh without redeploying.
+# Image build / DKMS / Kind setup steps live in .github/actions/ and are
+# shared with netdevsim-ci.yml so dependency changes land in one place.
 #
 # ## What a green check means
 # The stability-test matrix jobs stay green as long as the harness produces
@@ -14,24 +13,25 @@
 # has 0 suite passes, or any test is classified Broken. Flaky/Intermittent
 # appear in the report but do not fail the check.
 #
-# ## Triggers
-#   - Label the PR (uses PR branch):
-#       run-stability              → mode=oc, runs=3   (cheap default)
-#       run-stability/<mode>       → that mode, runs=3
-#       run-stability/<mode>/<N>   → that mode, N runs
-#       run-stability/all          → all modes, runs=3
-#       run-stability/all/<N>      → all modes, N runs
-#     Mode may also be a comma list: run-stability/oc,bc/5
-#   - workflow_dispatch (default branch): choose mode + runs in the UI
+# ## Triggers / selection
+#   - Every PR (opened/synchronize/reopened): default **oc × 3**
+#   - Override with labels (replace the default for that run):
+#       run-stability              → oc × 3
+#       run-stability/<mode>       → mode × 3
+#       run-stability/<mode>/<N>   → mode × N
+#       run-stability/all[/N]      → full matrix
+#       (comma modes OK: run-stability/oc,bc/5)
+#   - skip-stability              → disable automated stability on the PR
+#   - workflow_dispatch           → choose mode + runs in the UI
 #
-# Fork PRs: maintainers must remove the trigger label manually after the
-# run (GITHUB_TOKEN cannot reliably edit labels on fork PRs).
+# Fork PRs: remove override labels manually when done (GITHUB_TOKEN cannot
+# reliably edit labels on fork PRs).
 
 name: Test Stability
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       stability_mode:
@@ -58,11 +58,8 @@ permissions:
   contents: read
   actions: write
 
-# Stability labels / dispatch share one group so a new stability run cancels
-# the previous. Unrelated PR labels get a unique group (run_id) so they cannot
-# cancel an in-progress stability run when the workflow wakes and skips.
 concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.event.label.name == 'run-stability' || startsWith(github.event.label.name, 'run-stability/')))) && format('stability-{0}', github.event.pull_request.number || github.ref) || format('stability-skip-{0}', github.run_id) }}
+  group: stability-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -73,14 +70,18 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
-  # Gate + resolve mode/runs from label encoding or dispatch inputs
+  # Gate + resolve mode/runs (default oc×3, labels override, skip-stability)
   # ------------------------------------------------------------------
   gate:
     runs-on: ubuntu-24.04
+    # Skip when skip-stability is on the PR, or when an unrelated label was
+    # added (labeled events only proceed for run-stability*).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       (github.event.label.name == 'run-stability' ||
+       !contains(github.event.pull_request.labels.*.name, 'skip-stability') &&
+       (github.event.action != 'labeled' ||
+        github.event.label.name == 'run-stability' ||
         startsWith(github.event.label.name, 'run-stability/')))
     outputs:
       modes: ${{ steps.set.outputs.modes }}
@@ -88,35 +89,82 @@ jobs:
     steps:
       - name: Resolve mode list and run count
         id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          DISPATCH_MODE: ${{ github.event.inputs.stability_mode || '' }}
+          DISPATCH_RUNS: ${{ github.event.inputs.stability_runs || '' }}
+          EVENT_LABEL: ${{ github.event.label.name || '' }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            RAW="${{ github.event.inputs.stability_mode }}"
-            RUNS="${{ github.event.inputs.stability_runs || '5' }}"
+          parse_label() {
+            local label="$1"
+            local raw runs rest
+            if [[ "$label" == "run-stability" ]]; then
+              echo "oc|3"
+              return
+            fi
+            rest="${label#run-stability/}"
+            if [[ "$rest" =~ ^(.+)/([0-9]+)$ ]]; then
+              raw="${BASH_REMATCH[1]}"
+              runs="${BASH_REMATCH[2]}"
+            else
+              raw="$rest"
+              runs="3"
+            fi
+            echo "${raw}|${runs}"
+          }
+
+          RAW=""
+          RUNS=""
+          LABEL=""
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            RAW="$DISPATCH_MODE"
+            RUNS="${DISPATCH_RUNS:-5}"
+          elif [[ "$EVENT_ACTION" == "labeled" && ( "$EVENT_LABEL" == "run-stability" || "$EVENT_LABEL" == run-stability/* ) ]]; then
+            LABEL="$EVENT_LABEL"
+            IFS='|' read -r RAW RUNS < <(parse_label "$LABEL")
           else
-            LABEL="${{ github.event.label.name }}"
-            # run-stability                → oc / 3
-            # run-stability/<mode>         → mode / 3
-            # run-stability/<mode>/<runs>  → mode / runs
-            if [[ "$LABEL" == "run-stability" ]]; then
+            # opened / synchronize / reopened: labels override default oc×3
+            mapfile -t STAB_LABELS < <(printf '%s\n' "$PR_LABELS" | grep -E '^run-stability(/|$)' || true)
+            if [[ ${#STAB_LABELS[@]} -eq 0 ]]; then
               RAW="oc"
               RUNS="3"
             else
-              REST="${LABEL#run-stability/}"
-              # Last slash-separated field is runs if purely numeric.
-              if [[ "$REST" =~ ^(.+)/([0-9]+)$ ]]; then
-                RAW="${BASH_REMATCH[1]}"
-                RUNS="${BASH_REMATCH[2]}"
+              MODES_ACC=()
+              RUNS_ACC=3
+              for lab in "${STAB_LABELS[@]}"; do
+                IFS='|' read -r raw runs < <(parse_label "$lab")
+                if [[ "$raw" == "all" ]]; then
+                  MODES_ACC=(all)
+                  RUNS_ACC="$runs"
+                  break
+                fi
+                IFS=',' read -r -a parts <<< "$raw"
+                for m in "${parts[@]}"; do
+                  m="${m#"${m%%[![:space:]]*}"}"
+                  m="${m%"${m##*[![:space:]]}"}"
+                  [[ -n "$m" ]] && MODES_ACC+=("$m")
+                done
+                if [[ "$runs" -gt "$RUNS_ACC" ]]; then
+                  RUNS_ACC="$runs"
+                fi
+              done
+              if [[ ${#MODES_ACC[@]} -eq 1 && "${MODES_ACC[0]}" == "all" ]]; then
+                RAW="all"
               else
-                RAW="$REST"
-                RUNS="3"
+                # dedupe modes
+                RAW=$(printf '%s\n' "${MODES_ACC[@]}" | awk 'NF && !seen[$0]++' | paste -sd ',')
               fi
+              RUNS="$RUNS_ACC"
             fi
           fi
 
-          if [[ -z "$RUNS" || "$RUNS" -lt 1 ]]; then
-            echo "::error::stability runs must be >= 1 (got: ${RUNS:-empty})"
+          if [[ ! "$RUNS" =~ ^[0-9]+$ ]] || [[ "$RUNS" -lt 1 ]]; then
+            echo "::error::stability runs must be an integer >= 1 (got: ${RUNS:-empty})"
             exit 1
           fi
 
@@ -125,10 +173,29 @@ jobs:
             exit 1
           fi
 
+          ALLOWED=' oc bc dualnicbc dualnicbcha dualfollower tgm tgmoc tgmbc '
           if [[ "$RAW" == "all" ]]; then
             MODES_JSON='["oc","bc","dualnicbc","dualnicbcha","dualfollower","tgm","tgmoc","tgmbc"]'
           else
-            MODES_JSON=$(echo "$RAW" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sed 's/^/"/;s/$/"/' | paste -sd ',' | sed 's/^/[/;s/$/]/')
+            MODES_JSON='['
+            first=1
+            IFS=',' read -r -a parts <<< "$RAW"
+            for m in "${parts[@]}"; do
+              m="${m#"${m%%[![:space:]]*}"}"
+              m="${m%"${m##*[![:space:]]}"}"
+              [[ -z "$m" ]] && continue
+              if [[ "$ALLOWED" != *" $m "* ]]; then
+                echo "::error::unsupported stability mode '$m' (label: ${LABEL:-n/a})"
+                exit 1
+              fi
+              if [[ $first -eq 1 ]]; then
+                MODES_JSON+="\"$m\""
+                first=0
+              else
+                MODES_JSON+=",\"$m\""
+              fi
+            done
+            MODES_JSON+=']'
           fi
 
           if [[ -z "$MODES_JSON" || "$MODES_JSON" == "[]" ]]; then
@@ -156,30 +223,11 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          # The kubic repo may not carry a crun newer than the distro's
-          # 1.14.1 which rejects OCI runtime spec v1.2.1 from podman 5.x.
-          # Install crun >= 1.14.3 from upstream GitHub releases.
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+      - name: Setup podman
+        uses: ./.github/actions/setup-podman
 
       - name: Copy checkout to /root/ptp-operator
-        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+        uses: ./.github/actions/copy-checkout
 
       - name: Build images and export tarball
         run: |
@@ -227,62 +275,17 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      - name: Install podman 5.x
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/Release.key" \
-            | gpg --dearmor | sudo tee /etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg > /dev/null
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/devel_kubic_libcontainers_unstable.gpg] \
-            https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/unstable/xUbuntu_$(lsb_release -rs)/ /" \
-            | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:unstable.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y podman
-          podman --version
-          CRUN_VER=1.19.1
-          sudo curl -fsSL -o /usr/bin/crun \
-            "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
-          sudo chmod +x /usr/bin/crun
-          crun --version | head -1
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
+      - name: Setup podman
+        uses: ./.github/actions/setup-podman
 
-      - name: Install OpenShift CLI (oc)
-        run: |
-          if ! command -v oc &>/dev/null; then
-            curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
-            sudo tar xzf openshift-client-linux.tar.gz -C /usr/local/bin oc kubectl
-            rm -f openshift-client-linux.tar.gz
-          fi
-          oc version --client
+      - name: Install OpenShift CLI
+        uses: ./.github/actions/install-oc
 
-      - name: Install DKMS dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dkms gcc make ethtool linuxptp \
-            linux-headers-$(uname -r)
-          # Best-effort: linux-modules-extra is not published for every ABI.
-          if apt-cache show linux-modules-extra-$(uname -r) >/dev/null 2>&1; then
-            sudo apt-get install -y linux-modules-extra-$(uname -r)
-          else
-            echo "::warning::linux-modules-extra-$(uname -r) not available — continuing without it"
-          fi
-
-      - name: Clone and install DKMS modules
-        run: |
-          git clone --depth 1 --branch "${DKMS_BRANCH}" "${DKMS_REPO}" /tmp/netdevsim-dkms
-          sudo mkdir -p /usr/src/${DKMS_PKG}-${DKMS_VER}
-          sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
-            /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
-            /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
-            /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
-            /usr/src/${DKMS_PKG}-${DKMS_VER}/
-          sudo dkms add ${DKMS_PKG}/${DKMS_VER}
-          sudo dkms build ${DKMS_PKG}/${DKMS_VER}
-          sudo dkms install --force ${DKMS_PKG}/${DKMS_VER}
-          sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
-          sudo udevadm control --reload-rules
+      - name: Install netdevsim DKMS
+        uses: ./.github/actions/install-dkms
 
       - name: Copy checkout to /root/ptp-operator
-        run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
+        uses: ./.github/actions/copy-checkout
 
       - name: Download image tarball
         uses: actions/download-artifact@v7
@@ -489,10 +492,11 @@ jobs:
           path: /tmp/stability-merged/stability-report-*.md
           if-no-files-found: ignore
 
-      - name: Reminder — remove trigger label on fork PRs
+      - name: Reminder — remove override labels on fork PRs
         if: >-
           always() &&
-          github.event_name == 'pull_request'
+          github.event_name == 'pull_request' &&
+          github.event.action == 'labeled'
         run: |
-          echo "::notice::Maintainers: remove the '${{ github.event.label.name }}' label manually after this run."
+          echo "::notice::Maintainers: remove override label '${{ github.event.label.name }}' manually when done."
           echo "Fork PRs cannot reliably clear labels with GITHUB_TOKEN; do not rely on automation here."

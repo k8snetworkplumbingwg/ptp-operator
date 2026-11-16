@@ -1,0 +1,40 @@
+name: Install netdevsim DKMS
+description: >
+  Install DKMS build deps, clone netdevsim-dkms, build/install modules, and
+  install the PTP udev rules. Reads DKMS_PKG, DKMS_VER, DKMS_REPO, and
+  DKMS_BRANCH from the job environment (set by the calling workflow).
+
+runs:
+  using: composite
+  steps:
+    - name: Install DKMS dependencies and modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        PKG="${DKMS_PKG:-netdevsim}"
+        VER="${DKMS_VER:-6.9.5}"
+        REPO="${DKMS_REPO:-https://github.com/redhat-cne/netdevsim-dkms.git}"
+        BRANCH="${DKMS_BRANCH:-main}"
+
+        sudo apt-get update
+        sudo apt-get install -y dkms gcc make ethtool linuxptp \
+          linux-headers-$(uname -r)
+        # Best-effort: linux-modules-extra is not published for every ABI.
+        if apt-cache show linux-modules-extra-$(uname -r) >/dev/null 2>&1; then
+          sudo apt-get install -y linux-modules-extra-$(uname -r)
+        else
+          echo "::warning::linux-modules-extra-$(uname -r) not available — continuing without it"
+        fi
+
+        git clone --depth 1 --branch "${BRANCH}" "${REPO}" /tmp/netdevsim-dkms
+        sudo mkdir -p /usr/src/${PKG}-${VER}
+        sudo cp -a /tmp/netdevsim-dkms/Makefile /tmp/netdevsim-dkms/dkms.conf \
+          /tmp/netdevsim-dkms/install-udev-rule.sh /tmp/netdevsim-dkms/99-nsim-ptp.rules \
+          /tmp/netdevsim-dkms/include /tmp/netdevsim-dkms/ptp \
+          /tmp/netdevsim-dkms/dpll /tmp/netdevsim-dkms/netdevsim \
+          /usr/src/${PKG}-${VER}/
+        sudo dkms add ${PKG}/${VER}
+        sudo dkms build ${PKG}/${VER}
+        sudo dkms install --force ${PKG}/${VER}
+        sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
+        sudo udevadm control --reload-rules

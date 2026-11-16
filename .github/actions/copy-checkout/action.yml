@@ -1,0 +1,15 @@
+name: Copy checkout
+description: Copy the GitHub Actions workspace to /root/ptp-operator for sudo/Kind runs.
+
+inputs:
+  destination:
+    description: Absolute path to copy the checkout into
+    required: false
+    default: /root/ptp-operator
+
+runs:
+  using: composite
+  steps:
+    - name: Copy checkout
+      shell: bash
+      run: sudo cp -a "$GITHUB_WORKSPACE" "${{ inputs.destination }}"
