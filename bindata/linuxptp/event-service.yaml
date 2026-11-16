@@ -4,6 +4,11 @@ kind: Service
 metadata:
   annotations:
     prometheus.io/scrape: "false"
+    {{- if .EnableEventAuth }}
+    service.beta.openshift.io/serving-cert-secret-name: ptp-event-publisher-server-tls-{{.NodeName}}
+    {{- else }}
+    service.beta.openshift.io/serving-cert-secret-name: ""
+    {{- end }}
   labels:
     app: linuxptp-daemon
   name:  ptp-event-publisher-service-{{.NodeName}}
