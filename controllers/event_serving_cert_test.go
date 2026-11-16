@@ -17,7 +17,7 @@ func TestPerNodeServingCertificates(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "worker-b.example.com"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "worker-a.example.com"}},
 	}}
-	certs, err := eventCertificateNodes(nodes)
+	certs, err := eventCertificateNodes(nodes, nil, true)
 	require.NoError(t, err)
 	require.Equal(t, "worker-a.example.com", certs[0].Name)
 	data := makeTestRenderData()
@@ -57,8 +57,22 @@ func TestEventCertificateNodeCollision(t *testing.T) {
 	_, err := eventCertificateNodes(&corev1.NodeList{Items: []corev1.Node{
 		{ObjectMeta: metav1.ObjectMeta{Name: "worker.first.example"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "worker.second.example"}},
-	}})
+	}}, nil, true)
 	require.ErrorContains(t, err, "collision")
+}
+
+func TestEventCertificateNodesScopeCollisionToSelectedSecuredNodes(t *testing.T) {
+	nodes := &corev1.NodeList{Items: []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "worker.first.example", Labels: map[string]string{"ptp": "true"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "worker.second.example"}},
+	}}
+	selected, err := eventCertificateNodes(nodes, map[string]string{"ptp": "true"}, true)
+	require.NoError(t, err)
+	require.Equal(t, []eventCertNode{{Name: "worker.first.example", ShortName: "worker"}}, selected)
+
+	allUnsecured, err := eventCertificateNodes(nodes, nil, false)
+	require.NoError(t, err)
+	require.Len(t, allUnsecured, 2)
 }
 
 func TestEventPodNodeLabels(t *testing.T) {

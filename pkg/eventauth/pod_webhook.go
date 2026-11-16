@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -25,11 +26,12 @@ const (
 // read Secret data or grant the daemon ServiceAccount permission to read Secrets.
 type PodWebhook struct {
 	Namespace string
+	Client    client.Reader
 }
 
 // +kubebuilder:webhook:path=/mutate-ptp-event-serving-secret,mutating=true,failurePolicy=fail,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=event-serving-secret.ptp.openshift.io,admissionReviewVersions=v1
 
-func (h *PodWebhook) Handle(_ context.Context, req admission.Request) admission.Response {
+func (h *PodWebhook) Handle(ctx context.Context, req admission.Request) admission.Response {
 	if req.Operation != admissionv1.Create || req.Resource.Group != "" || req.Resource.Resource != "pods" ||
 		req.SubResource != "" || req.Namespace != h.Namespace {
 		return admission.Allowed("outside event pod scope")
@@ -41,7 +43,7 @@ func (h *PodWebhook) Handle(_ context.Context, req admission.Request) admission.
 	if pod.Labels[PodLabel] != "true" {
 		return admission.Allowed("event authentication disabled")
 	}
-	if err := selectServingSecret(pod); err != nil {
+	if err := selectServingSecret(ctx, h.Client, pod); err != nil {
 		return admission.Denied(err.Error())
 	}
 	updated, err := json.Marshal(pod)
@@ -51,7 +53,7 @@ func (h *PodWebhook) Handle(_ context.Context, req admission.Request) admission.
 	return admission.PatchResponseFromRaw(req.Object.Raw, updated)
 }
 
-func selectServingSecret(pod *corev1.Pod) error {
+func selectServingSecret(ctx context.Context, reader client.Reader, pod *corev1.Pod) error {
 	owner := metav1.GetControllerOf(pod)
 	if owner == nil || owner.APIVersion != "apps/v1" || owner.Kind != "DaemonSet" || owner.Name != "linuxptp-daemon" {
 		return fmt.Errorf("secured event pod must belong to the linuxptp-daemon DaemonSet")
@@ -61,6 +63,19 @@ func selectServingSecret(pod *corev1.Pod) error {
 		return err
 	}
 	short := strings.Split(node, ".")[0]
+	if reader == nil {
+		return fmt.Errorf("secured event pod node validation is unavailable")
+	}
+	nodes := &corev1.NodeList{}
+	if err := reader.List(ctx, nodes, client.MatchingLabels(pod.Spec.NodeSelector)); err != nil {
+		return fmt.Errorf("list selected nodes: %w", err)
+	}
+	for i := range nodes.Items {
+		candidate := nodes.Items[i].Name
+		if candidate != node && strings.Split(candidate, ".")[0] == short {
+			return fmt.Errorf("event Service name collision for nodes %q and %q", node, candidate)
+		}
+	}
 	secretName := ServingSecretPrefix + short
 	if problems := validation.IsDNS1123Subdomain(secretName); len(problems) != 0 {
 		return fmt.Errorf("invalid node serving Secret name")

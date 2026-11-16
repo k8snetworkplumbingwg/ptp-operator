@@ -14,6 +14,14 @@ rules:
   - patch
   - watch
 - apiGroups:
+  - ""
+  resourceNames:
+  - ptp-event-publisher-server
+  resources:
+  - services
+  verbs:
+  - delete
+- apiGroups:
   - config.openshift.io
   resources:
   - apiservers

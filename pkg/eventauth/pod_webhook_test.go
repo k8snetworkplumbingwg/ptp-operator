@@ -11,6 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -34,16 +36,38 @@ func daemonPod(node string) *corev1.Pod {
 	}
 }
 
-func invoke(t *testing.T, pod *corev1.Pod) (admission.Response, []byte) {
+func invoke(t *testing.T, pod *corev1.Pod, extraNodes ...client.Object) (admission.Response, []byte) {
 	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	objects := append([]client.Object{}, extraNodes...)
+	if node, err := targetNode(pod); err == nil {
+		found := false
+		for _, object := range objects {
+			found = found || object.GetName() == node
+		}
+		if !found {
+			objects = append(objects, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: node, Labels: pod.Spec.NodeSelector}})
+		}
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 	raw, err := json.Marshal(pod)
 	require.NoError(t, err)
-	response := (&PodWebhook{Namespace: "openshift-ptp"}).Handle(context.Background(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+	response := (&PodWebhook{Namespace: "openshift-ptp", Client: reader}).Handle(context.Background(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 		Namespace: pod.Namespace, Operation: admissionv1.Create,
 		Resource: metav1.GroupVersionResource{Version: "v1", Resource: "pods"},
 		Object:   runtime.RawExtension{Raw: raw},
 	}})
 	return response, raw
+}
+
+func TestAdmissionRejectsSelectedNodeShortNameCollision(t *testing.T) {
+	pod := daemonPod("worker.second.example")
+	pod.Spec.NodeSelector = map[string]string{"ptp": "true"}
+	colliding := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker.first.example", Labels: map[string]string{"ptp": "true"}}}
+	response, _ := invoke(t, pod, colliding)
+	require.False(t, response.Allowed)
+	require.Contains(t, response.Result.Message, "collision")
 }
 
 func TestAdmissionMountsOnlyOwnServingSecret(t *testing.T) {
@@ -116,7 +140,10 @@ func TestAdmissionRemovesAllNodeProjection(t *testing.T) {
 	pod.Spec.Volumes[0].VolumeSource = corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 		Sources: []corev1.VolumeProjection{{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: ServingSecretPrefix + "worker-b"}}}},
 	}}
-	require.NoError(t, selectServingSecret(pod))
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-a"}}).Build()
+	require.NoError(t, selectServingSecret(context.Background(), reader, pod))
 	require.Nil(t, pod.Spec.Volumes[0].Projected)
 	require.Equal(t, ServingSecretPrefix+"worker-a", pod.Spec.Volumes[0].Secret.SecretName)
 }

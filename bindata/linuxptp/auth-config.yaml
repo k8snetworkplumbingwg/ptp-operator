@@ -64,6 +64,7 @@ data:
       "requiredAudiences": ["https://kubernetes.default.svc"],
       "serviceAccountName": "linuxptp-daemon",
       "serviceAccountToken": "/var/run/event-api-token/token",
+      "allowedCallbackHosts": ["consumer-events-subscription-service.cloud-events.svc.cluster.local", "consumer-events-subscription-service.cloud-events.svc"],
       "tlsMinVersion": "{{.TLSMinVersion}}",
       "tlsCipherSuites": {{.TLSCipherSuitesJSON}}
     }
