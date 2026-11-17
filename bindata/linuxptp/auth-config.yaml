@@ -28,10 +28,11 @@ metadata:
     app: linuxptp-daemon
 ---
 # Authentication configuration consumed by cloud-event-proxy via --auth-config.
-# Enables mTLS and bearer-token authentication on protected remote event APIs.
-# Health and loopback retain their compatibility exemptions. Tokens are validated against the
-# Kubernetes TokenReview API, so no OAuth issuer / JWKS URL is required. The TLS profile
-# (min version and cipher suites) follows the cluster-wide TLSSecurityProfile.
+# Enables mTLS and bearer-token authentication on protected event APIs.
+# Only exact GET health is exempt. Protected loopback requests authenticate like
+# remote requests. Tokens are validated against the Kubernetes TokenReview API,
+# so no OAuth issuer / JWKS URL is required. The TLS profile (min version and
+# cipher suites) follows the cluster-wide TLSSecurityProfile.
 #
 # The outbound push leg (cloud-event-proxy delivering initial notifications to a
 # consumer callback) authenticates with BOTH the ServiceAccount bearer token
