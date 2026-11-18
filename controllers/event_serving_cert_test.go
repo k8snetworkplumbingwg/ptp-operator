@@ -75,6 +75,16 @@ func TestEventCertificateNodesScopeCollisionToSelectedSecuredNodes(t *testing.T)
 	require.Len(t, allUnsecured, 2)
 }
 
+func TestEventCertificateNodesRequireEmptyValueSelectorKey(t *testing.T) {
+	nodes := &corev1.NodeList{Items: []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "worker.first.example"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "worker.second.example", Labels: map[string]string{"ptp": ""}}},
+	}}
+	selected, err := eventCertificateNodes(nodes, map[string]string{"ptp": ""}, true)
+	require.NoError(t, err)
+	require.Equal(t, []eventCertNode{{Name: "worker.second.example", ShortName: "worker"}}, selected)
+}
+
 func TestEventPodNodeLabels(t *testing.T) {
 	controller := true
 	owner := metav1.OwnerReference{Kind: "DaemonSet", Name: "linuxptp-daemon", Controller: &controller}

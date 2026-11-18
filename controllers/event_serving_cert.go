@@ -44,7 +44,8 @@ func eventCertificateNodes(nodes *corev1.NodeList, selector map[string]string, r
 
 func labelsMatch(labels, selector map[string]string) bool {
 	for key, value := range selector {
-		if labels[key] != value {
+		actual, exists := labels[key]
+		if !exists || actual != value {
 			return false
 		}
 	}
