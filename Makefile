@@ -12,10 +12,9 @@ endif
 VERSION ?= 5.1
 
 # SECURED enables mTLS + TokenReview on the event-publisher O-RAN v2 APIs.
-# Upstream defaults on. Set SECURED=false ENABLE_EVENT_AUTH=false explicitly
-# for unsecured compatibility deployments; release 5.1 retains defaults off.
+# Keep auth opt-in until secured CEPv2 CI is integrated and passing.
 # Honored equally as a make variable or an environment variable.
-SECURED ?= true
+SECURED ?= false
 ENABLE_EVENT_AUTH ?= $(if $(filter true,$(SECURED)),true,false)
 
 # CHANNELS define the bundle channels used in the bundle.

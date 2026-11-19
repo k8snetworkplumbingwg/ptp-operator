@@ -286,9 +286,8 @@ func (r *PtpOperatorConfigReconciler) syncLinuxptpDaemon(ctx context.Context, de
 	data.Data["EventApiVersion"] = DefaultApiVersion
 	// EnableEventAuth turns on mTLS + OAuth on the event publisher APIs. It
 	// depends on the OpenShift Service CA operator to mint serving certificates
-	// and inject the CA bundle. Upstream defaults on; deployments without
-	// these credentials must explicitly set ENABLE_EVENT_AUTH=false.
-	data.Data["EnableEventAuth"] = os.Getenv("ENABLE_EVENT_AUTH") != "false"
+	// and inject the CA bundle. Secured CEPv2 CI must pass before default-on.
+	data.Data["EnableEventAuth"] = os.Getenv("ENABLE_EVENT_AUTH") == "true"
 	// configure EventConfig
 	transportHost := ""
 	if defaultCfg.Spec.EventConfig == nil {
