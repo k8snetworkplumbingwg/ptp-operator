@@ -1,8 +1,9 @@
 # CEPv2 secure event deployment
 
-Upstream defaults SECURED and ENABLE_EVENT_AUTH on. Explicitly set both to false
-for an unsecured deployment. Release 5.1 must retain off defaults on backport;
-the recommended product configuration is full mTLS and OAuth (TokenReview).
+The initial upstream merge defaults SECURED and ENABLE_EVENT_AUTH off. Turn them
+on upstream in a separate change after secured CEPv2 CI is required and passing.
+Release 5.1 remains opt-in. The recommended product configuration is full mTLS
+and OAuth (TokenReview).
 
 ```sh
 make deploy SECURED=true ENABLE_EVENT_AUTH=true \
@@ -44,8 +45,8 @@ the operator admission server to be available.
 
 This isolates the mounted **serving keys**, not all workload privileges. The
 publisher's outbound client certificate remains shared, and existing privileged
-containers and ServiceAccount permissions are unchanged. Certificates still load
-at startup, so renewals require a restart. Adding a node no longer changes the
+containers and ServiceAccount permissions are unchanged. The CEPv2 publisher
+reloads its mounted CA and certificates in place. Adding a node no longer changes the
 DaemonSet's certificate volume template or rolls existing pods.
 
 When auth is disabled, certificate mounts and TokenReview access are removed and
@@ -62,7 +63,9 @@ are removed; externally supplied client credentials are also retained.
 Do not overwrite the derived bundle or scale the operator to zero. Mounts use
 the existing CEPv1 paths and JSON security options. TLS version and cipher suites
 come from the cluster TLS profile. Provision serving certificates through Service
-CA and client certificates separately, then restart after certificate rotation.
+CA and client certificates separately. The CEPv2 publisher reloads both its
+serving and outbound credentials. Restart the standalone consumer when its own
+certificate or trust files change.
 
 Validate with `CGO_ENABLED=0 go test ./controllers ./pkg/apply` and
 `CGO_ENABLED=0 make bundle-check`. Cluster testing is still required before merge.
