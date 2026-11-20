@@ -12,8 +12,9 @@ make deploy SECURED=true ENABLE_EVENT_AUTH=true \
 ```
 
 The sidecar image must contain the native CEPv2 binary at
-/usr/local/bin/cloud-event-proxy. The proxy is always deployed; security wiring
-must not depend on the legacy EventConfig enablement gate.
+/usr/local/bin/cloud-event-proxy and the live TLS reload implementation. The
+proxy is always deployed; security wiring must not depend on the legacy
+EventConfig enablement gate.
 
 The operator creates the serving-cert Service, auth config, TokenReview RBAC and
 trust resources. An external issuer/consumer setup supplies clientAuth keypairs
@@ -39,15 +40,20 @@ The mutating webhook uses `failurePolicy: Fail` and selects only daemon pods
 labelled `ptp.openshift.io/event-auth: "true"`. Missing or ambiguous node identity
 rejects admission. A missing node Secret leaves the admitted Pod waiting for its
 own certificate. If the webhook configuration is accidentally omitted, the empty
-placeholder prevents TLS startup; it provides no shared-key fallback. Running
+placeholder prevents initial TLS listener startup; it provides no shared-key
+fallback. Running
 pods do not need the webhook, but creation of secured replacement pods requires
 the operator admission server to be available.
 
 This isolates the mounted **serving keys**, not all workload privileges. The
 publisher's outbound client certificate remains shared, and existing privileged
-containers and ServiceAccount permissions are unchanged. The CEPv2 publisher
-reloads its mounted CA and certificates in place. Adding a node no longer changes the
-DaemonSet's certificate volume template or rolls existing pods.
+containers and ServiceAccount permissions are unchanged. The matching CEPv2
+publisher watches the mounted CA and keypairs, validates each complete snapshot,
+and reloads valid serving and outbound credentials in place. It retains the
+previous snapshot when a rotation is incomplete or invalid. A publisher image
+without live TLS reload support requires a daemon pod restart after certificate
+or CA changes. Adding a node no longer changes the DaemonSet's certificate volume
+template or rolls existing pods.
 
 When auth is disabled, the operator removes certificate mounts, deletes the
 managed `linuxptp-daemon-auth-delegator` ClusterRoleBinding, and clears the
@@ -65,11 +71,10 @@ are removed; externally supplied client credentials are also retained.
 Do not overwrite the derived bundle or scale the operator to zero. Mounts use
 the existing CEPv1 paths and JSON security options. TLS version and cipher suites
 come from the cluster TLS profile. Provision serving certificates through Service
-CA and client certificates separately. The CEPv2 publisher reloads both its
-serving and outbound credentials. Restart the standalone consumer when its own
-certificate or trust files change.
+CA and client certificates separately. Restart the standalone consumer when its
+own certificate or trust files change.
 
-Validate with `CGO_ENABLED=0 go test ./controllers ./pkg/apply` and
+Validate with `CGO_ENABLED=0 go test ./controllers ./pkg/apply ./pkg/eventauth` and
 `CGO_ENABLED=0 make bundle-check`. Cluster testing is still required before merge.
 
 For a later cluster validation, verify node routing and public certificate identity
