@@ -49,8 +49,10 @@ containers and ServiceAccount permissions are unchanged. The CEPv2 publisher
 reloads its mounted CA and certificates in place. Adding a node no longer changes the
 DaemonSet's certificate volume template or rolls existing pods.
 
-When auth is disabled, certificate mounts and TokenReview access are removed and
-the per-node serving-cert annotations are cleared. Services remain for plaintext
+When auth is disabled, the operator removes certificate mounts, deletes the
+managed `linuxptp-daemon-auth-delegator` ClusterRoleBinding, and clears the
+per-node serving-cert annotations. The `linuxptp-daemon` ClusterRole still
+allows the daemon to create TokenReviews. Services remain for plaintext
 compatibility. Service CA-issued Secrets are retained until their owning Services
 are removed; externally supplied client credentials are also retained.
 
