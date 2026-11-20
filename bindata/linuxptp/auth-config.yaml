@@ -1,0 +1,90 @@
+---
+# Service CA operator-owned input. The operator reads service-ca.crt from this
+# ConfigMap but never writes it, preventing controller ownership conflicts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptp-event-publisher-service-ca
+  namespace: {{.Namespace}}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+  labels:
+    app: linuxptp-daemon
+---
+# Operator-owned output used by cloud-event-proxy to verify peer certificates.
+# The operator writes ca-bundle.crt as service-ca.crt plus any CA published in
+# ptp-event-publisher-client-ca. The manifest intentionally has no data;
+# MergeConfigMapForUpdate preserves the derived key across reconciles.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptp-event-publisher-ca-bundle
+  namespace: {{.Namespace}}
+  annotations:
+    # Explicitly override the legacy "true" value during upgrades. Merely
+    # omitting the annotation does not remove it with the apply merge behavior.
+    service.beta.openshift.io/inject-cabundle: "false"
+  labels:
+    app: linuxptp-daemon
+---
+# Authentication configuration consumed by cloud-event-proxy via --auth-config.
+# Enables mTLS and bearer-token authentication on protected event APIs.
+# Only exact GET health is exempt. Protected loopback requests authenticate like
+# remote requests. Tokens are validated against the Kubernetes TokenReview API,
+# so no OAuth issuer / JWKS URL is required. The TLS profile (min version and
+# cipher suites) follows the cluster-wide TLSSecurityProfile.
+#
+# The outbound push leg (cloud-event-proxy delivering initial notifications to a
+# consumer callback) authenticates with BOTH the ServiceAccount bearer token
+# (serviceAccountToken, always mounted) and - when the required
+# ptp-event-publisher-client-tls secret is provisioned - the clientAuth cert at
+# clientCertPath/clientKeyPath. The Service CA mints serverAuth-only certs, so the
+# serving cert cannot be reused as a client cert; when the client-tls secret is
+# absent the secured workload waits for provisioning. caCertPath doubles as
+# the RootCAs used to verify the consumer's
+# server certificate on that push.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptp-event-publisher-auth
+  namespace: {{.Namespace}}
+  labels:
+    app: linuxptp-daemon
+data:
+  config.json: |
+    {
+      "enableMTLS": true,
+      "useServiceCA": true,
+      "caCertPath": "/etc/cloud-event-proxy/ca-bundle/ca-bundle.crt",
+      "serverCertPath": "/etc/cloud-event-proxy/server-certs/tls.crt",
+      "serverKeyPath": "/etc/cloud-event-proxy/server-certs/tls.key",
+      "clientCertPath": "/etc/cloud-event-proxy/client-certs/tls.crt",
+      "clientKeyPath": "/etc/cloud-event-proxy/client-certs/tls.key",
+      "enableOAuth": true,
+      "useOpenShiftOAuth": true,
+      "requiredAudiences": ["https://kubernetes.default.svc"],
+      "serviceAccountName": "linuxptp-daemon",
+      "serviceAccountToken": "/var/run/event-api-token/token",
+      "allowedCallbackHosts": ["consumer-events-subscription-service.cloud-events.svc.cluster.local", "consumer-events-subscription-service.cloud-events.svc"],
+      "tlsMinVersion": "{{.TLSMinVersion}}",
+      "tlsCipherSuites": {{.TLSCipherSuitesJSON}}
+    }
+---
+# Allows the linuxptp-daemon ServiceAccount (under which cloud-event-proxy runs)
+# to create TokenReviews so it can cryptographically validate bearer tokens
+# (ServiceAccount JWTs and opaque OpenShift OAuth tokens) presented to the
+# event APIs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: linuxptp-daemon-auth-delegator
+  labels:
+    app: linuxptp-daemon
+subjects:
+- kind: ServiceAccount
+  name: linuxptp-daemon
+  namespace: {{.Namespace}}
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io

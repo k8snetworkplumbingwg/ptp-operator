@@ -31,6 +31,7 @@ import (
 	openshifttls "github.com/openshift/controller-runtime-common/pkg/tls"
 	libgocrypto "github.com/openshift/library-go/pkg/crypto"
 
+	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/eventauth"
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +50,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ptpv1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v1"
 	ptpv2alpha1 "github.com/k8snetworkplumbingwg/ptp-operator/api/v2alpha1"
@@ -245,6 +247,9 @@ func main() {
 		setupLog.Info("TLS security profile watcher not started (non-OpenShift cluster)")
 	}
 
+	mgr.GetWebhookServer().Register(eventauth.WebhookPath, &admission.Webhook{
+		Handler: &eventauth.PodWebhook{Namespace: names.Namespace, Client: mgr.GetAPIReader()},
+	})
 	if err = (&ptpv1.PtpConfig{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "PtpConfig")
 		os.Exit(1)
