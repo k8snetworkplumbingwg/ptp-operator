@@ -137,6 +137,9 @@ spec:
                   This struct contains information about the device, including its name and profile.
                 items:
                   properties:
+                    alias:
+                      description: Alias is the name assigned to this port by linuxptp-daemon.
+                      type: string
                     hardwareInfo:
                       description: HardwareInfo contains detailed hardware identification
                         information for the device.
