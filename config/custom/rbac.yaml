@@ -82,7 +82,6 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: ptp-operator
-  namespace: openshift-ptp
 roleRef:
   kind: Role
   name: ptp-operator
@@ -90,7 +89,6 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: ptp-operator
-  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -115,7 +113,6 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: linuxptp-daemon
-  namespace: openshift-ptp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

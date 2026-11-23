@@ -166,6 +166,14 @@ docker-push: ## Push docker image with the manager.
 FREE_RUN ?= 0
 FREE_RUN_DIR ?= $(shell pwd)/_free-run
 
+# NAMESPACE is the namespace for deploy and undeploy, for example: make deploy NAMESPACE=my-ptp
+NAMESPACE ?= openshift-ptp
+
+# kustomize_build renders config/$(1) with NAMESPACE from a temporary copy, so the
+# kustomization files in the tree do not change.
+kustomize_build = (d=$$(mktemp -d) && trap 'rm -rf "$$d"' EXIT && cp -R config "$$d/" && \
+	cd "$$d/config/$(1)" && $(KUSTOMIZE) edit set namespace $(NAMESPACE) && $(KUSTOMIZE) build .)
+
 ifeq ($(FREE_RUN),1)
 APPLY_CMD = bash -o pipefail -c 'cat > "$(FREE_RUN_DIR)/$(1).yaml"'
 DELETE_CMD = bash -o pipefail -c 'cat > "$(FREE_RUN_DIR)/$(1).yaml"'
@@ -193,15 +201,15 @@ ifeq ($(FREE_RUN),1)
 endif
 	trap 'if [ -f $(ENV_YAML_BACKUP) ]; then mv $(ENV_YAML_BACKUP) config/manager/env.yaml; fi' EXIT; \
 	(cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}); \
-	$(KUSTOMIZE) build config/default | $(call APPLY_CMD,deploy-default); \
-	$(KUSTOMIZE) build config/custom | $(call APPLY_CMD,deploy-custom)
+	$(call kustomize_build,default) | $(call APPLY_CMD,deploy-default); \
+	$(call kustomize_build,custom) | $(call APPLY_CMD,deploy-custom)
 
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Set FREE_RUN=1 to render to FREE_RUN_DIR instead of deleting.
 ifeq ($(FREE_RUN),1)
 	@mkdir -p "$(FREE_RUN_DIR)"
 endif
-	$(KUSTOMIZE) build config/default | $(call DELETE_CMD,undeploy-default)
-	$(KUSTOMIZE) build config/custom | $(call DELETE_CMD,undeploy-custom)
+	$(call kustomize_build,default) | $(call DELETE_CMD,undeploy-default)
+	$(call kustomize_build,custom) | $(call DELETE_CMD,undeploy-custom)
 
 ##@ Build Dependencies
 

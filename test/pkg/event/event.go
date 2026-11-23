@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
 	"maps"
 	"os"
 	"regexp"
@@ -13,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	ptpEvent "github.com/redhat-cne/sdk-go/pkg/event/ptp"
 
 	ce "github.com/cloudevents/sdk-go/v2/event"
 	"github.com/k8snetworkplumbingwg/ptp-operator/test/pkg"
@@ -32,9 +33,10 @@ import (
 	"k8s.io/utils/pointer"
 )
 
+var ProducerNamespace = pkg.PtpNamespace
+
 const (
 	ConsumerNamespace             = "ptp-event-framework-test"
-	ProducerNamespace             = "openshift-ptp"
 	ConsumerPodName               = "consumer"
 	ConsumerSidecarContainerName  = "sidecar"
 	ConsumerSaName                = "consumer-sa"
@@ -54,6 +56,14 @@ var (
 
 func InitPubSub() {
 	PubSub = chanpubsub.NewPubsub()
+}
+
+// checkConsumerNamespace prevents the consumer cleanup from deleting the operator namespace.
+func checkConsumerNamespace() error {
+	if ConsumerNamespace == ProducerNamespace {
+		return fmt.Errorf("consumer namespace %q is the PTP operator namespace, refusing to delete it", ConsumerNamespace)
+	}
+	return nil
 }
 
 // Enable reports whether PTP cloud events must be exercised by the tests.
@@ -176,6 +186,9 @@ func CreateConsumerAppWithSidecar(nodeNameFull string) (err error) {
 		},
 	}
 
+	if err := checkConsumerNamespace(); err != nil {
+		return err
+	}
 	// delete namespace if present
 	if namespaces.IsPresent(ConsumerNamespace, client.Client) {
 		err := namespaces.Delete(ConsumerNamespace, client.Client)
@@ -286,6 +299,9 @@ func CreateConsumerApp(nodeNameFull string) (err error) {
 		},
 	}
 
+	if err := checkConsumerNamespace(); err != nil {
+		return err
+	}
 	// delete namespace if present
 	if namespaces.IsPresent(ConsumerNamespace, client.Client) {
 		err := namespaces.Delete(ConsumerNamespace, client.Client)
@@ -545,6 +561,9 @@ func CreateConsumerService() error {
 
 // delete consumer sidecar pod and associated service
 func DeleteConsumerNamespace() error {
+	if err := checkConsumerNamespace(); err != nil {
+		return err
+	}
 	// delete namespace if present
 	if namespaces.IsPresent(ConsumerNamespace, client.Client) {
 		err := namespaces.Delete(ConsumerNamespace, client.Client)

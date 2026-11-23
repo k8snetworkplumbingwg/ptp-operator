@@ -37,6 +37,17 @@ patches:
 # 'CERTMANAGER' needs to be enabled to use ca injection
 - path: webhookcainjection_patch.yaml
 
+# Keep the "name" label of the Namespace the same as the namespace set above.
+replacements:
+- source:
+    kind: Namespace
+    fieldPath: metadata.name
+  targets:
+  - select:
+      kind: Namespace
+    fieldPaths:
+    - metadata.labels.name
+
 # the following config is for teaching kustomize how to do var substitution
 vars:
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.

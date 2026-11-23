@@ -1,12 +1,28 @@
 package pkg
 
-import "time"
+import (
+	"os"
+	"time"
+)
+
+// PtpNamespace is the namespace of the PTP operator. Set PTP_NAMESPACE to change it.
+var PtpNamespace = func() string {
+	if ns := os.Getenv("PTP_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "openshift-ptp"
+}()
+
+var (
+	PtpLinuxDaemonNamespace = PtpNamespace
+	NodePtpDeviceAPIPath    = "/apis/ptp.openshift.io/v1/namespaces/" + PtpNamespace + "/nodeptpdevices/"
+	ConfigPtpAPIPath        = "/apis/ptp.openshift.io/v1/namespaces/" + PtpNamespace + "/ptpconfigs"
+)
 
 const (
 	ETHTOOL_HARDWARE_RECEIVE_CAP   = "hardware-receive"
 	ETHTOOL_HARDWARE_TRANSMIT_CAP  = "hardware-transmit"
 	ETHTOOL_HARDWARE_RAW_CLOCK_CAP = "hardware-raw-clock"
-	PtpLinuxDaemonNamespace        = "openshift-ptp"
 	PtpLinuxDaemonPodsLabel        = "app=linuxptp-daemon"
 	PtpOperatorDeploymentName      = "ptp-operator"
 	PtPOperatorPodsLabel           = "name=ptp-operator"
@@ -15,8 +31,6 @@ const (
 
 	PtpResourcesGroupVersionPrefix  = "ptp.openshift.io/v"
 	PtpResourcesNameOperatorConfigs = "ptpoperatorconfigs"
-	NodePtpDeviceAPIPath            = "/apis/ptp.openshift.io/v1/namespaces/openshift-ptp/nodeptpdevices/"
-	ConfigPtpAPIPath                = "/apis/ptp.openshift.io/v1/namespaces/openshift-ptp/ptpconfigs"
 	PtpContainerName                = "linuxptp-daemon-container"
 	EventProxyContainerName         = "cloud-event-proxy"
 
@@ -72,8 +86,6 @@ const (
 )
 
 const (
-	// PtpNamespace contains the name of the ptp namespace
-	PtpNamespace = "openshift-ptp"
 	// NodePtpDevices contains the name of the node ptp devices CRD
 	NodePtpDevicesCRD = "nodeptpdevices.ptp.openshift.io"
 	// PtpConfigs contains the name of the ptp configs CRD
