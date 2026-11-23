@@ -275,8 +275,6 @@ jobs:
             "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
           sudo chmod +x /usr/bin/crun
           crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
@@ -286,7 +284,7 @@ jobs:
           sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
-          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export PATH=/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
           VM_IP=$(hostname -I | awk '{print $1}')
