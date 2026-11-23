@@ -206,26 +206,27 @@ spec:
         serviceAccountName: linuxptp-daemon
       - rules:
         - apiGroups:
-           - ""
-           resourceNames:
-           - ptp-event-publisher-server
-           resources:
-           - services
-           verbs:
-           - delete
-         - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - get
+          - list
+          - patch
+          - watch
+        - apiGroups:
+          - ""
+          resourceNames:
+          - ptp-event-publisher-server
+          resources:
+          - services
+          verbs:
+          - delete
+        - apiGroups:
           - config.openshift.io
           resources:
           - apiservers
           - infrastructures
-          verbs:
-          - get
-          - list
-          - watch
-        - apiGroups:
-          - ""
-          resources:
-          - nodes
           verbs:
           - get
           - list
@@ -257,6 +258,14 @@ spec:
           - clusterroles
           verbs:
           - bind
+        - apiGroups:
+          - ""
+          resources:
+          - nodes
+          verbs:
+          - get
+          - list
+          - watch
         serviceAccountName: ptp-operator
       deployments:
       - name: ptp-operator
