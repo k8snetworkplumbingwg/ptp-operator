@@ -67,6 +67,7 @@ data:
       "serviceAccountToken": "/var/run/event-api-token/token",
       "allowedCallbackHosts": ["consumer-events-subscription-service.cloud-events.svc.cluster.local", "consumer-events-subscription-service.cloud-events.svc"],
       "tlsMinVersion": "{{.TLSMinVersion}}",
+      {{with index . "TLSGroupsJSON"}}"tlsGroups": {{.}},{{end}}
       "tlsCipherSuites": {{.TLSCipherSuitesJSON}}
     }
 ---

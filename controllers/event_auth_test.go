@@ -3,7 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	"strings"
+
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -11,7 +11,7 @@ import (
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/names"
 	"github.com/k8snetworkplumbingwg/ptp-operator/pkg/render"
 	configv1 "github.com/openshift/api/config/v1"
-	libgocrypto "github.com/openshift/library-go/pkg/crypto"
+
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -329,16 +329,14 @@ func TestEventAuthProtectsAlwaysDeployedCEPv2(t *testing.T) {
 // auth manifest renders the expected resources with a valid, TLS-profiled JSON.
 func TestEventAuthEnabled(t *testing.T) {
 	profile := *configv1.TLSProfiles[configv1.TLSProfileIntermediateType]
-	ianaCiphers := libgocrypto.OpenSSLToIANACipherSuites(profile.Ciphers)
+	profile.Groups = []configv1.TLSGroup{configv1.TLSGroupX25519}
 
 	data := makeTestRenderData()
 	data.Data["Namespace"] = "custom-ns"
 	data.Data["EnableEventPublisher"] = true
 	data.Data["SideCarV2"] = ""
 	data.Data["EventTransportHost"] = "http://ptp-event-publisher-service-NODE_NAME.custom-ns.svc.cluster.local:9043"
-	data.Data["TLSMinVersion"] = string(profile.MinTLSVersion)
-	data.Data["TLSCipherSuites"] = strings.Join(ianaCiphers, ",")
-	data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(ianaCiphers)
+	(&PtpOperatorConfigReconciler{TLSProfileSpec: &profile}).setTLSTemplateData(data)
 	data.Data["EnableEventAuth"] = true
 
 	// Sidecar must reference the auth config.
@@ -379,6 +377,7 @@ func TestEventAuthEnabled(t *testing.T) {
 	assert.Equal(t, true, cfg["enableMTLS"])
 	assert.Equal(t, true, cfg["enableOAuth"])
 	assert.Equal(t, string(profile.MinTLSVersion), cfg["tlsMinVersion"])
+	assert.Equal(t, []interface{}{string(configv1.TLSGroupX25519)}, cfg["tlsGroups"])
 	suites, ok := cfg["tlsCipherSuites"].([]interface{})
 	assert.True(t, ok)
 	assert.NotEmpty(t, suites)

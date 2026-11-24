@@ -719,6 +719,9 @@ func (r *PtpOperatorConfigReconciler) setTLSTemplateData(data *render.RenderData
 		data.Data["TLSCipherSuites"] = strings.Join(ianaCiphers, ",")
 		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(ianaCiphers)
 
+		groupNames, _ := json.Marshal(r.TLSProfileSpec.Groups) // TLSGroup is a string enum.
+		data.Data["TLSGroupsJSON"] = string(groupNames)
+
 		curveIDs, _ := libgocrypto.TLSGroupsToCurveIDs(r.TLSProfileSpec.Groups)
 		groups := make([]string, len(curveIDs))
 		for i, id := range curveIDs {
@@ -729,6 +732,7 @@ func (r *PtpOperatorConfigReconciler) setTLSTemplateData(data *render.RenderData
 		data.Data["TLSMinVersion"] = ""
 		data.Data["TLSCipherSuites"] = legacyCipherSuites
 		data.Data["TLSCipherSuitesJSON"] = ciphersToJSONArray(strings.Split(legacyCipherSuites, ","))
+		data.Data["TLSGroupsJSON"] = "[]"
 		data.Data["TLSGroups"] = ""
 	}
 }
