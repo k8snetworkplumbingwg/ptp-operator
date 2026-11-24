@@ -48,6 +48,7 @@ func authRenderData() *render.RenderData {
 	data := makeTestRenderData()
 	data.Data["TLSMinVersion"] = ""
 	data.Data["TLSCipherSuitesJSON"] = "[]"
+	data.Data["TLSGroupsJSON"] = "[]"
 	return data
 }
 
