@@ -114,12 +114,12 @@ jobs:
             exit 1
           fi
           BUS=$(printf "%02x" "$BUS_NR")
-          BUS_DEVICES=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep "^0000:${BUS}:" || true)
+          BUS_DEVICES=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep -E "^[[:xdigit:]]{4}:${BUS}:" || true)
           if [ -z "$BUS_DEVICES" ]; then
-            echo "ERROR: netdevsim did not create a fake PCI root bus on 0000:${BUS}" >&2
+            echo "ERROR: netdevsim did not create a fake PCI root bus on PCI bus ${BUS}" >&2
             exit 1
           fi
-          FAKE_ROOT=$(printf '%s\n' "$BUS_DEVICES" | grep "^0000:${BUS}:00\.0" | head -1 || true)
+          FAKE_ROOT=$(printf '%s\n' "$BUS_DEVICES" | grep -E "^[[:xdigit:]]{4}:${BUS}:00\.0$" | head -1 || true)
           DOMAIN="${FAKE_ROOT:+$(echo "$FAKE_ROOT" | cut -d: -f1)}"
           : "${DOMAIN:=0000}"
           PCI_ADDR="${DOMAIN}:${BUS}:02.0"
@@ -143,7 +143,7 @@ jobs:
         run: |
           BUS_NR=$(cat /sys/module/netdevsim/parameters/pci_bus_nr 2>/dev/null || echo 31)
           BUS=$(printf "%02x" "$BUS_NR")
-          FAKE_ROOT=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep "^0000:${BUS}:00\.0" | head -1 || true)
+          FAKE_ROOT=$(ls /sys/bus/pci/devices/ 2>/dev/null | grep -E "^[[:xdigit:]]{4}:${BUS}:00\.0$" | head -1 || true)
           DOMAIN="${FAKE_ROOT:+$(echo "$FAKE_ROOT" | cut -d: -f1)}"
           : "${DOMAIN:=0000}"
           IFACE=$(ls /sys/bus/pci/devices/${DOMAIN}:${BUS}:02.0/net/ 2>/dev/null | head -1)
@@ -275,8 +275,6 @@ jobs:
             "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64"
           sudo chmod +x /usr/bin/crun
           crun --version | head -1
-          # Serialize podman CLI via one API server (avoids Kind exec SQLite deadlock).
-          sudo bash "$GITHUB_WORKSPACE/scripts/start-podman-api-service.sh"
 
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
@@ -286,7 +284,7 @@ jobs:
           sudo bash -l <<'BUILD'
           set -euo pipefail
           set -x
-          export PATH=/usr/local/ptp-podman-wrap:/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
+          export PATH=/usr/local/bin:/usr/local/go/bin:/root/go/bin:$PATH
           export KIND_EXPERIMENTAL_PROVIDER=podman
 
           VM_IP=$(hostname -I | awk '{print $1}')
