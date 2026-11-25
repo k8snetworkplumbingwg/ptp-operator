@@ -393,13 +393,14 @@ func TestEventAuthEnabled(t *testing.T) {
 		"consumer-events-subscription-service.cloud-events.svc",
 	}, cfg["allowedCallbackHosts"])
 
-	// The daemonset must mount the required clientAuth cert before starting.
+	// The daemonset exposes the outbound clientAuth cert when it is available,
+	// but its absence must not block the inbound event API or PTP daemon.
 	vol := daemonVolume(t, objs, "client-certs")
 	assert.NotNil(t, vol, "client-certs volume must be rendered")
 	secret, ok := vol["secret"].(map[string]interface{})
 	assert.True(t, ok, "client-certs volume must be backed by a secret")
 	assert.Equal(t, "ptp-event-publisher-client-tls", secret["secretName"])
-	assert.Equal(t, false, secret["optional"], "full mTLS requires the publisher client certificate")
+	assert.Equal(t, true, secret["optional"], "a missing outbound client certificate must not block pod startup")
 	projection, found, err := unstructured.NestedSlice(daemonVolume(t, objs, "event-api-token"), "projected", "sources")
 	assert.NoError(t, err)
 	assert.True(t, found)

@@ -180,11 +180,13 @@ spec:
             name: ptp-event-publisher-ca-bundle
         # clientAuth cert the publisher presents on the outbound push leg. The
         # Service CA cannot mint clientAuth certs, so this secret is supplied
-        # out-of-band. Secured mode waits for this required client credential.
+        # out-of-band. Keep the volume optional so a missing outbound identity
+        # does not prevent the inbound event API and PTP daemon from starting.
+        # Callback delivery fails closed until the keypair is provisioned.
         - name: client-certs
           secret:
             secretName: ptp-event-publisher-client-tls
-            optional: false
+            optional: true
         - name: auth-config
           configMap:
             name: ptp-event-publisher-auth

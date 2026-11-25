@@ -35,14 +35,11 @@ metadata:
 # cipher suites) follows the cluster-wide TLSSecurityProfile.
 #
 # The outbound push leg (cloud-event-proxy delivering initial notifications to a
-# consumer callback) authenticates with BOTH the ServiceAccount bearer token
-# (serviceAccountToken, always mounted) and - when the required
-# ptp-event-publisher-client-tls secret is provisioned - the clientAuth cert at
-# clientCertPath/clientKeyPath. The Service CA mints serverAuth-only certs, so the
-# serving cert cannot be reused as a client cert; when the client-tls secret is
-# absent the secured workload waits for provisioning. caCertPath doubles as
-# the RootCAs used to verify the consumer's
-# server certificate on that push.
+# consumer callback) requires both the ServiceAccount bearer token and the
+# clientAuth keypair from ptp-event-publisher-client-tls. The Service CA
+# provisions the serving identity separately. The inbound API can start
+# before the client keypair is provisioned. caCertPath also supplies the trust
+# roots for verifying the consumer's serving certificate.
 apiVersion: v1
 kind: ConfigMap
 metadata:
