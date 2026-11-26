@@ -383,17 +383,7 @@ jobs:
             bin/kustomize version
             exit 0
           fi
-          arch="$(dpkg --print-architecture)"
-          case "$arch" in
-            amd64) asset="kustomize_v5.4.2_linux_amd64.tar.gz" ;;
-            arm64) asset="kustomize_v5.4.2_linux_arm64.tar.gz" ;;
-            *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-          esac
-          mkdir -p bin
-          curl -fsSL --retry 5 --retry-delay 10 -o /tmp/kustomize.tar.gz \
-            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.2/${asset}"
-          tar -xzf /tmp/kustomize.tar.gz -C bin kustomize
-          chmod +x bin/kustomize
+          GOBIN="$GITHUB_WORKSPACE/bin" go install -ldflags="-X sigs.k8s.io/kustomize/api/provenance.version=v5.4.2" sigs.k8s.io/kustomize/kustomize/v5@v5.4.2
           bin/kustomize version
 
       - name: Cache Go modules and build
