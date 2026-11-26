@@ -471,6 +471,9 @@ jobs:
           sudo cp /tmp/netdevsim-dkms/99-nsim-ptp.rules /etc/udev/rules.d/
           sudo udevadm control --reload-rules
 
+      - name: Install kustomize
+        run: GOBIN="$GITHUB_WORKSPACE/bin" go install -ldflags="-X sigs.k8s.io/kustomize/api/provenance.version=v5.4.2" sigs.k8s.io/kustomize/kustomize/v5@v5.4.2
+
       - name: Copy checkout to /root/ptp-operator
         run: sudo cp -a "$GITHUB_WORKSPACE" /root/ptp-operator
 
