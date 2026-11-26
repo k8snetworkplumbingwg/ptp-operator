@@ -1,2 +1,20 @@
+# Keep this value the same as the namespace in config/default/kustomization.yaml.
+namespace: openshift-ptp
+
 resources:
 - rbac.yaml
+
+# The ptp-operator ServiceAccount is not in this overlay, so kustomize does not set its subject namespace.
+replacements:
+- source:
+    kind: ServiceAccount
+    name: linuxptp-daemon
+    fieldPath: metadata.namespace
+  targets:
+  - select:
+      kind: ClusterRoleBinding
+      name: ptp-operator
+    fieldPaths:
+    - subjects.[name=ptp-operator].namespace
+    options:
+      create: true

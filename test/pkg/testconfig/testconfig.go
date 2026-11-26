@@ -29,6 +29,8 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+var PtpLinuxDaemonNamespace = pkg.PtpNamespace
+
 const (
 
 	// DualNICBoundaryClockString matches the Discovery clock mode in Environement
@@ -47,7 +49,6 @@ const (
 	DiscoverySuccessStatusString = "discoverySuccess"
 	// DiscoveryFailureStatusString Stringer value for the Discovery failure status
 	DiscoveryFailureStatusString = "discoveryFailure"
-	PtpLinuxDaemonNamespace      = "openshift-ptp"
 	defaultSchedulingPriority    = 65
 	defaultPriority              = 5
 	defaultHoldOverTimeout       = 5
